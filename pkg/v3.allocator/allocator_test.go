@@ -31,23 +31,23 @@ func (s *AllocatorSuite) TestRemoveDeadAssignments(c *gc.C) {
 	// verified, as well as that each Assignment is unchanged.
 	c.Check(txn.cmps, gc.DeepEquals, []clientv3.Cmp{
 		clientv3.Compare(clientv3.CreateRevision("/root/items/item-1"), "=", 0),
-		modRevisionUnchanged(assignments[0]), // assign/item-1/us-east/foo/1
-		modRevisionUnchanged(assignments[1]), // assign/item-1/us-west/baz/0
+		modRevisionUnchanged(assignments[0]), // assign/item-1|us-east|foo|1
+		modRevisionUnchanged(assignments[1]), // assign/item-1|us-west|baz|0
 		clientv3.Compare(clientv3.CreateRevision("/root/items/item-missing"), "=", 0),
-		modRevisionUnchanged(assignments[2]), // assign/item-missing/us-west/baz/0
+		modRevisionUnchanged(assignments[2]), // assign/item-missing|us-west|baz|0
 		clientv3.Compare(clientv3.CreateRevision("/root/items/item-two"), "=", 0),
-		modRevisionUnchanged(assignments[3]), // assign/item-two/missing/member/2
-		modRevisionUnchanged(assignments[4]), // assign/item-two/us-east/bar/0
-		modRevisionUnchanged(assignments[5]), // assign/item-two/us-west/baz/1
+		modRevisionUnchanged(assignments[3]), // assign/item-two|missing|member|2
+		modRevisionUnchanged(assignments[4]), // assign/item-two|us-east|bar|0
+		modRevisionUnchanged(assignments[5]), // assign/item-two|us-west|baz|1
 	})
 
 	c.Check(txn.ops, gc.DeepEquals, []clientv3.Op{
-		clientv3.OpDelete("/root/assign/item-1/us-east/foo/1"),
-		clientv3.OpDelete("/root/assign/item-1/us-west/baz/0"),
-		clientv3.OpDelete("/root/assign/item-missing/us-west/baz/0"),
-		clientv3.OpDelete("/root/assign/item-two/missing/member/2"),
-		clientv3.OpDelete("/root/assign/item-two/us-east/bar/0"),
-		clientv3.OpDelete("/root/assign/item-two/us-west/baz/1"),
+		clientv3.OpDelete("/root/assign/item-1|us-east|foo|1"),
+		clientv3.OpDelete("/root/assign/item-1|us-west|baz|0"),
+		clientv3.OpDelete("/root/assign/item-missing|us-west|baz|0"),
+		clientv3.OpDelete("/root/assign/item-two|missing|member|2"),
+		clientv3.OpDelete("/root/assign/item-two|us-east|bar|0"),
+		clientv3.OpDelete("/root/assign/item-two|us-west|baz|1"),
 	})
 }
 
@@ -76,14 +76,14 @@ func (s *AllocatorSuite) TestConvergeFixtureCases(c *gc.C) {
 
 	var expectCmps = []clientv3.Cmp{
 		clientv3.Compare(clientv3.CreateRevision("/root/items/item-missing"), "=", 0),
-		modRevisionUnchanged(as.assignments[2]), // assign/item-missing/us-west/baz/0
+		modRevisionUnchanged(as.assignments[2]), // assign/item-missing|us-west|baz|0
 		modRevisionUnchanged(as.items[1]),       // items/item-two
-		modRevisionUnchanged(as.assignments[3]), // assign/item-two/missing/member/2
+		modRevisionUnchanged(as.assignments[3]), // assign/item-two|missing|member|2
 	}
 	c.Check(txn.cmps, gc.DeepEquals, expectCmps)
 	c.Check(txn.ops, gc.DeepEquals, []clientv3.Op{
-		clientv3.OpDelete("/root/assign/item-missing/us-west/baz/0"),
-		clientv3.OpDelete("/root/assign/item-two/missing/member/2"),
+		clientv3.OpDelete("/root/assign/item-missing|us-west|baz|0"),
+		clientv3.OpDelete("/root/assign/item-two|missing|member|2"),
 	})
 
 	// Case 2: desire to flip "foo" and "bar". "bar" is at capacity, "foo" is not:
@@ -103,9 +103,9 @@ func (s *AllocatorSuite) TestConvergeFixtureCases(c *gc.C) {
 		append(expectCmps[:2:2], modRevisionUnchanged(as.members[1])), expectCmps[2:]...))
 
 	c.Check(txn.ops, gc.DeepEquals, []clientv3.Op{
-		clientv3.OpDelete("/root/assign/item-missing/us-west/baz/0"),
-		clientv3.OpPut("/root/assign/item-two/us-east/foo/3", "", clientv3.WithLease(0xfeedbeef)),
-		clientv3.OpDelete("/root/assign/item-two/missing/member/2"),
+		clientv3.OpDelete("/root/assign/item-missing|us-west|baz|0"),
+		clientv3.OpPut("/root/assign/item-two|us-east|foo|3", "", clientv3.WithLease(0xfeedbeef)),
+		clientv3.OpDelete("/root/assign/item-two|missing|member|2"),
 	})
 }
 

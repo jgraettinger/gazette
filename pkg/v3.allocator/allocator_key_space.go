@@ -13,9 +13,9 @@ import (
 const (
 	// Item keys are structured as "prefix/items/id"
 	ItemsPrefix = "/items/"
-	// Member keys are structured as "prefix/members/zone/suffix"
+	// Member keys are structured as "prefix/members/zone|suffix"
 	MembersPrefix = "/members/"
-	// Assignment keys are structured as "prefix/assign/item-id/zone/member-suffix/slot"
+	// Assignment keys are structured as "prefix/assign/item-id|zone|member-suffix|slot"
 	AssignmentsPrefix = "/assign/"
 )
 
@@ -97,7 +97,7 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 	return func(raw *mvccpb.KeyValue) (interface{}, error) {
 		switch {
 		case bytes.HasPrefix(raw.Key, []byte(membersPrefix)):
-			if p := strings.Split(string(raw.Key[len(membersPrefix):]), "/"); len(p) != 2 {
+			if p := strings.Split(string(raw.Key[len(membersPrefix):]), "|"); len(p) != 2 {
 				return nil, fmt.Errorf("expected (zone, suffix) in member key")
 			} else if value, err := decode.DecodeMember(p[0], p[1], raw); err != nil {
 				return nil, err
@@ -106,7 +106,7 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 			}
 
 		case bytes.HasPrefix(raw.Key, []byte(itemsPrefix)):
-			if p := strings.Split(string(raw.Key[len(itemsPrefix):]), "/"); len(p) != 1 {
+			if p := strings.Split(string(raw.Key[len(itemsPrefix):]), "|"); len(p) != 1 {
 				return nil, fmt.Errorf("expected (id) in item key")
 			} else if value, err := decode.DecodeItem(p[0], raw); err != nil {
 				return nil, err
@@ -115,7 +115,7 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 			}
 
 		case bytes.HasPrefix(raw.Key, []byte(assignmentsPrefix)):
-			if p := strings.Split(string(raw.Key[len(assignmentsPrefix):]), "/"); len(p) != 4 {
+			if p := strings.Split(string(raw.Key[len(assignmentsPrefix):]), "|"); len(p) != 4 {
 				return nil, fmt.Errorf("expected (item-id, member-zone, member-suffix, slot) in assignment key")
 			} else if slot, err := strconv.Atoi(p[3]); err != nil {
 				return nil, err
@@ -139,7 +139,7 @@ func NewAllocatorKeySpace(prefix string, decode AllocatorDecoder) *keyspace.KeyS
 
 // MemberKey returns the unique key for a Member with |zone| and |suffix| under the KeySpace.
 func MemberKey(ks *keyspace.KeySpace, zone, suffix string) string {
-	return ks.Root + MembersPrefix + zone + "/" + suffix
+	return ks.Root + MembersPrefix + zone + "|" + suffix
 }
 
 // ItemKey returns the unique key for an Item with ID |id| under the KeySpace.
@@ -149,12 +149,12 @@ func ItemKey(ks *keyspace.KeySpace, id string) string {
 
 // ItemAssignmentsPrefix returns the unique key prefix for all Assignments of |itemID| under the KeySpace.
 func ItemAssignmentsPrefix(ks *keyspace.KeySpace, itemID string) string {
-	return ks.Root + AssignmentsPrefix + itemID + "/"
+	return ks.Root + AssignmentsPrefix + itemID + "|"
 }
 
 // AssignmentKey returns the unique key for Assignment |assignment| under the KeySpace.
 func AssignmentKey(ks *keyspace.KeySpace, a Assignment) string {
-	return ItemAssignmentsPrefix(ks, a.ItemID) + a.MemberZone + "/" + a.MemberSuffix + "/" + strconv.Itoa(a.Slot)
+	return ItemAssignmentsPrefix(ks, a.ItemID) + a.MemberZone + "|" + a.MemberSuffix + "|" + strconv.Itoa(a.Slot)
 }
 
 func memberAt(kv keyspace.KeyValues, i int) Member         { return kv[i].Decoded.(Member) }

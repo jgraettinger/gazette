@@ -26,7 +26,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	c.Check(state.members, gc.HasLen, 3)
 
 	// Expect that local member state was extracted.
-	c.Check(state.localKey, gc.Equals, "/root/members/us-west/baz")
+	c.Check(state.localKey, gc.Equals, "/root/members/us-west|baz")
 	c.Check(state.localMemberInd, gc.Equals, 2)
 	c.Check(state.localAssignments, gc.DeepEquals, []LocalAssignment{
 		// /root/assign/item-1/us-west/baz/0
@@ -40,7 +40,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	state, err = newAllocState(ks, MemberKey(ks, "us-east", "bar"))
 	c.Assert(err, gc.IsNil)
 
-	c.Check(state.localKey, gc.Equals, "/root/members/us-east/bar")
+	c.Check(state.localKey, gc.Equals, "/root/members/us-east|bar")
 	c.Check(state.localMemberInd, gc.Equals, 0)
 	c.Check(state.localAssignments, gc.DeepEquals, []LocalAssignment{
 		// /root/assign/item-two/us-east/bar/0
@@ -51,7 +51,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	state, err = newAllocState(ks, MemberKey(ks, "us-east", "foo"))
 	c.Assert(err, gc.IsNil)
 
-	c.Check(state.localKey, gc.Equals, "/root/members/us-east/foo")
+	c.Check(state.localKey, gc.Equals, "/root/members/us-east|foo")
 	c.Check(state.localMemberInd, gc.Equals, 1)
 	c.Check(state.localAssignments, gc.DeepEquals, []LocalAssignment{
 		// /root/assign/item-1/us-east/foo/1
@@ -62,7 +62,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	c.Check(state.zones, gc.DeepEquals, []string{"us-east", "us-west"})
 	c.Check(state.memberSlots, gc.Equals, 6)
 	c.Check(state.itemSlots, gc.Equals, 3)
-	c.Check(state.networkHash, gc.Equals, uint64(0x17cd6b7f566535be))
+	c.Check(state.networkHash, gc.Equals, uint64(0x110ea3fec3194585))
 
 	// Member counts were sized and initialized with current Assignment counts.
 	// Expect counts for Assignments with missing Items were omitted.
@@ -71,7 +71,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 
 	// Expect it returns an error if the member key is not found.
 	state, err = newAllocState(ks, MemberKey(ks, "does-not", "exist"))
-	c.Check(err, gc.ErrorMatches, "member key not found: /root/members/does-not/exist")
+	c.Check(err, gc.ErrorMatches, "member key not found: /root/members/does-not|exist")
 	c.Check(state, gc.IsNil)
 }
 
@@ -99,7 +99,7 @@ func (s *AllocStateSuite) TestExitCondition(c *gc.C) {
 	var client, ctx = etcdCluster.RandClient(), context.Background()
 	buildAllocKeySpaceFixture(c, ctx, client)
 
-	var _, err = client.Put(ctx, "/root/members/us-east/allowed-to-exit", `{"R": 0}`)
+	var _, err = client.Put(ctx, "/root/members/us-east|allowed-to-exit", `{"R": 0}`)
 	c.Assert(err, gc.IsNil)
 
 	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
@@ -114,7 +114,7 @@ func (s *AllocStateSuite) TestExitCondition(c *gc.C) {
 	c.Check(state.shouldExit(), gc.Equals, true)
 
 	// While we're at it, If |networkHash| changed with the new member.
-	c.Check(state.networkHash, gc.Equals, uint64(0x8cf026c50acfb219))
+	c.Check(state.networkHash, gc.Equals, uint64(0x3ebc60d2a3d8a9d))
 }
 
 func (s *AllocStateSuite) TestLoadRatio(c *gc.C) {
