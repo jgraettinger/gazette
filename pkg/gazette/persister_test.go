@@ -1,11 +1,11 @@
 package gazette
 
 import (
+	"context"
 	"encoding/json"
 	"io/ioutil"
 	"os"
 	"sort"
-	"time"
 
 	etcd "github.com/coreos/etcd/client"
 	gc "github.com/go-check/check"
@@ -43,43 +43,30 @@ func (s *PersisterSuite) TearDownTest(c *gc.C) {
 	c.Check(s.cfs.Close(), gc.IsNil)
 }
 
-func (s *PersisterSuite) TestPersistence(c *gc.C) {
-	c.Skip("PUB-1980 flake")
-
+func (s *PersisterSuite) TestPersistenceV3(c *gc.C) {
 	var contentFixture = []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 	var lockPath = PersisterLocksRoot + s.fragment.ContentName()
 
-	// Expect lock is created, refreshed, and deleted.
-	s.keysAPI.On("Set", mock.Anything, lockPath, "route-key",
-		&etcd.SetOptions{
-			PrevExist: etcd.PrevNoExist,
-			TTL:       time.Millisecond,
-		}).Return(&etcd.Response{Index: 1234}, nil).Once()
+	var client, ctx = etcdCluster.RandClient(), context.Background()
 
-	s.keysAPI.On("Set", mock.Anything, lockPath, "route-key",
-		&etcd.SetOptions{
-			PrevExist: etcd.PrevExist,
-			PrevIndex: 1234,
-			TTL:       time.Millisecond,
-		}).Return(&etcd.Response{Index: 2345}, nil).Once()
+	var lease, err = client.Lease.Grant(ctx, 60)
+	c.Assert(err, gc.IsNil)
+	defer client.Lease.Revoke(ctx, lease.ID)
 
-	// We *may* see additional Sets, if the lock refresh Goroutine races and
-	// wins against the blocking ReadAt fixture.
-	s.keysAPI.On("Set", mock.Anything, lockPath, "route-key",
-		&etcd.SetOptions{
-			PrevExist: etcd.PrevExist,
-			PrevIndex: 2345,
-			TTL:       time.Millisecond,
-		}).Return(&etcd.Response{Index: 2345}, nil)
-
-	s.keysAPI.On("Delete", mock.Anything, lockPath,
-		&etcd.DeleteOptions{PrevIndex: 2345}).Return(&etcd.Response{}, nil)
+	s.persister.kvv3 = client
+	s.persister.kvv3Lease = lease.ID
 
 	// Expect fragment.File to be read. Return a value fixture we'll verify later.
 	s.file.On("ReadAt", mock.AnythingOfType("[]uint8"), int64(0)).
 		Return(10, nil).
-		After(2 * time.Millisecond). // Block long enough to trigger lock refresh.
 		Run(func(args mock.Arguments) {
+
+			// Verify the lock is held with the lease.
+			var getResp, err = client.Get(ctx, lockPath)
+			c.Assert(err, gc.IsNil)
+			c.Check(string(getResp.Kvs[0].Value), gc.Equals, "route-key")
+			c.Check(getResp.Kvs[0].Lease, gc.Equals, int64(lease.ID))
+
 			copy(args.Get(0).([]byte), contentFixture)
 		}).Once()
 
@@ -90,11 +77,15 @@ func (s *PersisterSuite) TestPersistence(c *gc.C) {
 		return nil
 	}
 
-	s.persister.persisterLockTTL = time.Millisecond
-	s.persister.convergeOne(s.fragment)
+	s.persister.convergeOneV3(s.fragment)
 
 	s.file.AssertExpectations(c)
 	c.Check(s.persister.osRemove, gc.IsNil)
+
+	// Verify the lock was released.
+	getResp, err := client.Get(ctx, lockPath)
+	c.Assert(err, gc.IsNil)
+	c.Check(getResp.Kvs, gc.HasLen, 0)
 
 	// Verify written content.
 	r, err := s.cfs.Open(s.fragment.ContentPath())
@@ -122,7 +113,7 @@ func (s *PersisterSuite) TestLockIsAlreadyHeld(c *gc.C) {
 		c.Fail()
 		return nil
 	}
-	s.persister.convergeOne(s.fragment)
+	s.persister.convergeOneV2(s.fragment)
 
 	s.keysAPI.AssertExpectations(c)
 	s.file.AssertExpectations(c)
@@ -130,6 +121,35 @@ func (s *PersisterSuite) TestLockIsAlreadyHeld(c *gc.C) {
 	// Expect it's not present on target filesystem.
 	_, err := s.cfs.Open(s.fragment.ContentPath())
 	c.Check(os.IsNotExist(err), gc.Equals, true)
+}
+
+func (s *PersisterSuite) TestLockIsAlreadyHeldV3(c *gc.C) {
+	var lockPath = PersisterLocksRoot + s.fragment.ContentName()
+
+	var client, ctx = etcdCluster.RandClient(), context.Background()
+	s.persister.kvv3 = client
+
+	var _, err = client.Put(ctx, lockPath, "other-route")
+	c.Assert(err, gc.IsNil)
+
+	// Note we're implicitly verifying that the local file is not read,
+	// by not setting up expectations.
+
+	// Also expect the local file is left alone.
+	s.persister.osRemove = func(string) error {
+		c.Log("os.Remove() called")
+		c.Fail()
+		return nil
+	}
+	s.persister.convergeOneV3(s.fragment)
+
+	s.file.AssertExpectations(c)
+
+	// Expect it's not present on target filesystem.
+	_, err = s.cfs.Open(s.fragment.ContentPath())
+	c.Check(os.IsNotExist(err), gc.Equals, true)
+
+	client.Delete(ctx, lockPath) // Clean up fixture.
 }
 
 func (s *PersisterSuite) TestTargetFileAlreadyExists(c *gc.C) {
@@ -160,7 +180,7 @@ func (s *PersisterSuite) TestTargetFileAlreadyExists(c *gc.C) {
 		s.persister.osRemove = nil // Mark we were called.
 		return nil
 	}
-	s.persister.convergeOne(s.fragment)
+	s.persister.convergeOneV2(s.fragment)
 
 	s.keysAPI.AssertExpectations(c)
 	s.file.AssertExpectations(c)

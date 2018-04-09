@@ -12,6 +12,7 @@ import (
 	"time"
 
 	etcd "github.com/coreos/etcd/client"
+	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/LiveRamp/gazette/pkg/async"
@@ -33,6 +34,13 @@ type Persister struct {
 	keysAPI   etcd.KeysAPI
 	routeKey  string
 
+	// EtcdV3 client and lease. If non-nil, |kvv3| and the EtcdV3 API is used
+	// instead of |keysAPI|.
+	// TODO(johnny): Drop keysAPI (and generally: give Persister some TLC)
+	// when EtcdV2 support is dropped.
+	kvv3      clientv3.KV
+	kvv3Lease clientv3.LeaseID
+
 	queue        map[string]journal.Fragment
 	shuttingDown uint32
 	loopExited   chan struct{}
@@ -43,12 +51,33 @@ type Persister struct {
 	persisterLockTTL time.Duration
 }
 
+// Deprecated. Use NewPersisterV3.
 func NewPersister(directory string, cfs cloudstore.FileSystem,
 	keysAPI etcd.KeysAPI, routeKey string) *Persister {
 	p := &Persister{
 		cfs:              cfs,
 		directory:        directory,
 		keysAPI:          keysAPI,
+		osRemove:         os.Remove,
+		persisterLockTTL: kPersisterLockTTL,
+		queue:            make(map[string]journal.Fragment),
+		loopExited:       make(chan struct{}),
+		routeKey:         routeKey,
+	}
+	// Make the state of the persister queue available to expvar.
+	gazetteMap.Set("persister", p)
+
+	return p
+}
+
+// NewPersisterV3 constructs a Persister configured to use the EtcdV3 API.
+func NewPersisterV3(directory string, cfs cloudstore.FileSystem,
+	kvv3 clientv3.KV, kvv3Lease clientv3.LeaseID, routeKey string) *Persister {
+	p := &Persister{
+		cfs:              cfs,
+		directory:        directory,
+		kvv3:             kvv3,
+		kvv3Lease:        kvv3Lease,
 		osRemove:         os.Remove,
 		persisterLockTTL: kPersisterLockTTL,
 		queue:            make(map[string]journal.Fragment),
@@ -133,7 +162,14 @@ func (p *Persister) converge() {
 	p.mu.Lock()
 	for name, fragment := range p.queue {
 		p.mu.Unlock()
-		success := p.convergeOne(fragment)
+
+		var success bool
+		if p.kvv3 != nil {
+			success = p.convergeOneV3(fragment)
+		} else {
+			success = p.convergeOneV2(fragment)
+		}
+
 		p.mu.Lock()
 
 		if success {
@@ -143,7 +179,46 @@ func (p *Persister) converge() {
 	p.mu.Unlock()
 }
 
-func (p *Persister) convergeOne(fragment journal.Fragment) bool {
+func (p *Persister) convergeOneV3(fragment journal.Fragment) bool {
+	var lockPath = PersisterLocksRoot + fragment.ContentName()
+
+	// Issue a transaction verifying the key doesn't exist, then put with our |routeKey|.
+	var r, err = p.kvv3.Txn(context.Background()).
+		If(clientv3.Compare(clientv3.CreateRevision(lockPath), "=", 0)).
+		Then(clientv3.OpPut(lockPath, p.routeKey, clientv3.WithLease(p.kvv3Lease))).
+		Commit()
+
+	if err != nil {
+		log.WithFields(log.Fields{"err": err, "path": fragment.ContentName}).
+			Warn("failed to lock fragment for persisting")
+		return false
+	} else if !r.Succeeded {
+		return false // Key is already locked by another Persister.
+	}
+
+	var success = transferFragmentToGCS(p.cfs, fragment)
+
+	// Issue transaction verifying the key we put is unchanged, then delete.
+	r, err = p.kvv3.Txn(context.Background()).
+		If(clientv3.Compare(clientv3.ModRevision(lockPath), "=", r.Header.Revision)).
+		Then(clientv3.OpDelete(lockPath)).
+		Commit()
+
+	if err == nil && r.Succeeded == false {
+		err = fmt.Errorf("key has changed unexpectedly")
+	}
+	if err != nil {
+		log.WithFields(log.Fields{"err": err, "path": fragment.ContentName}).
+			Error("failed to delete fragment persister lock")
+	}
+
+	if success {
+		p.removeLocal(fragment)
+	}
+	return success
+}
+
+func (p *Persister) convergeOneV2(fragment journal.Fragment) bool {
 	var lockPath = PersisterLocksRoot + fragment.ContentName()
 	var lockIndex uint64
 
