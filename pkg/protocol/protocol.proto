@@ -1,0 +1,295 @@
+syntax = "proto3";
+
+package protocol;
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+
+// Status is a response status code, used universally across Gazette RPC APIs.
+enum Status {
+  OK = 0;
+  JOURNAL_EXISTS = 1;
+  JOURNAL_NOT_FOUND = 2;
+
+  NO_JOURNAL_PRIMARY_BROKER = 3;
+  NOT_JOURNAL_PRIMARY_BROKER = 4;
+
+  NO_JOURNAL_BROKERS = 5;
+  NOT_JOURNAL_BROKER = 6;
+
+  OFFSET_NOT_YET_AVAILABLE = 7;
+  REPLICATION_FAILED = 8;
+
+  WRONG_ROUTE = 9;
+  WRONG_WRITE_HEAD = 10;
+}
+
+// StatusResponse is an RPC response representing a Status.
+message StatusResponse {
+  Status status = 1;
+}
+
+// CompressionCode defines codecs known to Gazette.
+enum CompressionCodec {
+  NONE = 0;
+  GZIP = 1;
+  ZSTANDARD = 2;
+  SNAPPY = 3;
+
+  // CONTENT_ENCODING is not itself a CompressionCodec, but instead conveys
+  // that the actual codec is stored under the Content-Encoding header of
+  // the Fragment within the backing store.
+  //
+  // Deprecated. Going forward, we prefer to use explicit codec extensions.
+  CONTENT_ENCODING = 4;
+}
+
+// Label defines a key & value pair which can be attached to entities like
+// JournalSpecs and BrokerSpecs. Labels may be used to provide identifying
+// attributes which do not directly imply semantics to the core system, but
+// are meaningful to users or for higher-level Gazette tools. For example,
+// topics of JournalSpecs are represented as the well-known label "topic".
+message Label {
+  option (gogoproto.goproto_unrecognized) = false;
+  string name = 1;
+  string value = 2;
+}
+
+// LabelSet is a collection of labels and their values.
+message LabelSet {
+  // Labels of the set. Instances must be unique and in sorted order.
+  repeated Label labels = 1 [(gogoproto.nullable) = false];
+}
+
+// LabelSelector defines a filter over LabelSets.
+message LabelSelector {
+  // Include is Labels which must be matched for a LabelSet to be selected. If
+  // empty, all Labels are included. Use of the special value "*" in the
+  // LabelSelector matches the Label with any value.
+  LabelSet include = 1 [(gogoproto.nullable) = false];
+  // Exclude is Labels which cannot be matched for a LabelSet to be selected. If
+  // empty, no Labels are excluded. Use of the special Label value "*" in the
+  // LabelSelector excludes the Label with any value.
+  LabelSet exclude = 2 [(gogoproto.nullable) = false];
+}
+
+// JournalSpec describes a Journal and its configuration.
+message JournalSpec {
+  // Name of the Journal.
+  string name = 1 [(gogoproto.casttype) = "Journal"];
+
+  // Desired replication of this Journal. This defines the Journal's tolerance
+  // to broker failures before data loss can occur (eg, a replication factor
+  // of three means two failures are tolerated).
+  int32 replication = 2;
+
+  // Storage backend base path for this Journal's Fragments. Must be in URL
+  // form, with the choice of backend defined by the scheme. The full path of
+  // a Journal's Fragment is derived by joining the fragment_store path with
+  // the Fragment's ContentPath. Eg, given a fragment_store of
+  // "s3://My-AWS-bucket/a/prefix" and a JournalSpec of name "my/journal",
+  // a complete Fragment path might be:
+  //   "s3://My-AWS-bucket/a/prefix/my/journal/000123-000456-789abcdef.gzip
+  //
+  // Multiple fragment_stores may be specified, in which case the Journal's
+  // Fragments are the union of all Fragments present across all stores, and
+  // newly Fragments always persist to the first specified store. This can be
+  // helpful in performing incremental migrations, where new Journal content is
+  // written to the new store, while content in the old store remains available
+  // (and, depending on fragment_retention or recovery log pruning, may
+  // eventually be removed).
+  //
+  // If no fragment_stores are specified, the Journal is still useable but will
+  // not persist Fragments to any a backing fragment store. This allows for
+  // real-time streaming use cases where reads of historical data are not needed.
+  repeated string fragment_stores = 3;
+
+  // Interval of time between refreshes of remote Fragment listings from
+  // configured fragment_stores.
+  google.protobuf.Duration fragment_store_refresh_interval = 4 [(gogoproto.stdduration) = true, (gogoproto.nullable) = false];
+
+  // Target content length of each Fragment. In normal operation after Fragments
+  // reach at least this length, they will be closed and new ones begun. Note
+  // lengths may be smaller at times (eg, due to changes in Journal routing
+  // topology). Content length differs from Fragment file size, in that the
+  // former reflects uncompressed bytes.
+  int64 fragment_length = 5;
+
+  // Retention duration for historical Fragments of this Journal within the Fragment store.
+  google.protobuf.Duration fragment_retention = 6 [(gogoproto.stdduration) = true, (gogoproto.nullable) = false];
+
+  // Target size of write transactions.
+  int64 transaction_size = 7;
+
+  // If true, this Journal will not accept Append requests.
+  bool read_only = 8;
+
+  // Codec used to compress Journal Fragments.
+  CompressionCodec compression_codec = 9;
+
+  // User-defined Labels of this JournalSpec.
+  LabelSet labels = 10 [(gogoproto.nullable) = false];
+}
+
+// BrokerSpec describes a Gazette broker and its configuration.
+message BrokerSpec {
+  message ID {
+    // "Zone" in which the Broker is running. Zones may be AWS, Azure, or Google
+    // Cloud Platform zone identifiers, or rack locations within a colo, or
+    // given some other custom meaning. Gazette will replicate every Journal
+    // across multiple zones, and seeks to minimize traffic which must cross zones
+    // (for example, by proxying reads to a broker in the current zone).
+    string zone = 1;
+    // Unique suffix of the broker within |zone|.
+    string suffix = 2;
+  }
+  ID id = 1 [(gogoproto.nullable) = false];
+  // Advertised URL of the Broker.
+  string endpoint = 2;
+  // Maximum number of assigned Journal replicas.
+  int32 journal_limit = 3;
+}
+
+message Fragment {
+  // Journal of the Fragment.
+  string journal = 1 [(gogoproto.casttype) = "Journal"];
+  // Begin (inclusive) and end (exclusive) offset of the Fragment within the Journal.
+  int64 begin = 2;
+  int64 end = 3;
+  // SHA1 sum of the Fragment's content.
+  SHA1Sum sum = 4 [(gogoproto.nullable) = false];
+  // Codec with which the Fragment's content is compressed.
+  CompressionCodec compression_codec = 5;
+  // Fragment store which backs the Fragment. Empty if the Fragment has yet to
+  // be persisted and is still local to a Broker.
+  string backing_store = 6;
+  // Modification timestamp of the Fragment within the backing store.
+  google.protobuf.Timestamp mod_time = 7 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
+}
+
+// SHA1Sum is a 160-bit SHA1 digest.
+message SHA1Sum {
+  option (gogoproto.goproto_unrecognized) = false;
+  option (gogoproto.equal) = true;
+
+  fixed64 part1 = 1;
+  fixed64 part2 = 2;
+  fixed32 part3 = 3;
+}
+
+message ReadRequest {
+  // Journal to be read.
+  string journal = 1 [(gogoproto.casttype) = "Journal"];
+  // Desired offset to begin reading from. Value -1 has special handling, where
+  // the read is performed from the current write head. All other positive
+  // values specify a desired exact byte offset to read from. If the offset is
+  // not available (eg, because it represents a portion of Journal which has
+  // been permantently deleted), the broker will return the next available
+  // offset. Callers should therefore always inspect the ReadResponse offset.
+  int64 offset = 2;
+  // Whether the operation should block until content becomes available.
+  // OFFSET_NOT_YET_AVAILABLE is returned if a non-blocking read has no ready content.
+  bool block = 3;
+  // If do_not_proxy is true, the broker will not proxy the read to another
+  // broker, or open and proxy a remote Fragment on the client's behalf.
+  bool do_not_proxy = 4;
+  // If metadata_only is true, the broker will respond with Journal and
+  // Fragment metadata but not content.
+  bool metadata_only = 5;
+}
+
+message ReadResponse {
+  Status status = 1;
+  // The effective offset of the read. See ReadRequest offset.
+  int64 offset = 2;
+  // The offset to next be written, by the next append transaction served by
+  // broker. In other words, the last offset through which content is
+  // available to be read from the Journal.
+  int64 write_head = 3;
+  // The route of responsible brokers for the current Journal.
+  Route route = 4;
+  // Fragment to which the offset was mapped.
+  Fragment fragment = 5;
+  // If Fragment is remote, a URL from which it may be directly read.
+  string fragment_url = 6;
+  // Content of the read.
+  bytes content = 7;
+}
+
+message AppendRequest {
+  // Journal to be appended to.
+  string journal = 1 [(gogoproto.casttype) = "Journal"];
+  // Content to be appended.
+  bytes content = 5;
+}
+
+message AppendResponse {
+  Status status = 1;
+  // The route of responsible brokers for the current Journal.
+  Route route = 2;
+  // On Status OK, the [first_offset, last_offset) byte range at which the
+  //Append was committed to the log.
+  int64 first_offset = 3;
+  int64 last_offset = 4;
+  // On Status OK, the write_head at the time of the Append request completion.
+  // This may be equal to or larger than last_offset, as multiple Appends may
+  // have been coalesced within a single replicated transaction.
+  int64 write_head = 5;
+}
+
+message ReplicateRequest {
+  // Journal to be replicated to.
+  string journal = 1 [(gogoproto.casttype) = "Journal"];
+  // Next offset to be written within the Journal. next_offset is independently
+  // verified by each Journal replica.
+  int64 next_offset = 2;
+  // Route of the transaction, also known and verified by all replicas.
+  Route route = 3;
+  // Content to be replicated. Present on ReplicateRequest messages after
+  // the first (and after a Status_OK ReplicateResponse has been sent).
+  // Empty content signals that the transaction has completed.
+  bytes content = 4;
+  // Bytes to be comitted. Pair with an empty |content| field.
+  int64 commit = 5;
+}
+
+message ReplicateResponse {
+  Status status = 1;
+  // If status is WRONG_WRITE_HEAD, then |write_head| is the replica's
+  // own, strictly greater write head.
+  int64 write_head = 2;
+  // If status is WRONG_ROUTE_TOKEN, then |route| is the replica's Route
+  // which was found to be inconsistent with the request Route.
+  Route route = 3;
+}
+
+// Route captures the current topology of a Journal and the brokers serving it.
+message Route {
+  option (gogoproto.goproto_unrecognized) = false;
+
+  // Brokers of the Route, ordered on ascending BrokerSpec (zone, name).
+  // Note that only a Route-relevant subset of the spec is populated
+  // (specifically name, zone, & endpoint).
+  repeated BrokerSpec brokers = 1 [(gogoproto.nullable) = false];
+  // Index of the BrokerSpec serving as primary within |brokers|,
+  // or -1 of no broker is currently primary.
+  int32 primary = 2;
+}
+
+service Broker {
+  rpc Read(ReadRequest) returns (stream ReadResponse);
+  rpc Append(stream AppendRequest) returns (AppendResponse);
+  rpc Replicate(stream ReplicateRequest) returns (stream ReplicateResponse);
+}
+
+// Consumer service provides basic APIs supported by all Gazette Consumers.
+service Journals {
+  rpc CreateJournal(JournalSpec) returns (StatusResponse);
+  rpc GetJournals(LabelSelector) returns (stream JournalSpec);
+}
+

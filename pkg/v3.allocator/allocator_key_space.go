@@ -157,6 +157,26 @@ func AssignmentKey(ks *keyspace.KeySpace, a Assignment) string {
 	return ItemAssignmentsPrefix(ks, a.ItemID) + a.MemberZone + "|" + a.MemberSuffix + "|" + strconv.Itoa(a.Slot)
 }
 
+// LookupMember returns the identified Member, or false if not found.
+// The KeySpace must already be locked.
+func LookupMember(ks *keyspace.KeySpace, zone, suffix string) (Member, bool) {
+	if ind, found := ks.KeyValues.Search(MemberKey(ks, zone, suffix)); found {
+		return memberAt(ks.KeyValues, ind), true
+	} else {
+		return Member{}, false
+	}
+}
+
+// LookupItem returns the identified Item, or false if not found.
+// The KeySpace must already be locked.
+func LookupItem(ks *keyspace.KeySpace, id string) (Item, bool) {
+	if ind, found := ks.KeyValues.Search(ItemKey(ks, id)); found {
+		return itemAt(ks.KeyValues, ind), true
+	} else {
+		return Item{}, false
+	}
+}
+
 func memberAt(kv keyspace.KeyValues, i int) Member         { return kv[i].Decoded.(Member) }
 func itemAt(kv keyspace.KeyValues, i int) Item             { return kv[i].Decoded.(Item) }
 func assignmentAt(kv keyspace.KeyValues, i int) Assignment { return kv[i].Decoded.(Assignment) }

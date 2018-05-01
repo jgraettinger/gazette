@@ -42,8 +42,8 @@ func Initialize() {
 	var metricsPath = envflagfactory.NewMetricsPath()
 
 	initFlags()
-	initLog(*logLevel)
-	initMetrics(*metricsPort, *metricsPath)
+	InitLog(*logLevel)
+	InitMetrics(*metricsPort, *metricsPath)
 	RegisterSignalHandlers()
 }
 
@@ -55,8 +55,8 @@ func initFlags() {
 	flag.Parse()
 }
 
-// initLog configures the logger.
-func initLog(level string) {
+// InitLog configures the logger.
+func InitLog(level string) {
 	log.SetFormatter(&log.JSONFormatter{})
 	if lvl, err := log.ParseLevel(level); err != nil {
 		log.WithField("err", err).Fatal("unrecognized log level")
@@ -66,8 +66,8 @@ func initLog(level string) {
 	}
 }
 
-// initMetrics enables serving of metrics over the given port and path.
-func initMetrics(port, path string) {
+// InitMetrics enables serving of metrics over the given port and path.
+func InitMetrics(port, path string) {
 	http.Handle(path, promhttp.Handler())
 	go http.ListenAndServe(port, nil)
 }

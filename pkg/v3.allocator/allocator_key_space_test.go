@@ -54,6 +54,37 @@ func (s *AllocKeySpaceSuite) TestAllocKeySpaceDecoding(c *gc.C) {
 	}
 }
 
+func (s *AllocKeySpaceSuite) TestItemAssignments(c *gc.C) {
+	var client = etcdCluster.RandClient()
+	var ctx = context.Background()
+	buildAllocKeySpaceFixture(c, ctx, client)
+
+	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
+	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
+
+	var expect = []struct{ a, m int }{
+		{0, 9},  // /root/assign/item-1|us-east|foo|1
+		{1, 10}, // /root/assign/item-1|us-west|baz|0
+	}
+	ItemAssignments(ks, "item-1", func(a Assignment, m Member) {
+		c.Check(a, gc.DeepEquals, assignmentAt(ks.KeyValues, expect[0].a))
+		c.Check(m, gc.DeepEquals, memberAt(ks.KeyValues, expect[0].m))
+		expect = expect[1:]
+	})
+	c.Check(expect, gc.HasLen, 0)
+
+	expect = []struct{ a, m int }{
+		{4, 8},  // /root/assign/item-two|us-east|bar|0
+		{5, 10}, // /root/assign/item-two|us-west|baz|1
+	}
+	ItemAssignments(ks, "item-two", func(a Assignment, m Member) {
+		c.Check(a, gc.DeepEquals, assignmentAt(ks.KeyValues, expect[0].a))
+		c.Check(m, gc.DeepEquals, memberAt(ks.KeyValues, expect[0].m))
+		expect = expect[1:]
+	})
+	c.Check(expect, gc.HasLen, 0)
+}
+
 func (s *AllocKeySpaceSuite) TestAssignmentCompare(c *gc.C) {
 	var client = etcdCluster.RandClient()
 	var ctx = context.Background()

@@ -1,4 +1,4 @@
-package journal
+package fragment
 
 import (
 	"bytes"
@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	gc "github.com/go-check/check"
+
+	"github.com/LiveRamp/gazette/pkg/fragment"
+	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type SpoolSuite struct {
@@ -27,11 +30,11 @@ func (s *SpoolSuite) TearDownTest(c *gc.C) {
 }
 
 func (s *SpoolSuite) TestMultipleWriteAndCommitFixture(c *gc.C) {
-	spool, err := NewSpool(s.localDir, Mark{"journal/name", 12345})
+	var spool, err = newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
 
-	path1 := filepath.Join(s.localDir, "journal/name/"+
-		"0000000000003039-0000000000003039-0000000000000000000000000000000000000000")
+	var path1 = filepath.Join(s.localDir, "journal/name/"+
+		"0000000000003039-0000000000003039-0000000000000000000000000000000000000000.raw")
 
 	_, err = os.Stat(path1)
 	c.Check(err, gc.IsNil)
@@ -48,50 +51,47 @@ func (s *SpoolSuite) TestMultipleWriteAndCommitFixture(c *gc.C) {
 
 	// Commit a partial portion of the two writes. Offsets and checksum
 	// should reflect just the committed portion.
-	c.Check(spool.Commit(20), gc.IsNil)
+	c.Check(spool.commit(20), gc.IsNil)
 	c.Check(spool.End, gc.Equals, int64(12345+20))
 	c.Check(spool.delta, gc.Equals, int64(0))
-	c.Check(spool.Sum, gc.DeepEquals, [...]byte{
-		0xe3, 0x8a, 0xf7, 0xda, 0x34, 0xa3, 0x3b, 0x5a, 0x88, 0x2d,
-		0x9c, 0xcd, 0x2a, 0xca, 0x4c, 0x7f, 0xca, 0x15, 0x3b, 0x41})
+	c.Check(spool.Sum, gc.DeepEquals, pb.SHA1Sum{
+		Part1: 0xe38af7da34a33b5a, Part2: 0x882d9ccd2aca4c7f, Part3: 0xca153b41})
 
-	path2 := filepath.Join(s.localDir, "journal/name/"+
-		"0000000000003039-000000000000304d-e38af7da34a33b5a882d9ccd2aca4c7fca153b41")
-	c.Check(spool.LocalPath(), gc.Equals, path2)
+	var path2 = filepath.Join(s.localDir, "journal/name/"+
+		"0000000000003039-000000000000304d-e38af7da34a33b5a882d9ccd2aca4c7fca153b41.raw")
+	c.Check(spool.localPath(), gc.Equals, path2)
 
 	_, err = os.Stat(path1)
 	c.Check(os.IsNotExist(err), gc.Equals, true)
 	_, err = os.Stat(path2)
 	c.Check(err, gc.IsNil)
 
-	// A write which is fully aborted.
+	// A Write which is fully aborted.
 	n, err = spool.Write([]byte("WHOOPS"))
 	c.Check(err, gc.IsNil)
 	c.Check(n, gc.Equals, 6)
 	c.Check(spool.delta, gc.Equals, int64(6))
 
 	// Verify the end and checksum are unchanged after abort.
-	c.Check(spool.Commit(0), gc.IsNil)
+	c.Check(spool.commit(0), gc.IsNil)
 	c.Check(spool.End, gc.Equals, int64(12345+20))
 	c.Check(spool.delta, gc.Equals, int64(0))
-	c.Check(spool.Sum, gc.DeepEquals, [...]byte{
-		0xe3, 0x8a, 0xf7, 0xda, 0x34, 0xa3, 0x3b, 0x5a, 0x88, 0x2d,
-		0x9c, 0xcd, 0x2a, 0xca, 0x4c, 0x7f, 0xca, 0x15, 0x3b, 0x41})
+	c.Check(spool.Sum, gc.DeepEquals, pb.SHA1Sum{
+		Part1: 0xe38af7da34a33b5a, Part2: 0x882d9ccd2aca4c7f, Part3: 0xca153b41})
 
-	// A final write and commit. Verify it starts at the previous commit end.
+	// A final Write and nCommit. Verify it starts at the previous nCommit end.
 	_, err = spool.Write([]byte("a final write"))
 	c.Check(err, gc.IsNil)
 	c.Check(spool.delta, gc.Equals, int64(13))
 
-	c.Check(spool.Commit(13), gc.IsNil)
+	c.Check(spool.commit(13), gc.IsNil)
 	c.Check(spool.End, gc.Equals, int64(12345+20+13))
-	c.Check(spool.Sum, gc.DeepEquals, [...]byte{
-		0x3, 0x3c, 0xcc, 0x6d, 0x15, 0xaa, 0x33, 0x32, 0x24, 0xec,
-		0x96, 0x53, 0x37, 0xba, 0x2c, 0xf2, 0x32, 0x9b, 0x91, 0x42})
+	c.Check(spool.Sum, gc.DeepEquals, pb.SHA1Sum{
+		Part1: 0x033ccc6d15aa3332, Part2: 0x24ec965337ba2cf2, Part3: 0x329b9142})
 
-	path3 := filepath.Join(s.localDir, "journal/name/"+
-		"0000000000003039-000000000000305a-033ccc6d15aa333224ec965337ba2cf2329b9142")
-	c.Check(spool.LocalPath(), gc.Equals, path3)
+	var path3 = filepath.Join(s.localDir, "journal/name/"+
+		"0000000000003039-000000000000305a-033ccc6d15aa333224ec965337ba2cf2329b9142.raw")
+	c.Check(spool.localPath(), gc.Equals, path3)
 
 	_, err = os.Stat(path1)
 	c.Check(os.IsNotExist(err), gc.Equals, true)
@@ -105,23 +105,23 @@ func (s *SpoolSuite) TestMultipleWriteAndCommitFixture(c *gc.C) {
 }
 
 func (s *SpoolSuite) TestFixtureChecksumEquivalence(c *gc.C) {
-	spool, err := NewSpool(s.localDir, Mark{"journal/name", 12345})
+	spool, err := newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
 
-	// Write equivalent data to TestCommitFlow in a single write and transaction.
+	// Write equivalent data to TestCommitFlow in a single Write and transaction.
 	// Verify the same resulting checksum and sizes as that test.
 	n, err := spool.Write([]byte("an initial writeanota final write"))
 	c.Check(err, gc.IsNil)
 	c.Check(n, gc.Equals, 33)
-	c.Check(spool.Commit(33), gc.IsNil)
+	c.Check(spool.commit(33), gc.IsNil)
 
 	path := filepath.Join(s.localDir, "journal", "name",
-		"0000000000003039-000000000000305a-033ccc6d15aa333224ec965337ba2cf2329b9142")
-	c.Check(spool.LocalPath(), gc.Equals, path)
+		"0000000000003039-000000000000305a-033ccc6d15aa333224ec965337ba2cf2329b9142.raw")
+	c.Check(spool.localPath(), gc.Equals, path)
 }
 
 func (s *SpoolSuite) TestWriteAndCommitSequence(c *gc.C) {
-	spool, err := NewSpool(s.localDir, Mark{"journal/name", 12345})
+	spool, err := newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
 
 	var expect bytes.Buffer
@@ -133,21 +133,21 @@ func (s *SpoolSuite) TestWriteAndCommitSequence(c *gc.C) {
 		c.Check(n, gc.Equals, i+10)
 
 		expect.Write(buffer[:i])
-		c.Check(spool.Commit(int64(i)), gc.Equals, nil)
+		c.Check(spool.commit(int64(i)), gc.Equals, nil)
 	}
 
 	var actual bytes.Buffer
-	r, _ := spool.ReaderFromOffset(spool.Begin, nil)
+	var r = fragment.FileReaderFromOffset(spool.Fragment, spool.Begin)
 	io.Copy(&actual, r)
 	c.Check(actual.Bytes(), gc.DeepEquals, expect.Bytes())
 }
 
 func (s *SpoolSuite) TestWriteErrorHandling(c *gc.C) {
-	spool, err := NewSpool(s.localDir, Mark{"journal/name", 12345})
+	var spool, err = newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
 
-	spool.Write([]byte("initial commit"))
-	c.Check(spool.Commit(14), gc.IsNil)
+	spool.Write([]byte("initial nCommit"))
+	c.Check(spool.commit(14), gc.IsNil)
 	contentPath := spool.ContentPath()
 
 	spool.Write([]byte("first write"))
@@ -158,26 +158,26 @@ func (s *SpoolSuite) TestWriteErrorHandling(c *gc.C) {
 	c.Check(n, gc.Equals, 0)
 	c.Check(err, gc.Equals, spool.err)
 
-	// |err| continues to be returned by |Write| and |Commit|
+	// |err| continues to be returned by |Write| and |nCommit|
 	_, err = spool.Write([]byte("another failed write"))
 	c.Check(err, gc.Equals, spool.err)
-	c.Check(spool.Commit(5), gc.Equals, spool.err)
+	c.Check(spool.commit(5), gc.Equals, spool.err)
 
 	c.Check(spool.ContentPath(), gc.Equals, contentPath) // No change.
 }
 
 func (s *SpoolSuite) TestCommitErrorHandling(c *gc.C) {
-	spool, err := NewSpool(s.localDir, Mark{"journal/name", 12345})
+	var spool, err = newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
 
-	spool.Write([]byte("initial commit"))
-	c.Check(spool.Commit(14), gc.IsNil)
+	spool.Write([]byte("initial nCommit"))
+	c.Check(spool.commit(14), gc.IsNil)
 	contentPath := spool.ContentPath()
 
 	spool.Write([]byte("first write"))
 	spool.File.Close() // Close out from under, such that writes fail.
 
-	err = spool.Commit(5)
+	err = spool.commit(5)
 	c.Check(err, gc.Not(gc.IsNil))
 	c.Check(err, gc.Equals, spool.err)
 

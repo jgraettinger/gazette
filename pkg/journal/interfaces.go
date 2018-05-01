@@ -4,6 +4,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 //go:generate mockery -inpkg -name=Doer
@@ -16,11 +18,9 @@ import (
 // slash notation which captures their hierarchical relationships into
 // organizations, topics and partitions. For example, a complete Name might be:
 // "company-journals/interesting-topic/part-1234"
-type Name string
-
-func (n Name) String() string {
-	return string(n)
-}
+//
+// Deprecated. Use protocol.Journal instead.
+type Name = protocol.Journal
 
 // A Mark references a specific |Offset| within a |Journal|.
 type Mark struct {
