@@ -5,6 +5,7 @@ import (
 	"path"
 
 	"github.com/LiveRamp/gazette/pkg/keyspace"
+	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 // Journal uniquely identifies a journal brokered by Gazette.
@@ -14,7 +15,9 @@ import (
 // "company-journals/interesting-topic/part-1234"
 type Journal string
 
-// Validate returns an error if the Journal is not well-formed.
+// Validate returns an error if the Journal is not well-formed. It must be of
+// the base64 alphabet, a clean path (as defined by path.Clean), and must not
+// begin with a '/'.
 func (n Journal) Validate() error {
 	if err := validateB64Str(n.String(), minJournalNameLen, maxJournalNameLen); err != nil {
 		return err
@@ -26,6 +29,7 @@ func (n Journal) Validate() error {
 	return nil
 }
 
+// String returns the Journal as a string.
 func (n Journal) String() string { return string(n) }
 
 // Validate returns an error if the JournalSpec is not well-formed.
@@ -53,12 +57,29 @@ func (m *JournalSpec) Validate() error {
 	return nil
 }
 
+// MarshalString returns the marshaled encoding of the JournalSpec as a string.
+func (m *JournalSpec) MarshalString() string {
+	var d, err = m.Marshal()
+	if err != nil {
+		panic(err.Error()) // Cannot happen, as we use no custom marshalling.
+	}
+	return string(d)
+}
+
 // v3_allocator.ItemValue implementation.
 func (m *JournalSpec) DesiredReplication() int { return int(m.Replication) }
 
 // IsConsistent returns true if all |assignments| agree on the current Route.
+// |assignments| must not be empty or IsConsistent panics.
 func (m *JournalSpec) IsConsistent(_ keyspace.KeyValue, assignments keyspace.KeyValues) bool {
-	// TODO(johnny).
+	var r1 = assignments[0].Decoded.(v3_allocator.Assignment).AssignmentValue.(*Route)
+
+	for _, a := range assignments[1:] {
+		var r2 = a.Decoded.(v3_allocator.Assignment).AssignmentValue.(*Route)
+		if !r1.Equivalent(r2) {
+			return false
+		}
+	}
 	return true
 }
 

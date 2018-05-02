@@ -29,6 +29,15 @@ func (m *BrokerSpec) Validate() error {
 	return nil
 }
 
+// MarshalString returns the marshaled encoding of the JournalSpec as a string.
+func (m *BrokerSpec) MarshalString() string {
+	var d, err = m.Marshal()
+	if err != nil {
+		panic(err.Error()) // Cannot happen, as we use no custom marshalling.
+	}
+	return string(d)
+}
+
 // v3_allocator.MemberValue implementation.
 func (m *BrokerSpec) ItemLimit() int { return int(m.JournalLimit) }
 

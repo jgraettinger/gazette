@@ -28,7 +28,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	// Expect that local member state was extracted.
 	c.Check(state.localKey, gc.Equals, "/root/members/us-west|baz")
 	c.Check(state.localMemberInd, gc.Equals, 2)
-	c.Check(state.localAssignments, gc.DeepEquals, []LocalAssignment{
+	c.Check(state.localItems, gc.DeepEquals, []LocalItem{
 		// /root/assign/item-1/us-west/baz/0
 		{Item: itemAt(state.items, 0), Assignments: state.assignments[0:2], Index: 1},
 		// /root/assign/item-two/us-west/baz/1
@@ -42,7 +42,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 
 	c.Check(state.localKey, gc.Equals, "/root/members/us-east|bar")
 	c.Check(state.localMemberInd, gc.Equals, 0)
-	c.Check(state.localAssignments, gc.DeepEquals, []LocalAssignment{
+	c.Check(state.localItems, gc.DeepEquals, []LocalItem{
 		// /root/assign/item-two/us-east/bar/0
 		{Item: itemAt(state.items, 1), Assignments: state.assignments[3:6], Index: 1},
 	})
@@ -53,7 +53,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 
 	c.Check(state.localKey, gc.Equals, "/root/members/us-east|foo")
 	c.Check(state.localMemberInd, gc.Equals, 1)
-	c.Check(state.localAssignments, gc.DeepEquals, []LocalAssignment{
+	c.Check(state.localItems, gc.DeepEquals, []LocalItem{
 		// /root/assign/item-1/us-east/foo/1
 		{Item: itemAt(state.items, 0), Assignments: state.assignments[0:2], Index: 0},
 	})

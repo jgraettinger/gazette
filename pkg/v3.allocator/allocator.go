@@ -26,9 +26,9 @@ import (
 // under an Etcd Allocator KeySpace, across a number of Members, also
 // captured within that KeySpace.
 type Allocator struct {
-	KeySpace                 *keyspace.KeySpace
-	LocalKey                 string // Unique MemberKey of this Allocator instance.
-	LocalAssignmentsCallback        // Callback invoked with local Assignments.
+	KeySpace           *keyspace.KeySpace
+	LocalKey           string // Unique MemberKey of this Allocator instance.
+	LocalItemsCallback        // Callback invoked with local Assignments.
 
 	// testHook is an optional testing hook, invoked after each convergence round.
 	testHook func(round int, isIdle bool)
@@ -90,7 +90,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 			}
 
 			var revision = a.KeySpace.Header.Revision
-			a.LocalAssignmentsCallback(as.localAssignments)
+			a.LocalItemsCallback(as.localItems)
 
 			// TODO(johnny): Remove when the Allocator is further along in integration testing.
 			as.debugLog()

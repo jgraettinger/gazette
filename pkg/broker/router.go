@@ -207,20 +207,20 @@ func (b *broker) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool)
 	return
 }
 
-// UpdateLocalAssignments is an instance of v3_allocator.LocalAssignmentsCallback.
+// UpdateLocalItems is an instance of v3_allocator.LocalItemsCallback.
 // It expects that KeySpace is already read-locked.
-func (b *broker) UpdateLocalAssignments(assignments []v3_allocator.LocalAssignment) {
+func (b *broker) UpdateLocalItems(items []v3_allocator.LocalItem) {
 	b.journalsMu.RLock()
 	var prev = b.journals
 	b.journalsMu.RUnlock()
 
-	var next = make(map[pb.Journal]*journal, len(assignments))
-
-	// Walk |assignments| and create or transition journals as required to match.
+	var next = make(map[pb.Journal]*journal, len(items))
 	var route pb.Route
-	for _, la := range assignments {
+
+	// Walk |items| and create or transition journals as required to match.
+	for _, la := range items {
 		var spec = la.ItemValue.(*pb.JournalSpec)
-		var assignment = la.Assignments[la.Index].Decoded.(v3_allocator.Assignment)
+		var assignment = la.Assignments[la.Index]
 		route.Init(la.Assignments)
 
 		var j, ok = prev[spec.Name]
@@ -230,9 +230,9 @@ func (b *broker) UpdateLocalAssignments(assignments []v3_allocator.LocalAssignme
 		}
 
 		// Transition the journal if the JournalSpec, Route, or local Assignment
-		// Slot have changed. Note KeySpace builds a new JournalSpec instance with
+		// have changed. Note KeySpace builds a new JournalSpec instance with
 		// each change, so testing pointer equality is sufficient.
-		if j.spec != spec || j.route.Equivalent(&route) || j.slot != assignment.Slot {
+		if j.spec != spec || !j.route.Equivalent(&route) || j.assignment.Raw.ModRevision != assignment.Raw.ModRevision {
 			route.AttachEndpoints(b.ks)
 
 			var transition = new(journal)
@@ -240,7 +240,7 @@ func (b *broker) UpdateLocalAssignments(assignments []v3_allocator.LocalAssignme
 
 			transition.spec = spec
 			transition.route = route
-			transition.slot = assignment.Slot
+			transition.assignment = assignment
 
 			j = transition
 		}
@@ -251,7 +251,7 @@ func (b *broker) UpdateLocalAssignments(assignments []v3_allocator.LocalAssignme
 	b.journals = next
 	b.journalsMu.Unlock()
 
-	// Cancel any prior journals not included in |assignments|.
+	// Cancel any prior journals not included in |items|.
 	for name, journal := range prev {
 		if _, ok := next[name]; !ok {
 			journal.cancel()

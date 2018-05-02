@@ -21,9 +21,9 @@ type allocState struct {
 	items       keyspace.KeyValues
 	assignments keyspace.KeyValues
 
-	localKey         string            // Unique key of this allocator instance.
-	localMemberInd   int               // Index of |localKey| within |members|.
-	localAssignments []LocalAssignment // Assignments of this instance.
+	localKey       string      // Unique key of this allocator instance.
+	localMemberInd int         // Index of |localKey| within |members|.
+	localItems     []LocalItem // Assignments of this instance.
 
 	zones       []string // Sorted and unique zones of |members|.
 	memberSlots int      // Total number of item slots summed across all |members|.
@@ -100,7 +100,7 @@ func newAllocState(ks *keyspace.KeySpace, localKey string) (*allocState, error) 
 			var key = MemberKey(ks, a.MemberZone, a.MemberSuffix)
 
 			if key == localKey {
-				s.localAssignments = append(s.localAssignments, LocalAssignment{
+				s.localItems = append(s.localItems, LocalItem{
 					Item:        item,
 					Assignments: s.assignments[cur.rightBegin:cur.rightEnd],
 					Index:       r - cur.rightBegin,
@@ -120,7 +120,7 @@ func newAllocState(ks *keyspace.KeySpace, localKey string) (*allocState, error) 
 // shouldExit returns true iff the termination condition is met: our local
 // Member ItemLimit is zero, and no local Assignments remain.
 func (s *allocState) shouldExit() bool {
-	return memberAt(s.members, s.localMemberInd).ItemLimit() == 0 && len(s.localAssignments) == 0
+	return memberAt(s.members, s.localMemberInd).ItemLimit() == 0 && len(s.localItems) == 0
 }
 
 // isLeader returns true iff the local Member key has the earliest
@@ -137,22 +137,22 @@ func (s *allocState) isLeader() bool {
 
 func (s *allocState) debugLog() {
 	var la []string
-	for _, a := range s.localAssignments {
+	for _, a := range s.localItems {
 		la = append(la, string(a.Assignments[a.Index].Raw.Key))
 	}
 
 	log.WithFields(log.Fields{
-		"assignments":      len(s.assignments),
-		"itemSlots":        s.itemSlots,
-		"items":            len(s.items),
-		"localAssignments": la,
-		"localKey":         s.localKey,
-		"localMemberInd":   s.localMemberInd,
-		"memberSlots":      s.memberSlots,
-		"members":          len(s.members),
-		"networkHash":      s.networkHash,
-		"rev":              s.ks.Header.Revision,
-		"zones":            s.zones,
+		"assignments":    len(s.assignments),
+		"itemSlots":      s.itemSlots,
+		"items":          len(s.items),
+		"localItems":     la,
+		"localKey":       s.localKey,
+		"localMemberInd": s.localMemberInd,
+		"memberSlots":    s.memberSlots,
+		"members":        len(s.members),
+		"networkHash":    s.networkHash,
+		"rev":            s.ks.Header.Revision,
+		"zones":          s.zones,
 	}).Info("extracted allocState")
 }
 

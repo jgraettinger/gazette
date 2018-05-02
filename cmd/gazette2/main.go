@@ -140,11 +140,10 @@ func main() {
 		if err = spec.Validate(); err != nil {
 			log.WithField("err", err).Fatal("bad journal spec")
 		}
-		var specBytes, _ = spec.Marshal()
 
 		if _, err = etcdClient.Put(ctx,
 			v3_allocator.ItemKey(ks, spec.Name.String()),
-			string(specBytes),
+			spec.MarshalString(),
 		); err != nil {
 			log.WithField("err", err).Fatal("failed to write JournalSpec to etcd")
 		}
@@ -153,11 +152,9 @@ func main() {
 
 	// Advertise the configured BrokerSpec within Etcd, under our lease.
 	var advertiseSpec = func() {
-		var specBytes, _ = cfg.Spec.Marshal() // Cannot fail.
-
 		if _, err = etcdClient.Put(ctx,
 			localKey,
-			string(specBytes),
+			cfg.Spec.MarshalString(),
 			clientv3.WithLease(lease.ID),
 		); err != nil {
 			log.WithField("err", err).Fatal("failed to write BrokerSpec to etcd")
@@ -207,9 +204,9 @@ func main() {
 	}()
 
 	var alloc = v3_allocator.Allocator{
-		KeySpace:                 ks,
-		LocalKey:                 localKey,
-		LocalAssignmentsCallback: b.UpdateLocalAssignments,
+		KeySpace:           ks,
+		LocalKey:           localKey,
+		LocalItemsCallback: b.UpdateLocalItems,
 	}
 
 	if err = alloc.Serve(ctx, etcdClient); err != nil {

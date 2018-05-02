@@ -72,17 +72,17 @@ type Assignment struct {
 	AssignmentValue
 }
 
-// LocalAssignment represents an Assignment belonging to the local Allocator.
-type LocalAssignment struct {
+// LocalItem represents an Item which is assigned to the local Allocator.
+type LocalItem struct {
 	Item                           // Item which is locally Assigned.
 	Assignments keyspace.KeyValues // All Assignments of the Item.
 	Index       int                // The index of the local Assignment within |Assignments|.
 }
 
-// LocalAssignmentsCallback is periodically invoked by Allocator to inform
-// the local instance of its current Item Assignments. Note that
-// LocalAssignments must not be retained and referenced outside of this callback.
-type LocalAssignmentsCallback func([]LocalAssignment)
+// LocalItemsCallback is periodically invoked by Allocator to inform
+// the local instance of its current Item Assignments. Note that slice
+// []LocalItem must not be retained and referenced outside of this callback.
+type LocalItemsCallback func([]LocalItem)
 
 // NewAllocatorKeyValueDecoder returns a KeyValueDecoder utilizing the supplied
 // AllocatorDecoder, and suitable for use with NewKeySpace of the same |prefix|.

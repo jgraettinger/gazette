@@ -4,10 +4,18 @@ import (
 	"context"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
+	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
+	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-type journal struct {
+type replica struct {
+	journal keyspace.KeyValue
+	// Local assignment of |journal|, motivating this replica instance.
+	assignment keyspace.KeyValue
+	// Current broker routing topology of the journal.
+	route pb.Route
+
 	// The following fields are held constant over the lifetime of a journal:
 
 	// Context tied to processing lifetime of this journal by this broker.
@@ -25,25 +33,15 @@ type journal struct {
 	// and is used to gate Append requests (only) until the fragmentIndex
 	// has been initialized with remote listings.
 	initialLoadCh chan struct{}
-
-	// Remaining fields are constant over the lifetime of a specific journal
-	// instance, but may change as the journal instance is updated:
-
-	// Current specification of the journal.
-	spec *pb.JournalSpec
-	// Current broker routing topology of the journal.
-	route pb.Route
-	// Current Assignment slot of the journal to this broker.
-	slot int
 }
 
-func newJournal() *journal {
+func newReplica() *replica {
 	var ctx, cancel = context.WithCancel(context.Background())
 
 	var spoolCh = make(chan fragment.Spool, 1)
 	spoolCh <- fragment.Spool{}
 
-	return &journal{
+	return &replica{
 		ctx:           ctx,
 		cancel:        cancel,
 		index:         newFragmentIndex(ctx),
@@ -53,6 +51,11 @@ func newJournal() *journal {
 	}
 }
 
+// spec returns the replica's JournalSpec.
+func (r *replica) spec() *pb.JournalSpec {
+	return r.journal.Decoded.(v3_allocator.Item).ItemValue.(*pb.JournalSpec)
+}
+
 // prepareSpool readies Spool for it's next write, by:
 //  * Rolling the Spool forward if it's less than the maximum end offset
 //    of the fragment index (eg, of a discovered remote Fragment).
@@ -60,11 +63,11 @@ func newJournal() *journal {
 //  * If not already, opening the Spool.
 //  * If not already and the journal is primary, initializing the Spool for
 //    incremental compression.
-func prepareSpool(s *fragment.Spool, j *journal) error {
-	if eo := j.index.endOffset(); eo > s.Fragment.End {
-		s.Roll(j.spec, eo)
-	} else if s.Fragment.ContentLength() >= j.spec.FragmentLength {
-		s.Roll(j.spec, s.Fragment.End)
+func prepareSpool(s *fragment.Spool, r *replica) error {
+	if eo := r.index.endOffset(); eo > s.Fragment.End {
+		s.Roll(r.spec(), eo)
+	} else if s.Fragment.ContentLength() >= r.spec().FragmentLength {
+		s.Roll(r.spec(), s.Fragment.End)
 	}
 
 	if s.Fragment.File == nil {
@@ -78,7 +81,7 @@ func prepareSpool(s *fragment.Spool, j *journal) error {
 	// content as it arrives. Compression can be expensive, and compressing the
 	// Fragment as it's built effectively back-pressures the cost onto Journal
 	// writers, ensuring we don't accept writes faster than we can compress them.
-	if j.slot == 0 && s.CompressedFile == nil {
+	if r.slot == 0 && s.CompressedFile == nil {
 		if err := s.InitCompressor(); err != nil {
 			return err
 		}

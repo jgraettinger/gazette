@@ -286,10 +286,3 @@ service Broker {
   rpc Append(stream AppendRequest) returns (AppendResponse);
   rpc Replicate(stream ReplicateRequest) returns (stream ReplicateResponse);
 }
-
-// Consumer service provides basic APIs supported by all Gazette Consumers.
-service Journals {
-  rpc CreateJournal(JournalSpec) returns (StatusResponse);
-  rpc GetJournals(LabelSelector) returns (stream JournalSpec);
-}
-

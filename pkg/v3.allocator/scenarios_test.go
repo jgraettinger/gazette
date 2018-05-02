@@ -612,9 +612,9 @@ func serveUntilIdle(c *gc.C, ctx context.Context, client *clientv3.Client, ks *k
 
 	// Create and serve an Allocator which will |cancel| when it becomes idle.
 	var alloc = Allocator{
-		KeySpace:                 ks,
-		LocalKey:                 string(resp.Kvs[0].Key),
-		LocalAssignmentsCallback: func([]LocalAssignment) {}, // No-op.
+		KeySpace:           ks,
+		LocalKey:           string(resp.Kvs[0].Key),
+		LocalItemsCallback: func([]LocalItem) {}, // No-op.
 		testHook: func(round int, idle bool) {
 			if idle {
 				result = round // Preserve and return the round on which the Allocator became idle.
