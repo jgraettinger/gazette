@@ -24,10 +24,10 @@ import (
 type Arc struct {
 	// Capacity of the Arc in the flow network. Positive,
 	// however residual Arcs may have Capacity of zero.
-	Capacity int8
+	Capacity int32
 	// Output Flow of the Arc in the network. Zero or positive in Arcs with Capacity > 0,
 	// and zero or negative in their Capacity=0 residuals.
-	Flow int8
+	Flow int32
 	// Priority is the (descending) order in which Arcs should be selected for.
 	Priority int8
 	// Index of the reciprocal of this Arc, in |Target.Arcs|.
@@ -100,8 +100,8 @@ func discharge(node, sink *Node, active *heightHeap) {
 		if adj.Capacity-adj.Flow > 0 && node.Height > adj.Target.Height {
 			var delta = min(node.excess, uint32(adj.Capacity-adj.Flow))
 
-			node.Arcs[node.next].Flow += int8(delta)
-			adj.Target.Arcs[adj.reciprocal].Flow -= int8(delta)
+			node.Arcs[node.next].Flow += int32(delta)
+			adj.Target.Arcs[adj.reciprocal].Flow -= int32(delta)
 
 			node.excess -= delta
 			adj.Target.excess += delta
@@ -143,7 +143,7 @@ func InitNodes(nodes []Node, n int, height int) []Node {
 func AddArc(from, to *Node, capacity, priority int) {
 	var fromInd, toInd = len(from.Arcs), len(to.Arcs)
 
-	if capacity < 0 || capacity > math.MaxInt8 {
+	if capacity < 0 || capacity > math.MaxInt32 {
 		panic("invalid capacity")
 	}
 	if priority < 0 || priority > math.MaxInt8 {
@@ -151,7 +151,7 @@ func AddArc(from, to *Node, capacity, priority int) {
 	}
 
 	from.Arcs = append(from.Arcs, Arc{
-		Capacity:   int8(capacity),
+		Capacity:   int32(capacity),
 		Priority:   int8(priority),
 		reciprocal: uint32(toInd),
 		Target:     to,

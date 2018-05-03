@@ -12,7 +12,8 @@ import (
 
 // ContentName returns the content-addressed base file name of this Fragment.
 func (m *Fragment) ContentName() string {
-	return fmt.Sprintf("%016x-%016x-%x%s", m.Begin, m.End, m.Sum.ToDigest(), m.CompressionCodec.ToExtension())
+	return fmt.Sprintf("%016x-%016x-%x%s", m.Begin, m.End,
+		m.Sum.ToDigest(), m.CompressionCodec.ToExtension())
 }
 
 // ContentPath returns the content-addressed path of this Fragment.
@@ -83,6 +84,7 @@ func SHA1SumFromDigest(r []byte) SHA1Sum {
 	return m
 }
 
+// ToDigest converts the SHA1Sum to a flat, fixed-size array.
 func (m *SHA1Sum) ToDigest() (r [20]byte) {
 	binary.BigEndian.PutUint64(r[0:8], m.GetPart1())
 	binary.BigEndian.PutUint64(r[8:16], m.GetPart2())
@@ -108,6 +110,7 @@ func CompressionCodecFromExtension(ext string) (CompressionCodec, error) {
 	}
 }
 
+// Validate returns an error if the CompressionCodec is not well-formed.
 func (m CompressionCodec) Validate() error {
 	if _, ok := CompressionCodec_name[int32(m)]; !ok {
 		return NewValidationError("invalid value (%s)", m)
@@ -115,6 +118,7 @@ func (m CompressionCodec) Validate() error {
 	return nil
 }
 
+// ToExension returns the file extension of the CompressionCodec.
 func (m CompressionCodec) ToExtension() string {
 	switch m {
 	case CompressionCodec_CONTENT_ENCODING:

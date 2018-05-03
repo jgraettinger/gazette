@@ -20,6 +20,10 @@ func (s *FragmentSuite) TestContentName(c *gc.C) {
 	c.Check(f.ContentName(), gc.Equals,
 		"00000000499602d2-7fffffffffffffff-0102030405060708090a0b0c0d0e0f1011121314.gz")
 
+	f.CompressionCodec = CompressionCodec_SNAPPY
+	c.Check(f.ContentName(), gc.Equals,
+		"00000000499602d2-7fffffffffffffff-0102030405060708090a0b0c0d0e0f1011121314.sz")
+
 	f.CompressionCodec = CompressionCodec_CONTENT_ENCODING
 	c.Check(f.ContentName(), gc.Equals,
 		"00000000499602d2-7fffffffffffffff-0102030405060708090a0b0c0d0e0f1011121314")

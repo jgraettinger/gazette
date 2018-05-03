@@ -151,14 +151,14 @@ func verifyFlow(c *gc.C, from, to *Node, flow int) {
 
 	for _, a := range from.Arcs {
 		if a.Target == to {
-			c.Check(a.Flow, gc.Equals, int8(flow))
+			c.Check(a.Flow, gc.Equals, int32(flow))
 			foundFromTo = true
 			break
 		}
 	}
 	for _, a := range to.Arcs {
 		if a.Target == from {
-			c.Check(a.Flow, gc.Equals, int8(-flow))
+			c.Check(a.Flow, gc.Equals, int32(-flow))
 			foundToFrom = true
 			break
 		}

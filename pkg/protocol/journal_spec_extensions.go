@@ -1,8 +1,8 @@
 package protocol
 
 import (
-	"net/url"
 	"path"
+	"time"
 
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
@@ -39,19 +39,35 @@ func (m *JournalSpec) Validate() error {
 	} else if m.Replication < 1 || m.Replication > maxJournalReplication {
 		return NewValidationError("invalid Replication (%d; expected 1 <= Replication <= %d)",
 			m.Replication, maxJournalReplication)
-	} else if m.FragmentRetention < 0 {
-		return NewValidationError("invalid FragmentRetention (%s; expected >= 0)", m.FragmentRetention)
-	} else if err = m.CompressionCodec.Validate(); err != nil {
-		return ExtendContext(err, "CompressionCodec")
 	} else if err = m.Labels.Validate(); err != nil {
 		return ExtendContext(err, "Labels")
+	} else if err = m.Fragment.Validate(); err != nil {
+		return ExtendContext(err, "Fragment")
+	} else if m.TransactionLength < minTxnLen || m.TransactionLength > maxTxnLen {
+		return NewValidationError("invalid TransactionLength (%s; expected %s <= size <= %s)",
+			m.TransactionLength, minTxnLen, maxTxnLen)
 	}
 
-	for _, store := range m.FragmentStores {
-		if url, err := url.Parse(store); err != nil {
-			return ExtendContext(&ValidationError{Err: err}, "FragmentStore")
-		} else if url.Scheme == "" {
-			return NewValidationError("FragmentStore missing Scheme")
+	// m.ReadOnly has no checks.
+	return nil
+}
+
+// Validate returns an error if the JournalSpec_Fragment is not well-formed.
+func (m *JournalSpec_Fragment) Validate() error {
+	if m.Length < minFragmentLen || m.Length > maxFragmentLen {
+		return NewValidationError("invalid Length (%s; expected %s <= length <= %s)",
+			m.Length, minFragmentLen, maxFragmentLen)
+	} else if err := m.CompressionCodec.Validate(); err != nil {
+		return ExtendContext(err, "CompressionCodec")
+	} else if m.RefreshInterval < minRefreshInterval || m.RefreshInterval > maxRefreshInterval {
+		return NewValidationError("invalid RefreshInterval (%s; expected %s <= interval <= %s)",
+			m.RefreshInterval, minRefreshInterval, maxRefreshInterval)
+	} else if m.Retention < 0 {
+		return NewValidationError("invalid Retention (%s; expected >= 0)", m.Retention)
+	}
+	for i, store := range m.Stores {
+		if err := store.Validate(); err != nil {
+			return ExtendContext(err, "Store[%d]", i)
 		}
 	}
 	return nil
@@ -84,7 +100,9 @@ func (m *JournalSpec) IsConsistent(_ keyspace.KeyValue, assignments keyspace.Key
 }
 
 const (
-	minJournalNameLen     = 4
-	maxJournalNameLen     = 512
-	maxJournalReplication = 5
+	minJournalNameLen, maxJournalNameLen   = 4, 512
+	maxJournalReplication                  = 5
+	minRefreshInterval, maxRefreshInterval = time.Second, time.Hour * 24
+	minFragmentLen, maxFragmentLen         = 1 << 10, 1 << 34 // 1024 => 17,179,869,184
+	minTxnLen, maxTxnLen                   = 1 << 10, 1 << 30 // 1,024 => 1,073,741,824
 )
