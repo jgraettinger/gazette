@@ -8,49 +8,50 @@ import (
 )
 
 // replicate evaluates a peer broker's replication RPC.
-func replicate(j *journal, req *pb.ReplicateRequest, srv pb.Broker_ReplicateServer) (err error) {
-	// Acquire ownership of the journal Spool.
+func replicate(r *replica, req *pb.ReplicateRequest, srv pb.Broker_ReplicateServer) (resp *pb.ReplicateResponse, err error) {
+	// Acquire ownership of the replica Spool.
 	var spool fragment.Spool
 	select {
-	case spool = <-j.spoolCh:
+	case spool = <-r.spoolCh:
 		// Pass.
-	case <-j.ctx.Done():
-		return j.ctx.Err() // Journal cancelled.
+	case <-r.ctx.Done():
+		err = r.ctx.Err() // Journal cancelled.
+		return
 	case <-srv.Context().Done():
-		return srv.Context().Err() // Request cancelled.
+		err = srv.Context().Err() // Request cancelled.
+		return
 	}
 	// Defer releasing it. Note |spool| may change, so close over it (rather
 	// than deferring a call which would evaluate arguments immediately).
-	defer func() { j.spoolCh <- spool }()
+	defer func() { r.spoolCh <- spool }()
 
 	// The coordinator may know of written offset ranges that we don't.
 	// Skip our offset forward (only) to match the coordinator offset.
 	if req.NextOffset > spool.Fragment.End {
-		spool.Roll(j.spec, req.NextOffset)
+		spool.Roll(r.spec(), req.NextOffset)
 	}
-	if err = prepareSpool(&spool, j); err != nil {
+	if err = prepareSpool(&spool, r); err != nil {
 		return
 	}
 
-	// Precondition: require that the request NextOffset matches our own.
+	// Generate and send our ReplicateResponse.
 	if req.NextOffset != spool.Fragment.End {
-		err = srv.SendMsg(&pb.ReplicateResponse{
+		// Precondition: require that the request NextOffset matches our own.
+		resp = &pb.ReplicateResponse{
 			Status:    pb.Status_WRONG_WRITE_HEAD,
 			WriteHead: spool.Fragment.End,
-		})
-		return
-	}
-	// Precondition: require that the request Route matches our own.
-	if !j.route.Equivalent(req.Route) {
-		err = srv.SendMsg(&pb.ReplicateResponse{
+		}
+	} else if !r.route.Equivalent(req.Route) {
+		// Precondition: require that the request Route matches our own.
+		resp = &pb.ReplicateResponse{
 			Status: pb.Status_WRONG_ROUTE,
-			Route:  &j.route,
-		})
-		return
+			Route:  &r.route,
+		}
+	} else {
+		// We're ready to proceed with the transaction.
+		resp = &pb.ReplicateResponse{Status: pb.Status_OK}
 	}
-
-	// Signal that we're ready to proceed with the transaction.
-	if err = srv.SendMsg(&pb.ReplicateResponse{Status: pb.Status_OK}); err != nil {
+	if err = srv.SendMsg(resp); err != nil || resp.Status != pb.Status_OK {
 		return
 	}
 
@@ -83,11 +84,11 @@ func replicate(j *journal, req *pb.ReplicateRequest, srv pb.Broker_ReplicateServ
 		return
 	} else if err = spool.Commit(req.Commit); err != nil {
 		// |err| invalidates |spool| for further writes. We must Roll it.
-		spool.Roll(j.spec, spool.Fragment.End)
+		spool.Roll(r.spec(), spool.Fragment.End)
 		return
 	}
 
 	// Add the updated local Fragment to the index.
-	j.index.addLocal(spool.Fragment)
+	r.index.addLocal(spool.Fragment)
 	return
 }

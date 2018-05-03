@@ -55,6 +55,11 @@ func (cfg Config) Validate() error {
 	if err := cfg.Spec.Validate(); err != nil {
 		return pb.ExtendContext(err, "Spec")
 	}
+
+	if cfg.Metrics.Port == 0 {
+		return pb.NewValidationError("invalid metrics port: (%d; expected > 0)", cfg.Metrics.Port)
+	}
+
 	/*
 		if !path.IsAbs(cfg.Service.AllocatorRoot) {
 			return fmt.Errorf("Service.AllocatorRoot not an absolute path: %s", cfg.Service.AllocatorRoot)
@@ -102,20 +107,20 @@ func main() {
 	log.WithField("endpoint", cfg.Spec.Endpoint).Info("listening on endpoint")
 
 	// Connect to Etcd, and establish a lease having the same lifetime as the broker.
-	etcdClient, err := clientv3.NewFromURL(cfg.Etcd.Endpoint)
+	etcd, err := clientv3.NewFromURL(cfg.Etcd.Endpoint)
 	if err != nil {
 		log.WithField("err", err).Fatal("failed to init etcd client")
 	}
-	lease, err := etcdClient.Lease.Grant(ctx, int64(cfg.Etcd.LeaseTTL.Seconds()))
+	lease, err := etcd.Lease.Grant(ctx, int64(cfg.Etcd.LeaseTTL.Seconds()))
 	if err != nil {
 		log.WithField("err", err).Fatal("failed to obtain etcd lease")
-	} else if _, err = etcdClient.Lease.KeepAlive(ctx, lease.ID); err != nil {
+	} else if _, err = etcd.Lease.KeepAlive(ctx, lease.ID); err != nil {
 		log.WithField("err", err).Fatal("failed to begin Lease KeepAlive")
 	}
 	log.WithField("lease", lease).Info("acquired etcd lease")
 
 	defer func() {
-		if _, err := etcdClient.Lease.Revoke(ctx, lease.ID); err != nil {
+		if _, err := etcd.Lease.Revoke(ctx, lease.ID); err != nil {
 			log.WithField("err", err).Warn("failed to remove lease")
 		}
 	}()
@@ -141,7 +146,7 @@ func main() {
 			log.WithField("err", err).Fatal("bad journal spec")
 		}
 
-		if _, err = etcdClient.Put(ctx,
+		if _, err = etcd.Put(ctx,
 			v3_allocator.ItemKey(ks, spec.Name.String()),
 			spec.MarshalString(),
 		); err != nil {
@@ -152,7 +157,7 @@ func main() {
 
 	// Advertise the configured BrokerSpec within Etcd, under our lease.
 	var advertiseSpec = func() {
-		if _, err = etcdClient.Put(ctx,
+		if _, err = etcd.Put(ctx,
 			localKey,
 			cfg.Spec.MarshalString(),
 			clientv3.WithLease(lease.ID),
@@ -177,7 +182,7 @@ func main() {
 		advertiseSpec()
 	}()
 
-	var b = broker.NewBroker(ks, cfg.Spec)
+	var b = broker.NewRouter(ks, cfg.Spec.Id, etcd)
 
 	var grpcSrv = grpc.NewServer(grpc.KeepaliveParams(cfg.GRPC.KeepAlive))
 	pb.RegisterBrokerServer(grpcSrv, b)
@@ -209,32 +214,7 @@ func main() {
 		LocalItemsCallback: b.UpdateLocalItems,
 	}
 
-	if err = alloc.Serve(ctx, etcdClient); err != nil {
+	if err = alloc.Serve(ctx, etcd); err != nil {
 		log.WithField("err", err).Fatal("Allocator.Serve exited with error")
 	}
 }
-
-/*
-	// Run regular broker commit "pulses".
-	go func() {
-		for _ = range time.Tick(brokerPulseInterval) {
-			var emptyBuffer bytes.Buffer
-			var journals = router.BrokeredJournals()
-			var resultCh = make(chan journal.AppendResult, len(journals))
-
-			for _, name := range journals {
-				router.Append(journal.AppendOp{
-					AppendArgs: journal.AppendArgs{
-						Journal: name,
-						Content: &emptyBuffer,
-						Context: context.Background(),
-					},
-					Result: resultCh,
-				})
-			}
-			for _ = range journals {
-				<-resultCh
-			}
-		}
-	}()
-*/

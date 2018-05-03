@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coreos/etcd/clientv3"
 	"github.com/hashicorp/golang-lru"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -17,46 +18,50 @@ import (
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-type broker struct {
+// Router manages routing of journals to brokers, including maintaining a index
+// of locally-assigned replicas, and resolving other journals to broker peers.
+// It implements the pb.BrokerServer interface.
+type Router struct {
 	ks   *keyspace.KeySpace
-	spec pb.BrokerSpec
+	id   pb.BrokerSpec_ID
+	etcd *clientv3.Client
 
-	connCache *lru.Cache
-
-	journals   map[pb.Journal]*journal
-	journalsMu sync.RWMutex
+	connCache  *lru.Cache
+	replicas   map[pb.Journal]*replica
+	replicasMu sync.RWMutex
 }
 
-func NewBroker(ks *keyspace.KeySpace, spec pb.BrokerSpec) *broker {
+// NewRouter builds and returns an empty, initialized Router.
+func NewRouter(ks *keyspace.KeySpace, id pb.BrokerSpec_ID, etcd *clientv3.Client) *Router {
 	var cache, err = lru.New(1024)
 	if err != nil {
 		log.WithField("err", err).Panic("failed to create cache")
 	}
-
-	return &broker{
+	return &Router{
 		ks:        ks,
-		spec:      spec,
+		id:        id,
+		etcd:      etcd,
 		connCache: cache,
-		journals:  make(map[pb.Journal]*journal),
+		replicas:  make(map[pb.Journal]*replica),
 	}
 }
 
-func (b *broker) Read(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
+func (rt *Router) Read(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 	if err := req.Validate(); err != nil {
 		return err
 	}
 
-	var res, status = b.resolve(req.Journal, false, !req.DoNotProxy)
+	var res, status = rt.resolve(req.Journal, false, !req.DoNotProxy)
 	if status != pb.Status_OK {
 		return srv.Send(&pb.ReadResponse{Status: status, Route: res.route})
 	} else if res.replica == nil {
-		return b.proxyRead(req, res.broker, srv)
+		return rt.proxyRead(req, res.broker, srv)
 	}
 
 	return read(res.replica, req, srv)
 }
 
-func (b *broker) Append(srv pb.Broker_AppendServer) error {
+func (rt *Router) Append(srv pb.Broker_AppendServer) error {
 	var req, err = srv.Recv()
 	if err != nil {
 		return err
@@ -64,17 +69,24 @@ func (b *broker) Append(srv pb.Broker_AppendServer) error {
 		return err
 	}
 
-	var res, status = b.resolve(req.Journal, true, true)
+	var res, status = rt.resolve(req.Journal, true, true)
 	if status != pb.Status_OK {
 		return srv.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
 	} else if res.replica == nil {
-		return b.proxyAppend(req, res.broker, srv)
+		return rt.proxyAppend(req, res.broker, srv)
 	}
 
-	return coordinate(res.replica, req, srv, b.peerConn)
+	var resp *pb.AppendResponse
+	resp, err = coordinate(res.replica, req, srv, rt.peerConn)
+
+	if err == nil && resp.Status == pb.Status_OK {
+		// Ensure the Route of this transaction matches our Etcd-announced one.
+		res.replica.maybeUpdateAssignmentRoute(rt.etcd)
+	}
+	return err
 }
 
-func (b *broker) Replicate(srv pb.Broker_ReplicateServer) error {
+func (rt *Router) Replicate(srv pb.Broker_ReplicateServer) error {
 	var req, err = srv.Recv()
 	if err != nil {
 		return err
@@ -82,16 +94,23 @@ func (b *broker) Replicate(srv pb.Broker_ReplicateServer) error {
 		return err
 	}
 
-	var res, status = b.resolve(req.Journal, false, false)
+	var res, status = rt.resolve(req.Journal, false, false)
 	if status != pb.Status_OK {
 		return srv.Send(&pb.ReplicateResponse{Status: status, Route: res.route})
 	}
 
-	return replicate(res.replica, req, srv)
+	var resp *pb.ReplicateResponse
+	resp, err = replicate(res.replica, req, srv)
+
+	if err == nil && resp.Status == pb.Status_OK {
+		// Ensure the Route of this transaction matches our Etcd-announced one.
+		res.replica.maybeUpdateAssignmentRoute(rt.etcd)
+	}
+	return err
 }
 
-func (b *broker) proxyRead(req *pb.ReadRequest, spec pb.BrokerSpec, srv pb.Broker_ReadServer) error {
-	var conn, err = b.peerConn(spec.Id)
+func (rt *Router) proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, srv pb.Broker_ReadServer) error {
+	var conn, err = rt.peerConn(to)
 	if err != nil {
 		return err
 	}
@@ -115,8 +134,8 @@ func (b *broker) proxyRead(req *pb.ReadRequest, spec pb.BrokerSpec, srv pb.Broke
 	}
 }
 
-func (b *broker) proxyAppend(req *pb.AppendRequest, spec pb.BrokerSpec, srv pb.Broker_AppendServer) error {
-	var conn, err = b.peerConn(spec.Id)
+func (rt *Router) proxyAppend(req *pb.AppendRequest, to pb.BrokerSpec_ID, srv pb.Broker_AppendServer) error {
+	var conn, err = rt.peerConn(to)
 	if err != nil {
 		return err
 	}
@@ -140,38 +159,39 @@ func (b *broker) proxyAppend(req *pb.AppendRequest, spec pb.BrokerSpec, srv pb.B
 	}
 }
 
+// resolution is the result of resolving a journal to a route and
+// target broker, which may be local.
 type resolution struct {
-	spec    *pb.JournalSpec
 	route   *pb.Route
-	replica *journal
-	broker  pb.BrokerSpec
+	broker  pb.BrokerSpec_ID
+	replica *replica
 }
 
-func (b *broker) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool) (res resolution, status pb.Status) {
-	defer b.journalsMu.RUnlock()
-	b.journalsMu.RLock()
+// resolve a journal to a target broker, which may be local or a proxy-able peer.
+// If a resolution is not possible, a Status != Status_OK is returned indicating
+// why resolution failed.
+func (rt *Router) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool) (res resolution, status pb.Status) {
+	defer rt.replicasMu.RUnlock()
+	rt.replicasMu.RLock()
 
 	var ok bool
 
-	if res.replica, ok = b.journals[journal]; ok {
+	if res.replica, ok = rt.replicas[journal]; ok {
 		// Journal is locally replicated.
-		res.spec = res.replica.spec
 		res.route = &res.replica.route
-		res.broker = b.spec
+		res.broker = rt.id
 	} else {
-		var item v3_allocator.Item
 
-		b.ks.Mu.RLock()
-		item, ok = v3_allocator.LookupItem(b.ks, journal.String())
+		rt.ks.Mu.RLock()
+		_, ok = v3_allocator.LookupItem(rt.ks, journal.String())
 		res.route = new(pb.Route)
-		res.route.Extract(b.ks, journal)
-		b.ks.Mu.RUnlock()
+		res.route.Extract(rt.ks, journal)
+		rt.ks.Mu.RUnlock()
 
 		if !ok {
 			status = pb.Status_JOURNAL_NOT_FOUND
 			return
 		}
-		res.spec = item.ItemValue.(*pb.JournalSpec)
 	}
 
 	if requirePrimary && res.route.Primary == -1 {
@@ -182,13 +202,13 @@ func (b *broker) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool)
 		return
 	}
 
-	// If the local journal can satisfy the request, we're done.
+	// If the local replica can satisfy the request, we're done.
 	// Otherwise, we must proxy to continue.
-	if res.replica != nil && (!requirePrimary || res.replica.slot == 0) {
+	if res.replica != nil && (!requirePrimary || res.replica.isPrimary()) {
 		return
 	}
 	res.replica = nil
-	res.broker = pb.BrokerSpec{}
+	res.broker = pb.BrokerSpec_ID{}
 
 	if !mayProxy {
 		if requirePrimary {
@@ -202,56 +222,69 @@ func (b *broker) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool)
 	if requirePrimary {
 		res.broker = res.route.Brokers[res.route.Primary]
 	} else {
-		res.broker = res.route.RandomReplica(b.spec.Id.Zone)
+		res.broker = res.route.RandomReplica(rt.id.Zone)
 	}
 	return
 }
 
 // UpdateLocalItems is an instance of v3_allocator.LocalItemsCallback.
 // It expects that KeySpace is already read-locked.
-func (b *broker) UpdateLocalItems(items []v3_allocator.LocalItem) {
-	b.journalsMu.RLock()
-	var prev = b.journals
-	b.journalsMu.RUnlock()
+func (rt *Router) UpdateLocalItems(items []v3_allocator.LocalItem) {
+	rt.replicasMu.RLock()
+	var prev = rt.replicas
+	rt.replicasMu.RUnlock()
 
-	var next = make(map[pb.Journal]*journal, len(items))
+	var next = make(map[pb.Journal]*replica, len(items))
 	var route pb.Route
 
-	// Walk |items| and create or transition journals as required to match.
+	// Walk |items| and create or transition replicas as required to match.
 	for _, la := range items {
-		var spec = la.ItemValue.(*pb.JournalSpec)
+		var name = pb.Journal(la.Item.Decoded.(v3_allocator.Item).ID)
+
 		var assignment = la.Assignments[la.Index]
 		route.Init(la.Assignments)
 
-		var j, ok = prev[spec.Name]
+		var r, ok = prev[name]
 		if !ok {
-			j = newJournal()
-			go j.index.watchStores(b.ks, spec.Name, j.initialLoadCh)
+			r = newReplica()
+			go r.index.watchStores(rt.ks, name, r.initialLoadCh)
 		}
 
-		// Transition the journal if the JournalSpec, Route, or local Assignment
-		// have changed. Note KeySpace builds a new JournalSpec instance with
-		// each change, so testing pointer equality is sufficient.
-		if j.spec != spec || !j.route.Equivalent(&route) || j.assignment.Raw.ModRevision != assignment.Raw.ModRevision {
-			route.AttachEndpoints(b.ks)
+		var routeChanged = !r.route.Equivalent(&route)
 
-			var transition = new(journal)
-			*transition = *j
+		// Transition if the Item, local Assignment, or Route have changed.
+		if r.journal.Raw.ModRevision != la.Item.Raw.ModRevision ||
+			r.assignment.Raw.ModRevision != assignment.Raw.ModRevision ||
+			routeChanged {
 
-			transition.spec = spec
-			transition.route = route
-			transition.assignment = assignment
+			var clone = new(replica)
+			*clone = *r
 
-			j = transition
+			clone.journal = la.Item
+			clone.assignment = assignment
+			clone.route = route.Copy()
+			clone.route.AttachEndpoints(rt.ks)
+
+			r = clone
 		}
-		next[spec.Name] = j
+
+		if routeChanged && r.isPrimary() {
+			// Issue an empty write to drive the quick convergence
+			// of replica Route announcements in Etcd.
+			if conn, err := rt.peerConn(rt.id); err == nil {
+				go issueEmptyWrite(conn, name)
+			} else {
+				log.WithField("err", err).Error("failed to build loopback *grpc.ClientConn")
+			}
+		}
+		next[name] = r
 	}
 
-	b.journalsMu.Lock()
-	b.journals = next
-	b.journalsMu.Unlock()
+	rt.replicasMu.Lock()
+	rt.replicas = next
+	rt.replicasMu.Unlock()
 
-	// Cancel any prior journals not included in |items|.
+	// Cancel any prior replicas not included in |items|.
 	for name, journal := range prev {
 		if _, ok := next[name]; !ok {
 			journal.cancel()
@@ -259,15 +292,15 @@ func (b *broker) UpdateLocalItems(items []v3_allocator.LocalItem) {
 	}
 }
 
-// peerConn obtains or builds a ClientConn for the given client |zone| & |name|.
-func (b *broker) peerConn(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
-	if v, ok := b.connCache.Get(id); ok {
+// peerConn obtains or builds a ClientConn for the given BrokerSpec_ID.
+func (rt *Router) peerConn(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
+	if v, ok := rt.connCache.Get(id); ok {
 		return v.(*grpc.ClientConn), nil
 	}
 
-	b.ks.Mu.RLock()
-	var member, ok = v3_allocator.LookupMember(b.ks, id.Zone, id.Suffix)
-	b.ks.Mu.RUnlock()
+	rt.ks.Mu.RLock()
+	var member, ok = v3_allocator.LookupMember(rt.ks, id.Zone, id.Suffix)
+	rt.ks.Mu.RUnlock()
 
 	if !ok {
 		return nil, fmt.Errorf("no BrokerSpec found for (%s)", id)
@@ -280,7 +313,7 @@ func (b *broker) peerConn(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
 		grpc.WithInsecure(),
 	)
 	if err == nil {
-		b.connCache.Add(id, conn)
+		rt.connCache.Add(id, conn)
 	}
 	return conn, err
 }

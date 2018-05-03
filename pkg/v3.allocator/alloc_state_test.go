@@ -30,9 +30,9 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	c.Check(state.localMemberInd, gc.Equals, 2)
 	c.Check(state.localItems, gc.DeepEquals, []LocalItem{
 		// /root/assign/item-1/us-west/baz/0
-		{Item: itemAt(state.items, 0), Assignments: state.assignments[0:2], Index: 1},
+		{Item: state.items[0], Assignments: state.assignments[0:2], Index: 1},
 		// /root/assign/item-two/us-west/baz/1
-		{Item: itemAt(state.items, 1), Assignments: state.assignments[3:6], Index: 2},
+		{Item: state.items[1], Assignments: state.assignments[3:6], Index: 2},
 		// Note /root/assign/item-missing/us-west/baz/0 is omitted (because the Item is missing).
 	})
 
@@ -44,7 +44,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	c.Check(state.localMemberInd, gc.Equals, 0)
 	c.Check(state.localItems, gc.DeepEquals, []LocalItem{
 		// /root/assign/item-two/us-east/bar/0
-		{Item: itemAt(state.items, 1), Assignments: state.assignments[3:6], Index: 1},
+		{Item: state.items[1], Assignments: state.assignments[3:6], Index: 1},
 	})
 
 	// Again, with yet another local key.
@@ -55,7 +55,7 @@ func (s *AllocStateSuite) TestExtractOverFixture(c *gc.C) {
 	c.Check(state.localMemberInd, gc.Equals, 1)
 	c.Check(state.localItems, gc.DeepEquals, []LocalItem{
 		// /root/assign/item-1/us-east/foo/1
-		{Item: itemAt(state.items, 0), Assignments: state.assignments[0:2], Index: 0},
+		{Item: state.items[0], Assignments: state.assignments[0:2], Index: 0},
 	})
 
 	// Expect ordered zones and slot counts were extracted.

@@ -44,8 +44,11 @@ func (m *JournalSpec) Validate() error {
 	} else if err = m.Fragment.Validate(); err != nil {
 		return ExtendContext(err, "Fragment")
 	} else if m.TransactionLength < minTxnLen || m.TransactionLength > maxTxnLen {
-		return NewValidationError("invalid TransactionLength (%s; expected %s <= size <= %s)",
+		return NewValidationError("invalid TransactionLength (%d; expected %d <= length <= %d)",
 			m.TransactionLength, minTxnLen, maxTxnLen)
+	} else if m.TransactionLength > m.Fragment.Length {
+		return NewValidationError("invalid TransactionLength (%d; expected length <= Fragment.Length %d)",
+			m.TransactionLength, m.Fragment.Length)
 	}
 
 	// m.ReadOnly has no checks.
@@ -55,7 +58,7 @@ func (m *JournalSpec) Validate() error {
 // Validate returns an error if the JournalSpec_Fragment is not well-formed.
 func (m *JournalSpec_Fragment) Validate() error {
 	if m.Length < minFragmentLen || m.Length > maxFragmentLen {
-		return NewValidationError("invalid Length (%s; expected %s <= length <= %s)",
+		return NewValidationError("invalid Length (%d; expected %d <= length <= %d)",
 			m.Length, minFragmentLen, maxFragmentLen)
 	} else if err := m.CompressionCodec.Validate(); err != nil {
 		return ExtendContext(err, "CompressionCodec")
@@ -67,7 +70,7 @@ func (m *JournalSpec_Fragment) Validate() error {
 	}
 	for i, store := range m.Stores {
 		if err := store.Validate(); err != nil {
-			return ExtendContext(err, "Store[%d]", i)
+			return ExtendContext(err, "Stores[%d]", i)
 		}
 	}
 	return nil

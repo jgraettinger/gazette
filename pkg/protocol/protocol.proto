@@ -284,10 +284,13 @@ message Route {
   // Brokers of the Route, ordered on ascending BrokerSpec (zone, name).
   // Note that only a Route-relevant subset of the spec is populated
   // (specifically name, zone, & endpoint).
-  repeated BrokerSpec brokers = 1 [(gogoproto.nullable) = false];
+  repeated BrokerSpec.ID brokers = 1 [(gogoproto.nullable) = false];
   // Index of the BrokerSpec serving as primary within |brokers|,
   // or -1 of no broker is currently primary.
   int32 primary = 2;
+  // Endpoints of each Route Broker. If not empty, |endpoints| has the same
+  // length and order as |brokers|, and captures the endpoint of each one.
+  repeated string endpoints = 3 [(gogoproto.casttype) = "Endpoint"];
 }
 
 service Broker {

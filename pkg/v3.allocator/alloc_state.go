@@ -101,7 +101,7 @@ func newAllocState(ks *keyspace.KeySpace, localKey string) (*allocState, error) 
 
 			if key == localKey {
 				s.localItems = append(s.localItems, LocalItem{
-					Item:        item,
+					Item:        s.items[cur.left],
 					Assignments: s.assignments[cur.rightBegin:cur.rightEnd],
 					Index:       r - cur.rightBegin,
 				})

@@ -16,11 +16,11 @@ import (
 )
 
 type HTTPAPI struct {
-	broker  *broker
+	broker  *Router
 	decoder *schema.Decoder
 }
 
-func NewHTTPAPI(broker *broker) *HTTPAPI {
+func NewHTTPAPI(broker *Router) *HTTPAPI {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
 
@@ -65,7 +65,7 @@ func (h *HTTPAPI) serveRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if conn, err = h.broker.peerConn(resolution.broker.Id); err == nil {
+	if conn, err = h.broker.peerConn(resolution.broker); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Read(r.Context(), req); err == nil {
 			err = client.RecvMsg(resp)
 		}
@@ -123,7 +123,7 @@ func (h *HTTPAPI) serveWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if conn, err = h.broker.peerConn(resolution.broker.Id); err == nil {
+	if conn, err = h.broker.peerConn(resolution.broker); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Append(r.Context()); err == nil {
 			err = client.SendMsg(req)
 			*req = pb.AppendRequest{} // Clear metadata: hereafter, only Content is sent.

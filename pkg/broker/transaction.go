@@ -14,8 +14,8 @@ import (
 
 // transaction is an in-flight replicated write transaction of a journal.
 type transaction struct {
-	journal *journal
-	spool   fragment.Spool              // Owned, local journal Spool.
+	replica *replica
+	spool   fragment.Spool              // Owned, local replica Spool.
 	streams []pb.Broker_ReplicateClient // Peer replicate clients.
 	nCommit int64                       // Replicated bytes ready to commitOrAbort.
 
@@ -25,34 +25,34 @@ type transaction struct {
 }
 
 // newTransaction returns a new transaction.
-func newTransaction(journal *journal, spool fragment.Spool) *transaction {
+func newTransaction(r *replica, spool fragment.Spool) *transaction {
 	return &transaction{
-		journal: journal,
+		replica: r,
 		spool:   spool,
 		doneCh:  make(chan struct{}),
 	}
 }
 
-// begin the transaction. Initialize a replication stream to each journal peer,
+// begin the transaction. Initialize a replication stream to each replica peer,
 // collecting responses from each to verify the Route and NextOffset.
-func (txn *transaction) begin(buildConn buildConnFn) {
-	if err := prepareSpool(&txn.spool, txn.journal); err != nil {
+func (txn *transaction) begin(connFn buildConnFn) {
+	if err := prepareSpool(&txn.spool, txn.replica); err != nil {
 		log.WithField("err", err).Warn("txn.begin: failed to prepare spool")
 		txn.failed = true
 		return
 	}
 
 	var req = &pb.ReplicateRequest{
-		Journal:    txn.journal.spec.Name,
-		Route:      &txn.journal.route,
+		Journal:    txn.replica.spec().Name,
+		Route:      &txn.replica.route,
 		NextOffset: txn.spool.Fragment.End,
 	}
 	var resp = new(pb.ReplicateResponse)
 
 	// Scatter a ReplicateRequest out to all replicas to begin a transaction.
 	// They will independently verify Route and NextOffset.
-	for i, b := range txn.journal.route.Brokers {
-		if i == int(txn.journal.route.Primary) {
+	for i, b := range txn.replica.route.Brokers {
+		if i == int(txn.replica.route.Primary) {
 			continue
 		}
 
@@ -60,8 +60,8 @@ func (txn *transaction) begin(buildConn buildConnFn) {
 		var conn *grpc.ClientConn
 		var s pb.Broker_ReplicateClient
 
-		if conn, err = buildConn(b.Id); err == nil {
-			if s, err = pb.NewBrokerClient(conn).Replicate(txn.journal.ctx); err == nil {
+		if conn, err = connFn(b); err == nil {
+			if s, err = pb.NewBrokerClient(conn).Replicate(txn.replica.ctx); err == nil {
 				err = s.Send(req)
 			}
 		}
@@ -86,7 +86,7 @@ func (txn *transaction) begin(buildConn buildConnFn) {
 				if resp.Status == pb.Status_WRONG_WRITE_HEAD && resp.WriteHead > txn.spool.Fragment.End {
 					// Roll forward to the response WriteHead. This transaction
 					// has failed, but the next attempt may now succeed.
-					txn.spool.Roll(txn.journal.spec, resp.WriteHead)
+					txn.spool.Roll(txn.replica.spec(), resp.WriteHead)
 				}
 			}
 		}
@@ -98,7 +98,7 @@ func (txn *transaction) begin(buildConn buildConnFn) {
 			txn.failed = true
 		}
 
-		if tr, ok := trace.FromContext(txn.journal.ctx); ok {
+		if tr, ok := trace.FromContext(txn.replica.ctx); ok {
 			tr.LazyPrintf("transaction.begin: %v (err: %v)", resp, err)
 		}
 	}
@@ -150,7 +150,7 @@ func (txn *transaction) commitOrAbort() {
 				Warn("txn.commitOrAbort: local Commit failed")
 
 			// Error invalidates |txn.spool| for further writes. We must Roll it.
-			txn.spool.Roll(txn.journal.spec, txn.spool.Fragment.End)
+			txn.spool.Roll(txn.replica.spec(), txn.spool.Fragment.End)
 			txn.failed = true
 		}
 	}
@@ -188,7 +188,7 @@ func (txn *transaction) replicate(srv grpc.ServerStream) (n int64, err error) {
 	var repReq = new(pb.ReplicateRequest)
 
 	for {
-		if err = srv.RecvMsg(&appendReq); err == io.EOF {
+		if err = srv.RecvMsg(appendReq); err == io.EOF {
 			err = nil // Reached end-of-input for this Append stream.
 			return
 		} else if err != nil {

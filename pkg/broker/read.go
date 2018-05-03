@@ -10,14 +10,14 @@ import (
 )
 
 // read evaluates a client's Read RPC.
-func read(j *journal, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
+func read(r *replica, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 	var buffer = chunkBufferPool.Get().([]byte)
 	defer chunkBufferPool.Put(buffer)
 
 	var reader io.ReadCloser
 
 	for i := 0; true; i++ {
-		var resp, file, err = j.index.query(srv.Context(), req)
+		var resp, file, err = r.index.query(srv.Context(), req)
 		if err != nil {
 			return err
 		}
@@ -26,7 +26,7 @@ func read(j *journal, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 		// be long-lived: so long, in fact, that the Route could change multiple
 		// times over the course of evaluating it.
 		if i == 0 {
-			resp.Route = &j.route
+			resp.Route = &r.route
 		}
 
 		if err = srv.Send(resp); err != nil {

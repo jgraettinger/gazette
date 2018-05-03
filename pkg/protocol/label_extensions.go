@@ -21,7 +21,7 @@ func (m LabelSet) Validate() error {
 			return ExtendContext(err, "Labels[%d]", i)
 		}
 		if i > 0 && m.Labels[i].Name <= m.Labels[i-1].Name {
-			return NewValidationError("labels not in unique, sorted order (index %d; %r <= %r)",
+			return NewValidationError("labels not in unique, sorted order (index %d; %+v <= %+v)",
 				i, m.Labels[i].Name, m.Labels[i-1].Name)
 		}
 	}

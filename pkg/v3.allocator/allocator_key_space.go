@@ -74,7 +74,7 @@ type Assignment struct {
 
 // LocalItem represents an Item which is assigned to the local Allocator.
 type LocalItem struct {
-	Item                           // Item which is locally Assigned.
+	Item        keyspace.KeyValue  // Item which is locally Assigned.
 	Assignments keyspace.KeyValues // All Assignments of the Item.
 	Index       int                // The index of the local Assignment within |Assignments|.
 }
