@@ -8,7 +8,7 @@ import (
 func (m Label) Validate() error {
 	if err := validateB64Str(m.Name, minLabelLen, maxLabelLen); err != nil {
 		return ExtendContext(err, "Name")
-	} else if err = validateB64Str(m.Value, 0, maxLabelLen); err != nil {
+	} else if err = validateB64Str(m.Value, 0, maxLabelValueLen); err != nil {
 		return ExtendContext(err, "Value")
 	}
 	return nil
@@ -54,7 +54,7 @@ func matchLabels(s, o []Label) bool {
 			s = s[1:]
 		} else if s[0].Name > o[0].Name {
 			o = o[1:]
-		} else if s[0].Value == o[0].Value || s[0].Value == "*" {
+		} else if s[0].Value == o[0].Value || s[0].Value == "" {
 			return true
 		} else {
 			s, o = s[1:], o[1:]
@@ -73,7 +73,7 @@ func validateB64Str(n string, min, max int) error {
 }
 
 const (
-	base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+/="
-	minLabelLen    = 2
-	maxLabelLen    = 128
+	base64Alphabet           = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+/="
+	minLabelLen, maxLabelLen = 2, 64
+	maxLabelValueLen         = 1024
 )

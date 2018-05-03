@@ -7,16 +7,6 @@ import (
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-// Extract queries the KeySpace for journal Assignments, initializes the Route,
-// and attaches broker endpoints. KeySpace must already be read-locked.
-func (m *Route) Extract(ks *keyspace.KeySpace, journal Journal) {
-	var assignments = ks.KeyValues.Prefixed(
-		v3_allocator.ItemAssignmentsPrefix(ks, journal.String()))
-
-	m.Init(assignments)
-	m.AttachEndpoints(ks)
-}
-
 // Initialize Route with the provided allocator Assignments.
 func (m *Route) Init(assignments keyspace.KeyValues) {
 	*m = Route{Primary: -1, Brokers: m.Brokers[:0]}

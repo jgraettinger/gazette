@@ -207,12 +207,12 @@ func (m *LabelSet) GetLabels() []Label {
 // LabelSelector defines a filter over LabelSets.
 type LabelSelector struct {
 	// Include is Labels which must be matched for a LabelSet to be selected. If
-	// empty, all Labels are included. Use of the special value "*" in the
-	// LabelSelector matches the Label with any value.
+	// empty, all Labels are included. An include Label with empty ("") value is
+	// matched by a Label of the same name having any value.
 	Include LabelSet `protobuf:"bytes,1,opt,name=include" json:"include"`
 	// Exclude is Labels which cannot be matched for a LabelSet to be selected. If
-	// empty, no Labels are excluded. Use of the special Label value "*" in the
-	// LabelSelector excludes the Label with any value.
+	// empty, no Labels are excluded. An exclude Label with empty ("") value
+	// excludes a Label of the same name having any value.
 	Exclude LabelSet `protobuf:"bytes,2,opt,name=exclude" json:"exclude"`
 }
 

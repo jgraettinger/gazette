@@ -184,8 +184,14 @@ func (rt *Router) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool
 
 		rt.ks.Mu.RLock()
 		_, ok = v3_allocator.LookupItem(rt.ks, journal.String())
+
+		var assignments = rt.ks.KeyValues.Prefixed(
+			v3_allocator.ItemAssignmentsPrefix(rt.ks, journal.String()))
+
 		res.route = new(pb.Route)
-		res.route.Extract(rt.ks, journal)
+		res.route.Init(assignments)
+		res.route.AttachEndpoints(rt.ks)
+
 		rt.ks.Mu.RUnlock()
 
 		if !ok {
