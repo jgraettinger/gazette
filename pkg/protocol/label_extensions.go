@@ -20,8 +20,8 @@ func (m LabelSet) Validate() error {
 		if err := m.Labels[i].Validate(); err != nil {
 			return ExtendContext(err, "Labels[%d]", i)
 		}
-		if i > 0 && m.Labels[i].Name <= m.Labels[i-1].Name {
-			return NewValidationError("labels not in unique, sorted order (index %d; %+v <= %+v)",
+		if i != 0 && m.Labels[i].Name <= m.Labels[i-1].Name {
+			return NewValidationError("Labels not in unique, sorted order (index %d; %+v <= %+v)",
 				i, m.Labels[i].Name, m.Labels[i-1].Name)
 		}
 	}
@@ -67,7 +67,7 @@ func validateB64Str(n string, min, max int) error {
 	if l := len(n); l < min || l > max {
 		return NewValidationError("invalid length (%+v; expected %d <= length <= %d)", l, min, max)
 	} else if len(strings.Trim(n, base64Alphabet)) != 0 {
-		return NewValidationError("not base64 alphabet: %+v", n)
+		return NewValidationError("not base64 alphabet: %v", n)
 	}
 	return nil
 }

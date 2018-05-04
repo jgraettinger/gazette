@@ -22,9 +22,9 @@ func (n Journal) Validate() error {
 	if err := validateB64Str(n.String(), minJournalNameLen, maxJournalNameLen); err != nil {
 		return err
 	} else if path.Clean(n.String()) != n.String() {
-		return NewValidationError("must be a clean path: %+v", n)
+		return NewValidationError("must be a clean path: %v", n)
 	} else if n[0] == '/' {
-		return NewValidationError("cannot begin with '/'")
+		return NewValidationError("cannot begin with '/': %v", n)
 	}
 	return nil
 }

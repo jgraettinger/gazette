@@ -27,11 +27,11 @@ func (s *FragmentStoreSuite) TestValidation(c *gc.C) {
 }
 
 func (s *FragmentStoreSuite) TestURLConversion(c *gc.C) {
-	var ep Endpoint = "s3://bucket/path"
-	c.Check(ep.URL().Host, gc.Equals, "bucket")
+	var fs FragmentStore = "s3://bucket/path"
+	c.Check(fs.URL().Host, gc.Equals, "bucket")
 
-	ep = "/baz/bing"
-	c.Check(func() { ep.URL() }, gc.PanicMatches, "not absolute: .*")
+	fs = "/baz/bing"
+	c.Check(func() { fs.URL() }, gc.PanicMatches, "not absolute: .*")
 }
 
 var _ = gc.Suite(&FragmentStoreSuite{})

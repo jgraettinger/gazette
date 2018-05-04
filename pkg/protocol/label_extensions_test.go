@@ -44,7 +44,7 @@ func (s *LabelSuite) TestSetValidationCases(c *gc.C) {
 	c.Check(set.Validate(), gc.ErrorMatches, `Labels\[1\].Name: not base64 alphabet: bad label`)
 
 	set.Labels[1].Name = "AAA"
-	c.Check(set.Validate(), gc.ErrorMatches, `labels not in unique, sorted order \(index 1; AAA <= CC\)`)
+	c.Check(set.Validate(), gc.ErrorMatches, `Labels not in unique, sorted order \(index 1; AAA <= CC\)`)
 }
 
 func (s *LabelSuite) TestSelectorValidationCases(c *gc.C) {

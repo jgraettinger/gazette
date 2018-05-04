@@ -52,7 +52,11 @@ func (m *Route) AttachEndpoints(ks *keyspace.KeySpace) {
 func (m Route) Validate() error {
 	for i, b := range m.Brokers {
 		if err := b.Validate(); err != nil {
-			return ExtendContext(err, "Replicas[%d]", i)
+			return ExtendContext(err, "Brokers[%d]", i)
+		}
+		if i != 0 && !m.Brokers[i-1].Less(b) {
+			return NewValidationError("Brokers not in unique, sorted order (index %d; %+v <= %+v)",
+				i, m.Brokers[i-1], m.Brokers[i])
 		}
 	}
 
@@ -61,7 +65,7 @@ func (m Route) Validate() error {
 			m.Primary, len(m.Brokers))
 	}
 
-	if l := len(m.Endpoints); l != 0 && l != len(m.Endpoints) {
+	if l := len(m.Endpoints); l != 0 && l != len(m.Brokers) {
 		return NewValidationError("len(Endpoints) != 0, and != len(Brokers) (%d vs %d)",
 			l, len(m.Brokers))
 	}
@@ -75,40 +79,6 @@ func (m Route) Validate() error {
 	}
 	return nil
 }
-
-// MarshalString returns the marshaled encoding of the JournalSpec as a string.
-func (m Route) MarshalString() string {
-	var d, err = m.Marshal()
-	if err != nil {
-		panic(err.Error()) // Cannot happen, as we use no custom marshalling.
-	}
-	return string(d)
-}
-
-// Replica returns a random BrokerSpec for read operations, preferring
-// a broker in |zone|. It panics if the Route has no Brokers.
-func (m Route) RandomReplica(zone string) BrokerSpec_ID {
-	var p = rand.Perm(len(m.Brokers))
-
-	for _, i := range p {
-		if m.Brokers[i].Zone == zone {
-			return m.Brokers[i]
-		}
-	}
-	return m.Brokers[p[0]]
-}
-
-// Endpoint returns the endpoint of |id| within the Route, or an empty string
-// if no endpoint is available.
-/*
-func (m Route) Endpoint(id BrokerSpec_ID) string {
-	for i, b := range m.Brokers {
-		if b == id {
-			return m.Endpoints[i]
-		}
-	}
-}
-*/
 
 // Equivalent returns true if the Routes have equivalent broker Names, Zones,
 // and current Primary. It does not compare broker Endpoints.
@@ -126,4 +96,26 @@ func (m Route) Equivalent(other *Route) bool {
 		}
 	}
 	return true
+}
+
+// MarshalString returns the marshaled encoding of the JournalSpec as a string.
+func (m Route) MarshalString() string {
+	var d, err = m.Marshal()
+	if err != nil {
+		panic(err.Error()) // Cannot happen, as we use no custom marshalling.
+	}
+	return string(d)
+}
+
+// Replica returns a random index of |Brokers| suitable for read operations,
+// preferring a broker in |zone|. It panics if the Route has no Brokers.
+func (m Route) RandomReplica(zone string) int {
+	var p = rand.Perm(len(m.Brokers))
+
+	for _, i := range p {
+		if m.Brokers[i].Zone == zone {
+			return i
+		}
+	}
+	return p[0]
 }

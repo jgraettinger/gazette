@@ -1,9 +1,11 @@
 package protocol
 
+import "net/url"
+
 // Validate returns an error if the ReadRequest is not well-formed.
 func (m *ReadRequest) Validate() error {
 	if err := m.Journal.Validate(); err != nil {
-		return err
+		return ExtendContext(err, "Journal")
 	} else if m.Offset < -1 {
 		return NewValidationError("invalid Offset (%d; expected -1 <= Offset <= MaxInt64", m.Offset)
 	}
@@ -15,58 +17,98 @@ func (m *ReadResponse) Validate() error {
 	if err := m.Status.Validate(); err != nil {
 		return ExtendContext(err, "Status")
 	}
-	if m.Fragment != nil {
-		if err := m.Fragment.Validate(); err != nil {
-			return ExtendContext(err, "Fragment")
+
+	if m.Content != nil {
+		// Require that no other fields are set.
+		if m.Status != Status_OK {
+			return NewValidationError("unexpected Status with Content (%v)", m.Status)
+		} else if m.Offset != 0 {
+			return NewValidationError("unexpected Offset with Content (%d)", m.Offset)
+		} else if m.WriteHead != 0 {
+			return NewValidationError("unexpected WriteHead with Content (%d)", m.WriteHead)
+		} else if m.Route != nil {
+			return NewValidationError("unexpected Route with Content (%s)", m.Route)
+		} else if m.Fragment != nil {
+			return NewValidationError("unexpected Fragment with Content (%s)", m.Fragment)
+		} else if m.FragmentUrl != "" {
+			return NewValidationError("unexpected FragmentUrl with Content (%s)", m.FragmentUrl)
 		}
+		return nil
 	}
+
 	if m.Route != nil {
 		if err := m.Route.Validate(); err != nil {
 			return ExtendContext(err, "Route")
 		}
 	}
+	if m.WriteHead < 0 {
+		return NewValidationError("invalid WriteHead (%d; expected >= 0)", m.WriteHead)
+	}
+
+	if m.Fragment != nil {
+		if err := m.Fragment.Validate(); err != nil {
+			return ExtendContext(err, "Fragment")
+		} else if m.Offset < m.Fragment.Begin || m.Offset >= m.Fragment.End {
+			return NewValidationError("invalid Offset (%d; expected %d <= offset < %d)",
+				m.Offset, m.Fragment.Begin, m.Fragment.End)
+		} else if m.WriteHead < m.Fragment.End {
+			return NewValidationError("invalid WriteHead (%d; expected >= %d)",
+				m.WriteHead, m.Fragment.End)
+		}
+		if m.FragmentUrl != "" {
+			if _, err := url.Parse(m.FragmentUrl); err != nil {
+				return ExtendContext(&ValidationError{Err: err}, "FragmentUrl")
+			}
+		}
+	} else {
+		if m.Offset != 0 {
+			return NewValidationError("unexpected Offset without Fragment (%d)", m.Offset)
+		} else if m.FragmentUrl != "" {
+			return NewValidationError("unexpected FragmentUrl without Fragment (%s)", m.FragmentUrl)
+		}
+	}
+
 	return nil
 }
 
 // Validate returns an error if the ReplicateRequest is not well-formed.
 func (m *ReplicateRequest) Validate() error {
-
-	// There are three types of ReplicateRequest:
-	//  * Request: Journal, NextOffset, and Route are set.
-	//  * Content chunk: Content and NextOffset are set.
-	//  * Commit: Commit is set (only).
-	var isRequest = m.Journal != ""
-	var isContent = m.Content != nil
-	var isCommit = !isRequest && !isContent
-
-	if isRequest {
-		if err := m.Journal.Validate(); err != nil {
-			return err
-		} else if m.Route == nil {
-			return NewValidationError("expected Route")
-		} else if err := m.Route.Validate(); err != nil {
-			return ExtendContext(err, "Route")
-		} else if isContent {
-			return NewValidationError("unexpected Content")
+	// If Commit is set, we expect all other fields are zero'd.
+	if m.Commit != 0 {
+		if m.Commit < 0 {
+			return NewValidationError("invalid Commit (%d; expected >= 0)", m.Commit)
+		} else if m.Journal != "" {
+			return NewValidationError("unexpected Journal with Commit (%v)", m.Journal)
+		} else if m.NextOffset != 0 {
+			return NewValidationError("unexpected NextOffset with Commit (%d)", m.NextOffset)
+		} else if m.Route != nil {
+			return NewValidationError("unexpected Route with Commit (%s)", m.Route)
+		} else if m.Content != nil {
+			return NewValidationError("unexpected Content with Commit (len %d)", len(m.Content))
 		}
-	} else {
-		if m.Route != nil {
-			return NewValidationError("unexpected Route (%s)", m.Route.String())
-		}
+		return nil
 	}
 
-	if isCommit {
-		if m.NextOffset != 0 {
-			return NewValidationError("unexpected NextOffset (%d)", m.NextOffset)
-		} else if m.Commit < 0 {
-			return NewValidationError("invalid Commit (%d; expected >= 0)", m.Commit)
+	if m.NextOffset < 0 {
+		return NewValidationError("invalid NextOffset (%d; expected >= 0)", m.NextOffset)
+	}
+
+	// If Content is set, we expect only NextOffset.
+	if m.Content != nil {
+		if m.Journal != "" {
+			return NewValidationError("unexpected Journal with Content (%v)", m.Journal)
+		} else if m.Route != nil {
+			return NewValidationError("unexpected Route with Content (%s)", m.Route)
 		}
-	} else {
-		if m.NextOffset < 0 {
-			return NewValidationError("invalid NextOffset (%d; expected >= 0)", m.NextOffset)
-		} else if m.Commit != 0 {
-			return NewValidationError("unexpected Commit (%d)", m.Commit)
-		}
+		return nil
+	}
+
+	if err := m.Journal.Validate(); err != nil {
+		return ExtendContext(err, "Journal")
+	} else if m.Route == nil {
+		return NewValidationError("expected Route")
+	} else if err := m.Route.Validate(); err != nil {
+		return ExtendContext(err, "Route")
 	}
 
 	return nil

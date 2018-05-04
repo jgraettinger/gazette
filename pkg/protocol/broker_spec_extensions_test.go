@@ -14,8 +14,7 @@ func (s *BrokerSpecSuite) TestIDValidationCases(c *gc.C) {
 		{BrokerSpec_ID{"a-zone", "a-name"}, ""}, // Success.
 		{BrokerSpec_ID{"", "a-name"}, "Zone: invalid length .*"},
 		{BrokerSpec_ID{"&*", "a-name"}, "Zone: not base64 .*"},
-		{BrokerSpec_ID{"a-very-very-very-very-very-very-very-long-zone", "a-name"},
-			"Zone: not base64 .*"},
+		{BrokerSpec_ID{"a-very-very-very-very-looong-zone", "a-name"}, "Zone: invalid length .*"},
 		{BrokerSpec_ID{"a-zone", "ae"}, "Suffix: invalid length .*"},
 		{BrokerSpec_ID{"a-zone", "&*($"}, "Suffix: not base64 .*"},
 	}

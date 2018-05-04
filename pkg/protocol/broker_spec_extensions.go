@@ -1,13 +1,22 @@
 package protocol
 
 // Validate returns an error if the BrokerSpec_ID is not well-formed.
-func (m *BrokerSpec_ID) Validate() error {
+func (m BrokerSpec_ID) Validate() error {
 	if err := validateB64Str(m.Zone, minZoneLen, maxZoneLen); err != nil {
 		return ExtendContext(err, "Zone")
 	} else if err := validateB64Str(m.Suffix, minBrokerSuffixLen, maxBrokerSuffixLen); err != nil {
 		return ExtendContext(err, "Suffix")
 	}
 	return nil
+}
+
+// Less returns whether the BrokerSpec_ID is less than the argument
+// BrokerSpec_ID, under (Zone, Suffix) ordering.
+func (m BrokerSpec_ID) Less(other BrokerSpec_ID) bool {
+	if m.Zone != other.Zone {
+		return m.Zone < other.Zone
+	}
+	return m.Suffix < other.Suffix
 }
 
 // Validate returns an error if the BrokerSpec is not well-formed.
