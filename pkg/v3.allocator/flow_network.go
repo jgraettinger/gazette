@@ -234,3 +234,15 @@ func extractItemFlow(s *allocState, fn *flowNetwork, item int, out []Assignment)
 	})
 	return out
 }
+
+// Returns the excess capacity across all items in the flow network. This represents the number of replicas
+// that we are unable to assign to members in the current flow network. If the flow network is a max flow,
+// then it is impossible to meet the desired replication constraints for all our items, and we probably want
+// to create more members or adjust their allocation between zones.
+func (fn *flowNetwork) excessItemCapacity() int32 {
+	var excess int32 = 0
+	for _, arc := range fn.source.Arcs {
+		excess += arc.Capacity - arc.Flow
+	}
+	return excess
+}
