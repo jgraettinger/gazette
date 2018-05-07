@@ -2,84 +2,121 @@ package broker
 
 import (
 	"context"
+	"crypto/sha1"
 	"time"
 
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// coordinate establishes or obtains a current transaction and applies the client's
-// Append RPC within it.
-func coordinate(r *replica, _ *pb.AppendRequest, srv pb.Broker_AppendServer, connFn buildConnFn) (*pb.AppendResponse, error) {
-
-	// Gate the request on completing an initial index load of remote Fragments.
-	select {
-	case <-r.initialLoadCh:
-		// Pass.
-	case <-r.ctx.Done():
-		return nil, r.ctx.Err() // Journal cancelled.
-	case <-srv.Context().Done():
-		return nil, srv.Context().Err() // Request cancelled.
-	}
-
-	// Acquire sole ownership of the replica Spool, and a transaction which wraps it.
+func beginTxn(ctx context.Context, r *replica, connFn buildConnFn) (*transaction, *pb.ReplicateResponse, error) {
+	// Acquire sole ownership of the replica Spool, and
+	// possibly of an ongoing transaction which wraps it.
 	var txn *transaction
+	var spool fragment.Spool
 
 	select {
 	case txn = <-r.txnHandoffCh:
 		// We now hold the replica Spool, as well as an ongoing transaction.
-	case spool := <-r.spoolCh:
-		// We now hold the replica Spool, but there is no current transaction. Begin one.
-		txn = newTransaction(r, spool)
-		txn.begin(connFn)
 
+		// Ensure the Route of the ongoing transaction matches our own. If not,
+		// we need to close the current transaction and begin anew.
+		if !r.route.Equivalent(&txn.route) {
+			txn.closeSend()
+			txn.gatherEOF()
+
+			if bid, err := txn.anyErr(); err != nil {
+				log.WithFields(log.Fields{"broker": bid, "err": err}).
+					Warn("failed to close prior transaction")
+			}
+			spool = txn.spool
+			txn = nil
+		}
+
+	case spool = <-r.spoolCh:
+		// We now hold the replica Spool, but there is no current transaction.
 	case <-r.ctx.Done():
-		return nil, r.ctx.Err() // Journal cancelled.
-	case <-srv.Context().Done():
-		return nil, srv.Context().Err() // Request cancelled.
+		return nil, nil, r.ctx.Err() // Journal cancelled.
+	case <-ctx.Done():
+		return nil, nil, ctx.Err() // Request cancelled.
 	}
 
-	var resp = &pb.AppendResponse{
-		Status:      pb.Status_OK,
-		Route:       &r.route,
-		FirstOffset: txn.spool.Fragment.End + txn.nCommit,
-		LastOffset:  txn.spool.Fragment.End + txn.nCommit, // Adjusted by |n|.
-		WriteHead:   txn.spool.Fragment.End,               // Adjusted by |nCommit| after commit.
+	if txn != nil {
+		// Return ready transaction.
+		return txn, nil, nil
 	}
 
-	var n int64
+	// There is no current transaction. Begin one.
+	if err := prepareSpool(&spool, r); err != nil {
+		return nil, nil, err
+	}
+	txn = newTransaction(r.ctx, r.route, spool, connFn)
+
+	// Propose the current spool Fragment, to ensure all replicas are in sync.
+	txn.scatter(&pb.ReplicateRequest{
+		Journal: spool.Journal,
+		Route:   &r.route,
+		Commit:  &spool.Fragment.Fragment,
+	})
+	txn.gatherResp()
+
+	if bid, err := txn.anyErr(); err != nil {
+		pb.ExtendContext()
+
+	}
+
+		if err = txn.err(i); err != nil {
+			log.WithFields(log.Fields{"err": txn.sendErrs[i], "broker": txn.route.Brokers[i]}).
+				Warn("failed to start Replicate stream")
+
+			txn.closeSend()
+			txn = nil
+			return
+		}
+
+	}
+
+}
+
+// coordinate establishes or obtains a current transaction and applies the client's
+// Append RPC within it.
+func coordinate(r *replica, _ *pb.AppendRequest, srv pb.Broker_AppendServer, connFn buildConnFn) (*pb.AppendResponse, error) {
+
+	var sum pb.SHA1Sum
 	var err error
 
-	if !txn.failed {
-		if n, err = txn.replicate(srv); err != nil {
-			log.WithFields(log.Fields{"err": err, "n": n}).Warn("txn.replicate failed")
+	if !txn.failed() {
+		if sum, err = txn.replicate(srv); err != nil {
+			log.WithFields(log.Fields{"err": err}).Warn("txn.replicate failed")
 		} else {
-			resp.LastOffset += n
-			txn.nCommit += n
+			txn.scatterCommit()
 		}
 	}
 
 	var maybeHandoffCh = r.txnHandoffCh
-	var doneCh = txn.doneCh
 
 	// We must commitOrAbort if:
 	//  * The transaction failed (in which case we'll abort immediately)
 	//  * A replicate error occurred n > 0 bytes into a client request.
 	//  * We're over-threshold for the transaction size.
-	if txn.failed || (err != nil && n > 0) || (txn.nCommit >= r.spec().TransactionSize) {
+	if txn.failed() || err != nil || (txn.spool.ContentLength() >= r.spec().Fragment.Length) {
 		maybeHandoffCh = nil // Cannot select.
 	}
 
 	// Attempt to hand off to another ready coordinate invocation.
 	select {
 	case maybeHandoffCh <- txn:
-		<-doneCh // Wait for receiving goroutine to commitOrAbort.
 	default:
-		txn.commitOrAbort()
+		txn.closeSend()
 		r.spoolCh <- txn.spool // Release ownership of Journal Spool.
 	}
+
+	txn.gatherAck()
+
+	// TODO - send stuff
 
 	if err != nil {
 		return nil, err

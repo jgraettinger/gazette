@@ -1,7 +1,10 @@
 package broker
 
 import (
+	"context"
+	"crypto/sha1"
 	"errors"
+	"fmt"
 	"io"
 
 	log "github.com/sirupsen/logrus"
@@ -14,23 +17,111 @@ import (
 
 // transaction is an in-flight replicated write transaction of a journal.
 type transaction struct {
-	replica *replica
-	spool   fragment.Spool              // Owned, local replica Spool.
-	streams []pb.Broker_ReplicateClient // Peer replicate clients.
-	nCommit int64                       // Replicated bytes ready to commitOrAbort.
-
-	doneCh   chan struct{} // Closed and then nil'd when commitOrAbort() completes.
-	failed   bool          // First encountered error which fails the txn.
-	fragment pb.Fragment   // On successful commit, the updated local Fragment.
+	route    pb.Route
+	spool    fragment.Spool
+	streams  []pb.Broker_ReplicateClient
+	sendErrs []error
+	recvResp []pb.ReplicateResponse
+	recvErrs []error
 }
 
 // newTransaction returns a new transaction.
-func newTransaction(r *replica, spool fragment.Spool) *transaction {
-	return &transaction{
-		replica: r,
-		spool:   spool,
-		doneCh:  make(chan struct{}),
+func newTransaction(ctx context.Context, route pb.Route, spool fragment.Spool, connFn buildConnFn) *transaction {
+	if route.Primary == -1 {
+		panic("newTransaction requires Route with Primary != -1")
 	}
+
+	var txn = &transaction{
+		route:    route,
+		spool:    spool,
+		streams:  make([]pb.Broker_ReplicateClient, len(route.Brokers)),
+		sendErrs: make([]error, len(route.Brokers)),
+		recvResp: make([]pb.ReplicateResponse, len(route.Brokers)),
+		recvErrs: make([]error, len(route.Brokers)),
+	}
+
+	for i, b := range route.Brokers {
+		if i == int(route.Primary) {
+			continue
+		}
+		var conn *grpc.ClientConn
+
+		if conn, txn.sendErrs[i] = connFn(b); txn.sendErrs[i] == nil {
+			txn.streams[i], txn.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
+		}
+	}
+	return txn
+}
+
+func (txn *transaction) scatter(r *pb.ReplicateRequest) {
+	for i, s := range txn.streams {
+		if s != nil && txn.sendErrs[i] == nil {
+			txn.sendErrs[i] = s.Send(r)
+		}
+	}
+}
+
+func (txn *transaction) closeSend() {
+	for i, s := range txn.streams {
+		if s != nil && txn.sendErrs[i] == nil {
+			txn.sendErrs[i] = s.CloseSend()
+		}
+	}
+}
+
+func (txn *transaction) gatherResp() {
+	for i, s := range txn.streams {
+		if s != nil && txn.recvErrs[i] == nil {
+			txn.recvErrs[i] = s.RecvMsg(&txn.recvResp[i])
+		}
+	}
+}
+
+func (txn *transaction) gatherEOF() {
+	for i, s := range txn.streams {
+		if s != nil && txn.recvErrs[i] == nil {
+			var msg, err = s.Recv()
+
+			if err == io.EOF {
+				// Pass.
+			} else if err != nil {
+				txn.recvErrs[i] = err
+			} else {
+				txn.recvErrs[i] = fmt.Errorf("unexpected ReplicateResponse: %s", msg.String())
+			}
+		}
+	}
+}
+
+func (txn *transaction) anyErr() (pb.BrokerSpec_ID, error) {
+	for i, e := range txn.sendErrs {
+		if e != nil {
+			return txn.route.Brokers[i], e
+		}
+	}
+	for i, e := range txn.recvErrs {
+		if e != nil {
+			return txn.route.Brokers[i], e
+		}
+	}
+	return pb.BrokerSpec_ID{}, nil
+}
+
+func (txn *transaction) scatterCommit() {
+
+	if err := txn.spool.Commit(); err != nil {
+		log.WithFields(log.Fields{"err": err, "fragment": txn.spool.Fragment.String()}).
+			Warn("txn.scatterPropose: local Commit failed")
+
+		// Error invalidates |txn.spool| for further writes. We must Roll it.
+		// txn.spool.Roll(txn.replica.spec(), txn.spool.Fragment.End) ?????
+		// txn.sendFailed = true
+		// return ???
+	}
+
+}
+
+func (txn *transaction) gatherResponse() {
 }
 
 // begin the transaction. Initialize a replication stream to each replica peer,
@@ -180,12 +271,20 @@ func (txn *transaction) commitOrAbort() {
 // multiplexes them to all replicas. It returns the number of bytes read from
 // the client, and any encountered read or write error. The transaction must
 // not already be failed, or replicate panics.
-func (txn *transaction) replicate(srv grpc.ServerStream) (n int64, err error) {
-	if txn.failed {
+func (txn *transaction) replicate(srv grpc.ServerStream) (sum pb.SHA1Sum, err error) {
+	if txn.failed() {
 		panic("transaction has already failed")
 	}
+
+	var summer = sha1.New()
+	defer func() {
+		sum = pb.SHA1SumFromDigest(summer.Sum(nil))
+	}()
+
 	var appendReq = new(pb.AppendRequest)
 	var repReq = new(pb.ReplicateRequest)
+
+	// TODO(johnny): Log but mask errors where no data was streamed to peers.
 
 	for {
 		if err = srv.RecvMsg(appendReq); err == io.EOF {
@@ -203,13 +302,12 @@ func (txn *transaction) replicate(srv grpc.ServerStream) (n int64, err error) {
 			// as a commitOrAbort.
 		} else {
 			// Multiplex content to each replication stream, and the local Spool.
-			repReq.NextOffset = txn.spool.End + txn.nCommit + n
 			repReq.Content = appendReq.Content
 			n += l
 
 			for _, s := range txn.streams {
 				if err = s.Send(repReq); err != nil {
-					txn.failed = true
+					txn.sendFailed = true
 					return
 				}
 			}

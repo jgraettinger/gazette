@@ -104,7 +104,7 @@ func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {
 func prepareSpool(s *fragment.Spool, r *replica) error {
 	if eo := r.index.endOffset(); eo > s.Fragment.End {
 		s.Roll(r.spec(), eo)
-	} else if s.Fragment.ContentLength() >= r.spec().FragmentLength {
+	} else if s.Fragment.ContentLength() >= r.spec().Fragment.Length {
 		s.Roll(r.spec(), s.Fragment.End)
 	}
 
@@ -119,7 +119,7 @@ func prepareSpool(s *fragment.Spool, r *replica) error {
 	// arrives. Compression can be expensive, and compressing the Fragment as it's
 	// built effectively back-pressures the cost onto writers, ensuring we don't
 	// accept writes faster than we can compress them.
-	if r.isPrimary() && s.CompressedFile == nil {
+	if r.isPrimary() && s.CompressedFile == nil && s.ContentLength() == 0 {
 		if err := s.InitCompressor(); err != nil {
 			return err
 		}

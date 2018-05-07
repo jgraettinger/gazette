@@ -2,6 +2,7 @@ package fragment
 
 import (
 	"crypto/sha1"
+	"encoding"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -18,10 +19,15 @@ import (
 // Fragment is also be updated to reflect the new committed extent. At all
 // times, the Spool Fragment is a consistent, valid Fragment.
 type Spool struct {
-	// Fragment currently being appended to.
+	// Fragment at time of last commit.
 	Fragment
-	// SHA1Summer is used to incrementally update |Fragment.Sum| as commits occur.
-	SHA1Summer hash.Hash
+
+	nextEnd    int64
+	nextSummer hash.Hash
+	// SHA1State is the binary marshalling of the state of a SHA1 hash.Hash
+	// at the completion of the last commit.
+	sha1State []byte
+
 	// Compressed form of the Fragment, compressed under Fragment.CompressionCodec.
 	// This field is somewhat speculative; only one broker (eg, the primary)
 	// will compress writes as they commit. Under normal operation, this allows
@@ -36,8 +42,8 @@ type Spool struct {
 // Roll closes and (if a store is configured) persists the Spool, and then
 // "rolls" it forward to a zero-length Fragment at |offset|. The Spool must
 // be opened before use. |offset| must not be less than the current Fragment
-// End, or Roll panics. Also, |spec| must not reference a different Journal than
-// that of the Spool, or Roll panics.
+// End, or Roll panics. Also, |spec| must not reference a different Journal
+// than that of the Spool, or Roll panics.
 func (s *Spool) Roll(spec *pb.JournalSpec, offset int64) {
 	if offset < s.Fragment.End {
 		panic("invalid offset")
@@ -48,8 +54,8 @@ func (s *Spool) Roll(spec *pb.JournalSpec, offset int64) {
 	var prev = *s
 	prev.finalize(false)
 
-	if prev.ContentLength() != 0 && len(spec.FragmentStores) != 0 {
-		prev.BackingStore = spec.FragmentStores[0]
+	if prev.ContentLength() != 0 && len(spec.Fragment.Stores) != 0 {
+		prev.BackingStore = spec.Fragment.Stores[0]
 		go Store.Persist(prev)
 	}
 
@@ -59,7 +65,7 @@ func (s *Spool) Roll(spec *pb.JournalSpec, offset int64) {
 				Journal:          spec.Name,
 				Begin:            offset,
 				End:              offset,
-				CompressionCodec: spec.CompressionCodec,
+				CompressionCodec: spec.Fragment.CompressionCodec,
 			},
 		},
 	}
@@ -80,6 +86,8 @@ func (s *Spool) Open() error {
 	if err == nil {
 		s.Fragment.File = file
 		s.SHA1Summer = sha1.New()
+		s.SHA1State, err = s.SHA1Summer.(encoding.BinaryMarshaler).MarshalBinary()
+		s.Next = s.Fragment
 	}
 	return err
 }
@@ -108,13 +116,24 @@ func (s *Spool) InitCompressor() error {
 	}
 }
 
+func (s *Spool) Append(p []byte) error {
+
+}
+
+func (s *Spool) Rollback() {
+
+}
+
+// Next returns the Fragment which will be created by the next Commit.
+func (s *Spool) Next() pb.Fragment {}
+
 // Commit records |delta| new bytes beyond the current Fragment End, and
 // already written to the backing Fragment.File, to the Spool. The Spool
 // Fragment is updated with the new SHA1 sum and offset extent, and the
 // committed content is optionally compressed. A returned error aborts the
 // Commit, and callers should handle by closing the current Spool and not
 // attempting to re-use it.
-func (s *Spool) Commit(delta int64) error {
+func (s *Spool) Commit() error {
 	// Build a reader over the portion to be committed this transaction.
 	var sr = io.NewSectionReader(s.File, s.ContentLength(), delta)
 	var err error

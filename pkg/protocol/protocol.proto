@@ -135,12 +135,6 @@ message JournalSpec {
   }
   Fragment fragment = 4 [(gogoproto.nullable) = false];
 
-  // Target content length of write transactions. While under this threshold,
-  // the broker will seek to extend a current transaction by coalescing
-  // additional ready Append RPCs. Once over this threshold, the broker will
-  // commit the transaction at the completion of the current Append RPC.
-  int64 transaction_length = 5;
-
   // If true, this Journal will not accept Append requests.
   bool read_only = 6;
 }
@@ -176,7 +170,7 @@ message Fragment {
   CompressionCodec compression_codec = 5;
   // Fragment store which backs the Fragment. Empty if the Fragment has yet to
   // be persisted and is still local to a Broker.
-  string backing_store = 6;
+  string backing_store = 6 [(gogoproto.casttype) = "FragmentStore"];
   // Modification timestamp of the Fragment within the backing store.
   google.protobuf.Timestamp mod_time = 7 [(gogoproto.stdtime) = true, (gogoproto.nullable) = false];
 }
@@ -254,27 +248,25 @@ message AppendResponse {
 message ReplicateRequest {
   // Journal to be replicated to.
   string journal = 1 [(gogoproto.casttype) = "Journal"];
-  // Next offset to be written within the Journal. next_offset is independently
-  // verified by each Journal replica.
-  int64 next_offset = 2;
   // Route of the transaction, also known and verified by all replicas.
-  Route route = 3;
+  Route route = 2;
+  // Proposed Fragment to commit. Independently verified by each Journal replica.
+  Fragment commit = 3;
   // Content to be replicated. Present on ReplicateRequest messages after
   // the first (and after a Status_OK ReplicateResponse has been sent).
   // Empty content signals that the transaction has completed.
   bytes content = 4;
-  // Bytes to be comitted. Pair with an empty |content| field.
-  int64 commit = 5;
 }
 
 message ReplicateResponse {
   Status status = 1;
-  // If status is WRONG_WRITE_HEAD, then |write_head| is the replica's
-  // own, strictly greater write head.
-  int64 write_head = 2;
   // If status is WRONG_ROUTE_TOKEN, then |route| is the replica's Route
   // which was found to be inconsistent with the request Route.
-  Route route = 3;
+  Route route = 2;
+  // If status is FRAGMENT_MISMATCH, then |fragment| is the replica's
+  // Fragment at the current journal head, which was found to be inconsistent
+  // with the request |commit| Fragment.
+  Fragment fragment = 3;
 }
 
 // Route captures the current topology of a Journal and the brokers serving it.
@@ -291,6 +283,9 @@ message Route {
   // Endpoints of each Route Broker. If not empty, |endpoints| has the same
   // length and order as |brokers|, and captures the endpoint of each one.
   repeated string endpoints = 3 [(gogoproto.casttype) = "Endpoint"];
+  // Etcd revision at which this Route was produced. |revision| is helpful in
+  // the comparison of non-equivalent Routes, to determine which is more recent.
+  int64 revision = 4;
 }
 
 service Broker {

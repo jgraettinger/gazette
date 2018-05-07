@@ -22,13 +22,15 @@ import (
 // of locally-assigned replicas, and resolving other journals to broker peers.
 // It implements the pb.BrokerServer interface.
 type Router struct {
-	ks   *keyspace.KeySpace
-	id   pb.BrokerSpec_ID
-	etcd *clientv3.Client
+	ks        *keyspace.KeySpace
+	id        pb.BrokerSpec_ID
+	etcd      *clientv3.Client
+	connCache *lru.Cache
 
-	connCache  *lru.Cache
 	replicas   map[pb.Journal]*replica
 	replicasMu sync.RWMutex
+
+	ksUpdateCh chan struct{} // Guarded by ks.RWMutex.
 }
 
 // NewRouter builds and returns an empty, initialized Router.
@@ -69,11 +71,30 @@ func (rt *Router) Append(srv pb.Broker_AppendServer) error {
 		return err
 	}
 
-	var res, status = rt.resolve(req.Journal, true, true)
-	if status != pb.Status_OK {
-		return srv.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
-	} else if res.replica == nil {
-		return rt.proxyAppend(req, res.broker, srv)
+	// Gate the request on completing an initial index load of remote Fragments.
+	select {
+	case <-r.initialLoadCh:
+		// Pass.
+	case <-r.ctx.Done():
+		return nil, nil, r.ctx.Err() // Journal cancelled.
+	case <-ctx.Done():
+		return nil, nil, ctx.Err() // Context cancelled.
+	}
+
+	var rev int64
+
+	for {
+		if err = rt.waitForRevision(rev); err != nil {
+			return err
+		}
+
+		var res, status = rt.resolve(req.Journal, true, true)
+		if status != pb.Status_OK {
+			return srv.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
+		} else if res.replica == nil {
+			return rt.proxyAppend(req, res.broker, srv)
+		}
+
 	}
 
 	var resp *pb.AppendResponse
@@ -91,6 +112,8 @@ func (rt *Router) Replicate(srv pb.Broker_ReplicateServer) error {
 	if err != nil {
 		return err
 	} else if err = req.Validate(); err != nil {
+		return err
+	} else if err = rt.waitForRevision(req.Route.Revision); err != nil {
 		return err
 	}
 
