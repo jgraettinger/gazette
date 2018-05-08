@@ -2,13 +2,9 @@ package broker
 
 import (
 	"context"
-	"crypto/sha1"
-	"errors"
 	"fmt"
 	"io"
 
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/trace"
 	"google.golang.org/grpc"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
@@ -21,8 +17,10 @@ type transaction struct {
 	spool    fragment.Spool
 	streams  []pb.Broker_ReplicateClient
 	sendErrs []error
-	recvResp []pb.ReplicateResponse
-	recvErrs []error
+
+	readBarrierCh chan struct{}
+	recvResp      []pb.ReplicateResponse
+	recvErrs      []error
 }
 
 // newTransaction returns a new transaction.
@@ -32,13 +30,15 @@ func newTransaction(ctx context.Context, route pb.Route, spool fragment.Spool, c
 	}
 
 	var txn = &transaction{
-		route:    route,
-		spool:    spool,
-		streams:  make([]pb.Broker_ReplicateClient, len(route.Brokers)),
-		sendErrs: make([]error, len(route.Brokers)),
-		recvResp: make([]pb.ReplicateResponse, len(route.Brokers)),
-		recvErrs: make([]error, len(route.Brokers)),
+		route:         route,
+		spool:         spool,
+		streams:       make([]pb.Broker_ReplicateClient, len(route.Brokers)),
+		sendErrs:      make([]error, len(route.Brokers)),
+		readBarrierCh: make(chan struct{}),
+		recvResp:      make([]pb.ReplicateResponse, len(route.Brokers)),
+		recvErrs:      make([]error, len(route.Brokers)),
 	}
+	close(txn.readBarrierCh)
 
 	for i, b := range route.Brokers {
 		if i == int(route.Primary) {
@@ -69,7 +69,16 @@ func (txn *transaction) closeSend() {
 	}
 }
 
-func (txn *transaction) gatherResp() {
+func (txn *transaction) sendErr() error {
+	for i, err := range txn.sendErrs {
+		if err != nil {
+			return fmt.Errorf("send to peer %s: %s", txn.route.Brokers[i], err)
+		}
+	}
+	return nil
+}
+
+func (txn *transaction) gather() {
 	for i, s := range txn.streams {
 		if s != nil && txn.recvErrs[i] == nil {
 			txn.recvErrs[i] = s.RecvMsg(&txn.recvResp[i])
@@ -77,36 +86,58 @@ func (txn *transaction) gatherResp() {
 	}
 }
 
+func (txn *transaction) gatherOK() {
+	txn.gather()
+
+	for i, s := range txn.streams {
+		if s == nil || txn.recvErrs[i] != nil {
+			// Pass.
+		} else if txn.recvResp[i].Status != pb.Status_OK {
+			txn.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", txn.recvResp[i])
+		}
+	}
+}
+
 func (txn *transaction) gatherEOF() {
 	for i, s := range txn.streams {
-		if s != nil && txn.recvErrs[i] == nil {
-			var msg, err = s.Recv()
+		if s == nil || txn.recvErrs[i] != nil {
+			continue
+		}
+		var msg, err = s.Recv()
 
-			if err == io.EOF {
-				// Pass.
-			} else if err != nil {
-				txn.recvErrs[i] = err
-			} else {
-				txn.recvErrs[i] = fmt.Errorf("unexpected ReplicateResponse: %s", msg.String())
-			}
+		if err == io.EOF {
+			// Pass.
+		} else if err != nil {
+			txn.recvErrs[i] = err
+		} else {
+			txn.recvErrs[i] = fmt.Errorf("unexpected response: %s", msg.String())
 		}
 	}
 }
 
-func (txn *transaction) anyErr() (pb.BrokerSpec_ID, error) {
-	for i, e := range txn.sendErrs {
-		if e != nil {
-			return txn.route.Brokers[i], e
+func (txn *transaction) recvErr() error {
+	for i, err := range txn.recvErrs {
+		if err != nil {
+			return fmt.Errorf("recv from peer %s: %s", txn.route.Brokers[i], err)
 		}
 	}
-	for i, e := range txn.recvErrs {
-		if e != nil {
-			return txn.route.Brokers[i], e
-		}
-	}
-	return pb.BrokerSpec_ID{}, nil
+	return nil
 }
 
+func (txn *transaction) sendRecvErr() error {
+	if err := txn.sendErr(); err != nil {
+		return err
+	}
+	return txn.recvErr()
+}
+
+func (txn *transaction) readBarrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
+	waitFor, txn.readBarrierCh = txn.readBarrierCh, make(chan struct{})
+	closeAfter = txn.readBarrierCh
+	return
+}
+
+/*
 func (txn *transaction) scatterCommit() {
 
 	if err := txn.spool.Commit(); err != nil {
@@ -267,55 +298,4 @@ func (txn *transaction) commitOrAbort() {
 	txn.doneCh = nil
 }
 
-// replicate reads stream of AppendRequest chunks from the client, and
-// multiplexes them to all replicas. It returns the number of bytes read from
-// the client, and any encountered read or write error. The transaction must
-// not already be failed, or replicate panics.
-func (txn *transaction) replicate(srv grpc.ServerStream) (sum pb.SHA1Sum, err error) {
-	if txn.failed() {
-		panic("transaction has already failed")
-	}
-
-	var summer = sha1.New()
-	defer func() {
-		sum = pb.SHA1SumFromDigest(summer.Sum(nil))
-	}()
-
-	var appendReq = new(pb.AppendRequest)
-	var repReq = new(pb.ReplicateRequest)
-
-	// TODO(johnny): Log but mask errors where no data was streamed to peers.
-
-	for {
-		if err = srv.RecvMsg(appendReq); err == io.EOF {
-			err = nil // Reached end-of-input for this Append stream.
-			return
-		} else if err != nil {
-			// Client read errors don't invalidate the transaction.
-			// We may still commit previously & fully read Append streams.
-			return
-		} else if err = appendReq.Validate(); err != nil {
-			return
-		} else if l := int64(len(appendReq.Content)); l == 0 {
-			// Empty chunks are allowed (though not expected). Ignore, and certainly
-			// don't pass through as a ReplicateRequest, as that would be interpreted
-			// as a commitOrAbort.
-		} else {
-			// Multiplex content to each replication stream, and the local Spool.
-			repReq.Content = appendReq.Content
-			n += l
-
-			for _, s := range txn.streams {
-				if err = s.Send(repReq); err != nil {
-					txn.sendFailed = true
-					return
-				}
-			}
-			_, err = txn.spool.File.WriteAt(repReq.Content, repReq.NextOffset-txn.spool.Begin)
-			if err != nil {
-				txn.failed = true
-				return
-			}
-		}
-	}
-}
+*/

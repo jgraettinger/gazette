@@ -235,14 +235,9 @@ message AppendResponse {
   Status status = 1;
   // The route of responsible brokers for the current Journal.
   Route route = 2;
-  // On Status OK, the [first_offset, last_offset) byte range at which the
-  //Append was committed to the log.
-  int64 first_offset = 3;
-  int64 last_offset = 4;
-  // On Status OK, the write_head at the time of the Append request completion.
-  // This may be equal to or larger than last_offset, as multiple Appends may
-  // have been coalesced within a single replicated transaction.
-  int64 write_head = 5;
+  // On Status OK, the Fragment which places the committed Append
+  // content within the Journal.
+  Fragment commit = 3;
 }
 
 message ReplicateRequest {

@@ -3,133 +3,229 @@ package broker
 import (
 	"context"
 	"crypto/sha1"
+	"fmt"
+	"io"
 	"time"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
+	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-func beginTxn(ctx context.Context, r *replica, connFn buildConnFn) (*transaction, *pb.ReplicateResponse, error) {
+// acquireTxn returns a ready transaction, or returns an Etcd revision which
+// should be read through before attempting a transaction, or returns an error.
+func acquireTxn(ctx context.Context, r *replica, connFn buildConnFn) (*transaction, int64, error) {
 	// Acquire sole ownership of the replica Spool, and
 	// possibly of an ongoing transaction which wraps it.
-	var txn *transaction
 	var spool fragment.Spool
+	var txn *transaction
 
 	select {
+	case <-r.ctx.Done():
+		return nil, 0, r.ctx.Err() // Journal cancelled.
+	case <-ctx.Done():
+		return nil, 0, ctx.Err() // Context cancelled.
+
 	case txn = <-r.txnHandoffCh:
-		// We now hold the replica Spool, as well as an ongoing transaction.
-
-		// Ensure the Route of the ongoing transaction matches our own. If not,
-		// we need to close the current transaction and begin anew.
-		if !r.route.Equivalent(&txn.route) {
-			txn.closeSend()
-			txn.gatherEOF()
-
-			if bid, err := txn.anyErr(); err != nil {
-				log.WithFields(log.Fields{"broker": bid, "err": err}).
-					Warn("failed to close prior transaction")
-			}
-			spool = txn.spool
-			txn = nil
+		// We now hold an ongoing transaction and its wrapped replica Spool.
+		if txn.route.Revision < r.route.Revision && !r.route.Equivalent(&txn.route) {
+			// The transaction was established with a non-equivalent Route which is
+			// older than our own. Close this transaction, and recurse to begin anew.
+			closeTxn(r, txn)
+			return acquireTxn(ctx, r, connFn)
 		}
+		return txn, 0, nil // Return ready transaction.
 
 	case spool = <-r.spoolCh:
-		// We now hold the replica Spool, but there is no current transaction.
-	case <-r.ctx.Done():
-		return nil, nil, r.ctx.Err() // Journal cancelled.
-	case <-ctx.Done():
-		return nil, nil, ctx.Err() // Request cancelled.
+		// We now hold the replica Spool. There is no current transaction;
+		// and we must begin one.
 	}
 
-	if txn != nil {
-		// Return ready transaction.
-		return txn, nil, nil
-	}
-
-	// There is no current transaction. Begin one.
 	if err := prepareSpool(&spool, r); err != nil {
-		return nil, nil, err
+		r.spoolCh <- spool // Release ownership of |spool|.
+		return nil, 0, err
 	}
 	txn = newTransaction(r.ctx, r.route, spool, connFn)
 
-	// Propose the current spool Fragment, to ensure all replicas are in sync.
+	// Perform a trivial commit of the current Fragment, to sync all peers.
 	txn.scatter(&pb.ReplicateRequest{
 		Journal: spool.Journal,
 		Route:   &r.route,
 		Commit:  &spool.Fragment.Fragment,
 	})
-	txn.gatherResp()
+	txn.gather()
 
-	if bid, err := txn.anyErr(); err != nil {
-		pb.ExtendContext()
+	var err = txn.sendRecvErr()
 
-	}
+	for i := 0; err == nil && i != len(txn.recvResp); i++ {
+		switch resp := txn.recvResp[i]; resp.Status {
+		case pb.Status_OK:
+			continue
+		case pb.Status_WRONG_ROUTE:
+			if !resp.Route.Equivalent(&r.route) && resp.Route.Revision > r.route.Revision {
+				// Peer has a non-equivalent Route at a later Etcd revision. We should
+				// process this RPC only after reading through that revision.
+				closeTxn(r, txn)
+				return nil, resp.Route.Revision, nil
+			}
+			err = fmt.Errorf("unexpected Route mismatch: %s (broker %s) vs %s (local)",
+				resp.Route, txn.route.Brokers[i], r.route)
 
-		if err = txn.err(i); err != nil {
-			log.WithFields(log.Fields{"err": txn.sendErrs[i], "broker": txn.route.Brokers[i]}).
-				Warn("failed to start Replicate stream")
+		case pb.Status_WRONG_WRITE_HEAD:
+			if txn.recvResp[i].Fragment.Begin != txn.spool.Fragment.Begin &&
+				txn.recvResp[i].Fragment.End >= txn.spool.Fragment.End {
+				// Peer has a Fragment at matched or larger End offset, and with a
+				// differing Begin offset. Roll the Spool forward to a new & empty
+				// Fragment at the maximal offset. We can attempt the transaction
+				// again, and this time all peers should agree on the new Fragment.
+				txn.spool.Roll(r.spec(), txn.recvResp[i].Fragment.End)
 
-			txn.closeSend()
-			txn = nil
-			return
+				closeTxn(r, txn)
+				return acquireTxn(ctx, r, connFn)
+			}
+			err = fmt.Errorf("unexpected Fragment mismatch: %s (broker %s) vs %s (local)",
+				resp.Fragment, txn.route.Brokers[i], txn.spool.Fragment.Fragment)
 		}
-
 	}
-
-}
-
-// coordinate establishes or obtains a current transaction and applies the client's
-// Append RPC within it.
-func coordinate(r *replica, _ *pb.AppendRequest, srv pb.Broker_AppendServer, connFn buildConnFn) (*pb.AppendResponse, error) {
-
-	var sum pb.SHA1Sum
-	var err error
-
-	if !txn.failed() {
-		if sum, err = txn.replicate(srv); err != nil {
-			log.WithFields(log.Fields{"err": err}).Warn("txn.replicate failed")
-		} else {
-			txn.scatterCommit()
-		}
-	}
-
-	var maybeHandoffCh = r.txnHandoffCh
-
-	// We must commitOrAbort if:
-	//  * The transaction failed (in which case we'll abort immediately)
-	//  * A replicate error occurred n > 0 bytes into a client request.
-	//  * We're over-threshold for the transaction size.
-	if txn.failed() || err != nil || (txn.spool.ContentLength() >= r.spec().Fragment.Length) {
-		maybeHandoffCh = nil // Cannot select.
-	}
-
-	// Attempt to hand off to another ready coordinate invocation.
-	select {
-	case maybeHandoffCh <- txn:
-	default:
-		txn.closeSend()
-		r.spoolCh <- txn.spool // Release ownership of Journal Spool.
-	}
-
-	txn.gatherAck()
-
-	// TODO - send stuff
 
 	if err != nil {
-		return nil, err
-	} else if txn.failed {
-		*resp = pb.AppendResponse{
-			Status: pb.Status_REPLICATION_FAILED,
-			Route:  &r.route,
-		}
-		return resp, srv.SendAndClose(resp)
-	} else {
-		resp.WriteHead += txn.nCommit
-		return resp, srv.SendAndClose(resp)
+		closeTxn(r, txn)
+		txn = nil
 	}
+	return txn, 0, err
+}
+
+func closeTxn(r *replica, txn *transaction) {
+	txn.closeSend()
+	<-txn.readBarrierCh
+	txn.gatherEOF()
+
+	if err := txn.sendRecvErr(); err != nil {
+		log.WithField("err", err).Warn("failed to close transaction")
+	}
+
+	txn.spool.Rollback()
+	r.spoolCh <- txn.spool // Release ownership of Journal Spool.
+}
+
+func coordinate(srv pb.Broker_AppendServer, r *replica, txn *transaction, etcd *clientv3.Client) (*pb.AppendResponse, error) {
+	// |frag| defines the Fragment of Journal into which the Append RPC is committed.
+	var frag = &pb.Fragment{
+		Journal: txn.spool.Fragment.Journal,
+		Begin:   txn.spool.End,
+		End:     txn.spool.End,
+	}
+	var summer = sha1.New()
+
+	var err error
+	var req = new(pb.AppendRequest)
+
+	for {
+		if err = srv.RecvMsg(req); err == io.EOF {
+			err = nil // Reached end-of-input for this Append stream.
+			break
+		} else if err != nil {
+		} else if err = req.Validate(); err != nil {
+		} else if l := int64(len(req.Content)); l == 0 {
+			// Empty chunks are allowed (though not expected). Ignore, and certainly
+			// don't pass through as a ReplicateRequest, as that would be interpreted
+			// as a commitOrAbort.
+			continue
+		}
+
+		if err != nil {
+			// This is a client-side error. If we have streamed no RPC content through
+			// the transaction, it's still valid and can be handed off to another RPC.
+			if frag.ContentLength() == 0 {
+				select {
+				case r.txnHandoffCh <- txn:
+					return nil, err
+				default:
+				}
+			}
+			closeTxn(r, txn)
+			return nil, err
+		}
+
+		// Multiplex content to each replication stream, and the local Spool.
+		txn.scatter(&pb.ReplicateRequest{Content: req.Content})
+		if err := txn.sendErr(); err != nil {
+			closeTxn(r, txn)
+			return nil, err
+		}
+		if err = txn.spool.Append(req.Content); err != nil {
+			closeTxn(r, txn)
+			return nil, err
+		}
+		_, _ = summer.Write(req.Content) // Cannot error.
+		frag.End += int64(len(req.Content))
+	}
+
+	// Commit the Append, by scattering the next Fragment to be committed
+	// to each peer. They will inspect & validate the Fragment locally,
+	// and commit or return an error.
+	var next = new(pb.Fragment)
+	*next = txn.spool.Next()
+
+	txn.scatter(&pb.ReplicateRequest{
+		Journal: txn.spool.Journal,
+		Route:   &txn.route,
+		Commit:  next,
+	})
+	if err := txn.sendErr(); err != nil {
+		closeTxn(r, txn)
+		return nil, err
+	}
+
+	// Commit locally. This may involve relatively expensive compression, which
+	// now happens in parallel to our round-trip commit messages with replicas.
+	if err = txn.spool.Commit(); err != nil {
+		closeTxn(r, txn)
+		return nil, err
+	}
+
+	var mustClose = txn.spool.Fragment.ContentLength() >= r.spec().Fragment.Length
+	var waitFor, closeAfter = txn.readBarrier()
+
+	if !mustClose {
+		select {
+		case r.txnHandoffCh <- txn:
+		default:
+			mustClose = true
+		}
+	}
+
+	// There may be pipelined commits prior to this one, who have not yet read
+	// their responses. Block until they do, and our response is the next to
+	// receive. Similarly, defer a close to signal to RPCs pipelined after
+	// this one, that they may in turn read their responses.
+	<-waitFor
+
+	defer func() {
+		close(closeAfter)
+
+		if mustClose {
+			closeTxn(r, txn)
+		}
+	}()
+
+	txn.gatherOK()
+	if err := txn.recvErr(); err != nil {
+		return nil, err
+	}
+
+	// Ensure the Route of this transaction matches our Etcd-announced one.
+	r.maybeUpdateAssignmentRoute(etcd)
+
+	frag.Sum = pb.SHA1SumFromDigest(summer.Sum(nil))
+	return &pb.AppendResponse{
+		Status: pb.Status_OK,
+		Route:  &r.route,
+		Commit: frag,
+	}, nil
 }
 
 // issueEmptyWrite evaluates an Append RPC with no content.
