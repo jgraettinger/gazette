@@ -247,10 +247,10 @@ message ReplicateRequest {
   Route route = 2;
   // Proposed Fragment to commit. Independently verified by each Journal replica.
   Fragment commit = 3;
-  // Content to be replicated. Present on ReplicateRequest messages after
-  // the first (and after a Status_OK ReplicateResponse has been sent).
-  // Empty content signals that the transaction has completed.
-  bytes content = 4;
+  // Rollback all content replicated since the last commit.
+  bool rollback = 4;
+  // Content to be replicated.
+  bytes content = 5;
 }
 
 message ReplicateResponse {

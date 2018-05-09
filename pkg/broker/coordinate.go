@@ -111,12 +111,21 @@ func closeTxn(r *replica, txn *transaction) {
 	r.spoolCh <- txn.spool // Release ownership of Journal Spool.
 }
 
+func handOffTxn(r *replica, txn *transaction) bool {
+	select {
+	case r.txnHandoffCh <- txn:
+		return true
+	default:
+		return false
+	}
+}
+
 func coordinate(srv pb.Broker_AppendServer, r *replica, txn *transaction, etcd *clientv3.Client) (*pb.AppendResponse, error) {
-	// |frag| defines the Fragment of Journal into which the Append RPC is committed.
+	// |frag| defines the Fragment of Journal which records the Append content.
 	var frag = &pb.Fragment{
 		Journal: txn.spool.Fragment.Journal,
-		Begin:   txn.spool.End,
-		End:     txn.spool.End,
+		Begin:   txn.spool.Fragment.End,
+		End:     txn.spool.Fragment.End,
 	}
 	var summer = sha1.New()
 
@@ -127,31 +136,24 @@ func coordinate(srv pb.Broker_AppendServer, r *replica, txn *transaction, etcd *
 		if err = srv.RecvMsg(req); err == io.EOF {
 			err = nil // Reached end-of-input for this Append stream.
 			break
-		} else if err != nil {
-		} else if err = req.Validate(); err != nil {
-		} else if l := int64(len(req.Content)); l == 0 {
-			// Empty chunks are allowed (though not expected). Ignore, and certainly
-			// don't pass through as a ReplicateRequest, as that would be interpreted
-			// as a commitOrAbort.
-			continue
+		} else if err == nil {
+			err = req.Validate()
 		}
 
 		if err != nil {
-			// This is a client-side error. If we have streamed no RPC content through
-			// the transaction, it's still valid and can be handed off to another RPC.
-			if frag.ContentLength() == 0 {
-				select {
-				case r.txnHandoffCh <- txn:
-					return nil, err
-				default:
-				}
+			// A client-side read error occurred. The transaction is still in a good
+			// state, but any partial spooled content must be rolled back.
+			txn.scatter(&pb.ReplicateRequest{Rollback: true})
+			txn.spool.Rollback()
+
+			if !handOffTxn(r, txn) {
+
 			}
-			closeTxn(r, txn)
-			return nil, err
 		}
 
 		// Multiplex content to each replication stream, and the local Spool.
 		txn.scatter(&pb.ReplicateRequest{Content: req.Content})
+
 		if err := txn.sendErr(); err != nil {
 			closeTxn(r, txn)
 			return nil, err
@@ -187,21 +189,13 @@ func coordinate(srv pb.Broker_AppendServer, r *replica, txn *transaction, etcd *
 		return nil, err
 	}
 
-	var mustClose = txn.spool.Fragment.ContentLength() >= r.spec().Fragment.Length
 	var waitFor, closeAfter = txn.readBarrier()
-
-	if !mustClose {
-		select {
-		case r.txnHandoffCh <- txn:
-		default:
-			mustClose = true
-		}
-	}
+	var mustClose = !handOffTxn(r, txn)
 
 	// There may be pipelined commits prior to this one, who have not yet read
-	// their responses. Block until they do, and our response is the next to
-	// receive. Similarly, defer a close to signal to RPCs pipelined after
-	// this one, that they may in turn read their responses.
+	// their responses. Block until they do so, such that our responses are the
+	// next to receive. Similarly, defer a close to signal to RPCs pipelined
+	// after this one, that they may in turn read their responses.
 	<-waitFor
 
 	defer func() {
