@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"io"
 
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// transaction is an in-flight replicated write transaction of a journal.
-type transaction struct {
+// pipeline is an in-flight write replication pipeline of a journal.
+type pipeline struct {
 	route    pb.Route
 	spool    fragment.Spool
 	streams  []pb.Broker_ReplicateClient
@@ -21,15 +22,19 @@ type transaction struct {
 	readBarrierCh chan struct{}
 	recvResp      []pb.ReplicateResponse
 	recvErrs      []error
+
+	// readThroughRev, if set, indicates that a pipeline cannot be established
+	// until we have read through (and our Route reflects) this Etcd revision.
+	readThroughRev int64
 }
 
-// newTransaction returns a new transaction.
-func newTransaction(ctx context.Context, route pb.Route, spool fragment.Spool, connFn buildConnFn) *transaction {
+// newPipeline returns a new pipeline.
+func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, connFn buildConnFn) *pipeline {
 	if route.Primary == -1 {
 		panic("newTransaction requires Route with Primary != -1")
 	}
 
-	var txn = &transaction{
+	var pln = &pipeline{
 		route:         route,
 		spool:         spool,
 		streams:       make([]pb.Broker_ReplicateClient, len(route.Brokers)),
@@ -38,7 +43,7 @@ func newTransaction(ctx context.Context, route pb.Route, spool fragment.Spool, c
 		recvResp:      make([]pb.ReplicateResponse, len(route.Brokers)),
 		recvErrs:      make([]error, len(route.Brokers)),
 	}
-	close(txn.readBarrierCh)
+	close(pln.readBarrierCh)
 
 	for i, b := range route.Brokers {
 		if i == int(route.Primary) {
@@ -46,61 +51,61 @@ func newTransaction(ctx context.Context, route pb.Route, spool fragment.Spool, c
 		}
 		var conn *grpc.ClientConn
 
-		if conn, txn.sendErrs[i] = connFn(b); txn.sendErrs[i] == nil {
-			txn.streams[i], txn.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
+		if conn, pln.sendErrs[i] = connFn(b); pln.sendErrs[i] == nil {
+			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}
-	return txn
+	return pln
 }
 
-func (txn *transaction) scatter(r *pb.ReplicateRequest) {
-	for i, s := range txn.streams {
-		if s != nil && txn.sendErrs[i] == nil {
-			txn.sendErrs[i] = s.Send(r)
-		}
-	}
-}
-
-func (txn *transaction) closeSend() {
-	for i, s := range txn.streams {
-		if s != nil && txn.sendErrs[i] == nil {
-			txn.sendErrs[i] = s.CloseSend()
+func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
+	for i, s := range pln.streams {
+		if s != nil && pln.sendErrs[i] == nil {
+			pln.sendErrs[i] = s.Send(r)
 		}
 	}
 }
 
-func (txn *transaction) sendErr() error {
-	for i, err := range txn.sendErrs {
+func (pln *pipeline) closeSend() {
+	for i, s := range pln.streams {
+		if s != nil && pln.sendErrs[i] == nil {
+			pln.sendErrs[i] = s.CloseSend()
+		}
+	}
+}
+
+func (pln *pipeline) sendErr() error {
+	for i, err := range pln.sendErrs {
 		if err != nil {
-			return fmt.Errorf("send to peer %s: %s", txn.route.Brokers[i], err)
+			return fmt.Errorf("send to peer %s: %s", pln.route.Brokers[i], err)
 		}
 	}
 	return nil
 }
 
-func (txn *transaction) gather() {
-	for i, s := range txn.streams {
-		if s != nil && txn.recvErrs[i] == nil {
-			txn.recvErrs[i] = s.RecvMsg(&txn.recvResp[i])
+func (pln *pipeline) gather() {
+	for i, s := range pln.streams {
+		if s != nil && pln.recvErrs[i] == nil {
+			pln.recvErrs[i] = s.RecvMsg(&pln.recvResp[i])
 		}
 	}
 }
 
-func (txn *transaction) gatherOK() {
-	txn.gather()
+func (pln *pipeline) gatherOK() {
+	pln.gather()
 
-	for i, s := range txn.streams {
-		if s == nil || txn.recvErrs[i] != nil {
+	for i, s := range pln.streams {
+		if s == nil || pln.recvErrs[i] != nil {
 			// Pass.
-		} else if txn.recvResp[i].Status != pb.Status_OK {
-			txn.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", txn.recvResp[i])
+		} else if pln.recvResp[i].Status != pb.Status_OK {
+			pln.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", pln.recvResp[i])
 		}
 	}
 }
 
-func (txn *transaction) gatherEOF() {
-	for i, s := range txn.streams {
-		if s == nil || txn.recvErrs[i] != nil {
+func (pln *pipeline) gatherEOF() {
+	for i, s := range pln.streams {
+		if s == nil || pln.recvErrs[i] != nil {
 			continue
 		}
 		var msg, err = s.Recv()
@@ -108,41 +113,103 @@ func (txn *transaction) gatherEOF() {
 		if err == io.EOF {
 			// Pass.
 		} else if err != nil {
-			txn.recvErrs[i] = err
+			pln.recvErrs[i] = err
 		} else {
-			txn.recvErrs[i] = fmt.Errorf("unexpected response: %s", msg.String())
+			pln.recvErrs[i] = fmt.Errorf("unexpected response: %s", msg.String())
 		}
 	}
 }
 
-func (txn *transaction) recvErr() error {
-	for i, err := range txn.recvErrs {
+func (pln *pipeline) recvErr() error {
+	for i, err := range pln.recvErrs {
 		if err != nil {
-			return fmt.Errorf("recv from peer %s: %s", txn.route.Brokers[i], err)
+			return fmt.Errorf("recv from peer %s: %s", pln.route.Brokers[i], err)
 		}
 	}
 	return nil
 }
 
-func (txn *transaction) sendRecvErr() error {
-	if err := txn.sendErr(); err != nil {
-		return err
-	}
-	return txn.recvErr()
-}
-
-func (txn *transaction) readBarrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
-	waitFor, txn.readBarrierCh = txn.readBarrierCh, make(chan struct{})
-	closeAfter = txn.readBarrierCh
+func (pln *pipeline) readBarrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
+	waitFor, pln.readBarrierCh = pln.readBarrierCh, make(chan struct{})
+	closeAfter = pln.readBarrierCh
 	return
 }
 
-/*
-func (txn *transaction) scatterCommit() {
+func (pln *pipeline) sync() (rollToOffset, readThroughRev int64, err error) {
+	// Perform a trivial commit of the current Fragment, to sync all peers.
+	pln.scatter(&pb.ReplicateRequest{
+		Journal: pln.spool.Journal,
+		Route:   &pln.route,
+		Commit:  &pln.spool.Fragment.Fragment,
+	})
+	pln.gather()
 
-	if err := txn.spool.Commit(); err != nil {
-		log.WithFields(log.Fields{"err": err, "fragment": txn.spool.Fragment.String()}).
-			Warn("txn.scatterPropose: local Commit failed")
+	for i, s := range pln.streams {
+		if s == nil || pln.recvErrs[i] != nil {
+			continue
+		}
+
+		switch resp := pln.recvResp[i]; resp.Status {
+		case pb.Status_OK:
+			// Pass.
+		case pb.Status_WRONG_ROUTE:
+			if !resp.Route.Equivalent(&pln.route) && resp.Route.Revision > pln.route.Revision {
+				// Peer has a non-equivalent Route at a later Etcd revision.
+				if resp.Route.Revision > readThroughRev {
+					readThroughRev = resp.Route.Revision
+				}
+			} else {
+				pln.recvErrs[i] = fmt.Errorf("unexpected Route mismatch: %s (remote) vs %s (local)",
+					resp.Route, pln.route)
+			}
+
+		case pb.Status_WRONG_WRITE_HEAD:
+			if resp.Fragment.Begin != pln.spool.Fragment.Begin &&
+				resp.Fragment.End >= pln.spool.Fragment.End {
+				// Peer has a Fragment at matched or larger End offset, and with a
+				// differing Begin offset.
+				if rollToOffset < resp.Fragment.End {
+					rollToOffset = resp.Fragment.End
+				}
+			} else {
+				pln.recvErrs[i] = fmt.Errorf("unexpected Fragment mismatch: %s (remote) vs %s (local)",
+					resp.Fragment, pln.spool.Fragment.Fragment)
+			}
+
+		default:
+			pln.recvErrs[i] = fmt.Errorf("unexpected Status: %s", resp)
+		}
+	}
+
+	if err = pln.sendErr(); err == nil {
+		err = pln.recvErr()
+	}
+	return
+}
+
+func (pln *pipeline) close(spoolCh chan<- fragment.Spool) {
+	pln.spool.Rollback()
+	spoolCh <- pln.spool // Release ownership of Journal Spool.
+
+	pln.closeSend()
+	if err := pln.sendErr(); err != nil {
+		log.WithField("err", err).Warn("failed to send pipeline close")
+	}
+
+	<-pln.readBarrierCh
+	pln.gatherEOF()
+
+	if err := pln.recvErr(); err != nil {
+		log.WithField("err", err).Warn("failed to read pipeline close")
+	}
+}
+
+/*
+func (pln *pipeline) scatterCommit() {
+
+	if err := pln.spool.Commit(); err != nil {
+		log.WithFields(log.Fields{"err": err, "fragment": pln.spool.Fragment.String()}).
+			Warn("pln.scatterPropose: local Commit failed")
 
 		// Error invalidates |txn.spool| for further writes. We must Roll it.
 		// txn.spool.Roll(txn.replica.spec(), txn.spool.Fragment.End) ?????
@@ -152,12 +219,12 @@ func (txn *transaction) scatterCommit() {
 
 }
 
-func (txn *transaction) gatherResponse() {
+func (txn *pipeline) gatherResponse() {
 }
 
-// begin the transaction. Initialize a replication stream to each replica peer,
+// begin the pipeline. Initialize a replication stream to each replica peer,
 // collecting responses from each to verify the Route and NextOffset.
-func (txn *transaction) begin(connFn buildConnFn) {
+func (txn *pipeline) begin(connFn buildConnFn) {
 	if err := prepareSpool(&txn.spool, txn.replica); err != nil {
 		log.WithField("err", err).Warn("txn.begin: failed to prepare spool")
 		txn.failed = true
@@ -171,7 +238,7 @@ func (txn *transaction) begin(connFn buildConnFn) {
 	}
 	var resp = new(pb.ReplicateResponse)
 
-	// Scatter a ReplicateRequest out to all replicas to begin a transaction.
+	// Scatter a ReplicateRequest out to all replicas to begin a pipeline.
 	// They will independently verify Route and NextOffset.
 	for i, b := range txn.replica.route.Brokers {
 		if i == int(txn.replica.route.Primary) {
@@ -206,7 +273,7 @@ func (txn *transaction) begin(connFn buildConnFn) {
 				err = errors.New(resp.Status.String())
 
 				if resp.Status == pb.Status_WRONG_WRITE_HEAD && resp.WriteHead > txn.spool.Fragment.End {
-					// Roll forward to the response WriteHead. This transaction
+					// Roll forward to the response WriteHead. This pipeline
 					// has failed, but the next attempt may now succeed.
 					txn.spool.Roll(txn.replica.spec(), resp.WriteHead)
 				}
@@ -221,16 +288,16 @@ func (txn *transaction) begin(connFn buildConnFn) {
 		}
 
 		if tr, ok := trace.FromContext(txn.replica.ctx); ok {
-			tr.LazyPrintf("transaction.begin: %v (err: %v)", resp, err)
+			tr.LazyPrintf("pipeline.begin: %v (err: %v)", resp, err)
 		}
 	}
 }
 
-// commitOrAbort commits the first |nCommit| bytes of the replicated transaction
-// if the transaction hasn't failed (|txn.err| is nil), or aborts by committing
+// commitOrAbort commits the first |nCommit| bytes of the replicated pipeline
+// if the pipeline hasn't failed (|txn.err| is nil), or aborts by committing
 // zero bytes. |txn.doneCh| is closed when finished, and |txn.err| holds a
 // encountered error.
-func (txn *transaction) commitOrAbort() {
+func (txn *pipeline) commitOrAbort() {
 	if txn.doneCh == nil {
 		panic("already committed")
 	}
@@ -246,7 +313,7 @@ func (txn *transaction) commitOrAbort() {
 	}
 
 	// Scatter a ReplicateRequest out to remaining replicas to commit
-	// (or abort) the transaction.
+	// (or abort) the pipeline.
 	for i, s := range txn.streams {
 		if s == nil {
 			continue

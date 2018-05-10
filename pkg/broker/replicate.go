@@ -48,7 +48,7 @@ func replicate(r *replica, req *pb.ReplicateRequest, srv pb.Broker_ReplicateServ
 			Route:  &r.route,
 		}
 	} else {
-		// We're ready to proceed with the transaction.
+		// We're ready to proceed with the pipeline.
 		resp = &pb.ReplicateResponse{Status: pb.Status_OK}
 	}
 	if err = srv.SendMsg(resp); err != nil || resp.Status != pb.Status_OK {
@@ -57,7 +57,7 @@ func replicate(r *replica, req *pb.ReplicateRequest, srv pb.Broker_ReplicateServ
 
 	var total int64 // Total bytes across all streamed ReplicateRequests.
 
-	// Receive transaction content.
+	// Receive pipeline content.
 	for {
 		if err = srv.RecvMsg(req); err != nil {
 			return

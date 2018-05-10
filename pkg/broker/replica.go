@@ -29,9 +29,9 @@ type replica struct {
 	index *fragmentIndex
 	// spoolCh synchronizes access to the single Spool of the replica.
 	spoolCh chan fragment.Spool
-	// txnHandoffCh allows an Append holding an in-flight transaction, to hand
-	// the transaction off to another ready Append wanting to continue it.
-	txnHandoffCh chan *transaction
+	// txnHandoffCh allows an Append holding an in-flight pipeline, to hand
+	// the pipeline off to another ready Append wanting to continue it.
+	txnHandoffCh chan *pipeline
 	// initialLoadCh is closed after the first remote fragment store listing,
 	// and is used to gate Append requests (only) until the fragmentIndex
 	// has been initialized with remote listings.
@@ -49,7 +49,7 @@ func newReplica() *replica {
 		cancel:        cancel,
 		index:         newFragmentIndex(ctx),
 		spoolCh:       spoolCh,
-		txnHandoffCh:  make(chan *transaction),
+		txnHandoffCh:  make(chan *pipeline),
 		initialLoadCh: make(chan struct{}),
 	}
 }
@@ -95,18 +95,17 @@ func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {
 }
 
 // prepareSpool readies Spool for it's next write, by:
-//  * Rolling the Spool forward if it's less than the maximum end offset
-//    of the fragment index (eg, of a discovered remote Fragment).
-//  * Rolling the Spool forward if it's ContentLength has reached a threshold.
 //  * If not already, opening the Spool.
 //  * If not already and the replica is primary, initializing the Spool for
 //    incremental compression.
 func prepareSpool(s *fragment.Spool, r *replica) error {
-	if eo := r.index.endOffset(); eo > s.Fragment.End {
-		s.Roll(r.spec(), eo)
-	} else if s.Fragment.ContentLength() >= r.spec().Fragment.Length {
-		s.Roll(r.spec(), s.Fragment.End)
-	}
+	/*
+		if eo := r.index.endOffset(); eo > s.Fragment.End {
+			s.Roll(r.spec(), eo)
+		} else if s.Fragment.ContentLength() >= r.spec().Fragment.Length {
+			s.Roll(r.spec(), s.Fragment.End)
+		}
+	*/
 
 	if s.Fragment.File == nil {
 		if err := s.Open(); err != nil {

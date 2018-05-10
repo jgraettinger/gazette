@@ -84,7 +84,7 @@ func (rtr *Router) waitForRevision(ctx context.Context, rev int64) error {
 
 		select {
 		case <-ch:
-			// Pass.
+			// KeySpace updated. Loop to check against |rev|.
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -102,43 +102,34 @@ func (rtr *Router) Append(srv pb.Broker_AppendServer) error {
 	} else if err = req.Validate(); err != nil {
 		return err
 	}
+	return rtr.append(srv, req)
+}
 
-	var rev int64
-	var res resolution
-	var txn *transaction
+func (rtr *Router) append(srv pb.Broker_AppendServer, req *pb.AppendRequest) error {
+	var res, status = rtr.resolve(req.Journal, true, true)
+	if status != pb.Status_OK {
+		return srv.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
+	} else if res.replica == nil {
+		return rtr.proxyAppend(req, res.broker, srv)
+	}
 
-	for {
+	var pln, rev, err = acquirePipeline(srv.Context(), res.replica, rtr.peerConn)
+
+	if err != nil {
+		return err
+	} else if rev != 0 {
 		// If a peer told us of a future & non-equivalent Route revision,
-		// wait for that revision before attempting again.
+		// wait for that revision and attempt the RPC again.
 		if err = rtr.waitForRevision(srv.Context(), rev); err != nil {
 			return err
 		}
-		var status pb.Status
-
-		res, status = rtr.resolve(req.Journal, true, true)
-		if status != pb.Status_OK {
-			return srv.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
-		} else if res.replica == nil {
-			return rtr.proxyAppend(req, res.broker, srv)
-		}
-
-		if err = waitForInitialIndexLoad(srv.Context(), res.replica); err != nil {
-			return err
-		}
-
-		txn, rev, err = acquireTxn(srv.Context(), res.replica, rtr.peerConn)
-		if txn != nil {
-			break // Successfully started or acquired.
-		} else if err != nil {
-			return err
-		}
-		// Loop again to retry.
+		return rtr.append(srv, req)
 	}
 
-	if resp, err := coordinate(srv, res.replica, txn, rtr.etcd); err == nil {
-		return srv.SendAndClose(resp)
-	} else {
+	if resp, err := coordinate(srv, pln, res.replica.spec(), rtr.etcd); err != nil {
 		return err
+	} else {
+		return srv.SendAndClose(resp)
 	}
 }
 
