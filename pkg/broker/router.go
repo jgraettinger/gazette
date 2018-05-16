@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/hashicorp/golang-lru"
 	log "github.com/sirupsen/logrus"
@@ -116,6 +117,11 @@ func (rtr *Router) append(srv pb.Broker_AppendServer, req *pb.AppendRequest) err
 	var pln, rev, err = acquirePipeline(srv.Context(), res.replica, rtr.peerConn)
 
 	if err != nil {
+		log.WithFields(log.Fields{
+			"err":     err,
+			"journal": res.replica.spec().Name,
+		}).Warn("failed to acquire pipeline")
+
 		return err
 	} else if rev != 0 {
 		// If a peer told us of a future & non-equivalent Route revision,
@@ -126,10 +132,64 @@ func (rtr *Router) append(srv pb.Broker_AppendServer, req *pb.AppendRequest) err
 		return rtr.append(srv, req)
 	}
 
-	if resp, err := coordinate(srv, pln, res.replica.spec(), rtr.etcd); err != nil {
-		return err
+	// We now have sole ownership of the *send* side of the pipeline.
+
+	// Potentially roll the Fragment forward prior to serving the append.
+	// We expect this to always succeed and don't ask for an acknowledgement.
+	if proposal, ok := updateProposal(pln.spool.Fragment.Fragment,
+		res.replica.spec().Fragment); ok {
+		pln.scatter(&pb.ReplicateRequest{Proposal: &proposal})
+	}
+
+	var responseFrag, clientErr = proxyAppendRequest(srv, pln)
+	var waitFor, closeAfter = pln.readBarrier()
+	var plnSendErr = pln.sendErr()
+
+	if plnSendErr == nil {
+		res.replica.plnHandoffCh <- pln // Release the send side of |pln|.
 	} else {
-		return srv.SendAndClose(resp)
+		pln.closeSend(res.replica.spoolCh)
+		res.replica.plnHandoffCh <- nil
+
+		log.WithFields(log.Fields{
+			"err":     err,
+			"journal": res.replica.spec().Name,
+		}).Warn("pipeline send failed")
+	}
+
+	// There may be pipelined commits prior to this one, who have not yet read
+	// their responses. Block until they do so, such that our responses are the
+	// next to receive. Similarly, defer a close to signal to RPCs pipelined
+	// after this one, that they may in turn read their responses. When this
+	// completes, we have sole ownership of the *receive* side of |pln|.
+	<-waitFor
+	defer func() { close(closeAfter) }()
+
+	pln.gatherOK()
+
+	if plnSendErr != nil {
+		pln.gatherEOF()
+	}
+
+	if pln.recvErr() != nil {
+		log.WithFields(log.Fields{
+			"err":     pln.recvErr(),
+			"journal": res.replica.spec().Name,
+		}).Warn("pipeline receive failed")
+	}
+
+	if clientErr != nil {
+		return clientErr
+	} else if plnSendErr != nil {
+		return plnSendErr
+	} else if pln.recvErr() != nil {
+		return pln.recvErr()
+	} else {
+		return srv.SendAndClose(&pb.AppendResponse{
+			Status: pb.Status_OK,
+			Route:  &pln.route,
+			Commit: responseFrag,
+		})
 	}
 }
 
@@ -148,9 +208,44 @@ func (rtr *Router) Replicate(srv pb.Broker_ReplicateServer) error {
 		return srv.Send(&pb.ReplicateResponse{Status: status, Route: res.route})
 	}
 
-	return replicate(srv, res.replica, req, rtr.etcd)
+	if !res.route.Equivalent(req.Route) {
+		return srv.Send(&pb.ReplicateResponse{Status: pb.Status_WRONG_ROUTE, Route: res.route})
+	}
 
-	//res.replica.maybeUpdateAssignmentRoute(rtr.etcd)
+	var spool fragment.Spool
+	if spool, err = acquireSpool(srv.Context(), res.replica); err != nil {
+		return err
+	}
+
+	var resp = new(pb.ReplicateResponse)
+	for {
+		if *resp, err = spool.Apply(req); err != nil {
+			return err
+		}
+
+		if req.Acknowledge {
+			if err = srv.Send(resp); err != nil {
+				return err
+			}
+		} else if resp.Status != pb.Status_OK {
+			return fmt.Errorf("no ack requested but status != OK: %s", resp)
+		}
+
+		// We've successfully synchronized under this Route.
+		if req.Proposal != nil && resp.Status == pb.Status_OK {
+			res.replica.maybeUpdateAssignmentRoute(rtr.etcd)
+		}
+
+		if err = srv.RecvMsg(req); err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		} else if err = req.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (rtr *Router) proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, srv pb.Broker_ReadServer) error {
@@ -360,9 +455,9 @@ func (rtr *Router) peerConn(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("no BrokerSpec found for (%s)", id)
 	}
 	var spec = member.MemberValue.(*pb.BrokerSpec)
-	var u, _ = url.Parse(spec.Endpoint) // Previously validated; cannot fail.
+	var url = spec.Endpoint.URL()
 
-	var conn, err = grpc.Dial(u.Host,
+	var conn, err = grpc.Dial(url.Host,
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: time.Second * 30}),
 		grpc.WithInsecure(),
 	)

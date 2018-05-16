@@ -9,6 +9,9 @@ func (m *ReadRequest) Validate() error {
 	} else if m.Offset < -1 {
 		return NewValidationError("invalid Offset (%d; expected -1 <= Offset <= MaxInt64", m.Offset)
 	}
+
+	// Block, DoNotProxy, and MetadataOnly (each type bool) require no extra validation.
+
 	return nil
 }
 
@@ -71,73 +74,11 @@ func (m *ReadResponse) Validate() error {
 	return nil
 }
 
-// Validate returns an error if the ReplicateRequest is not well-formed.
-func (m *ReplicateRequest) Validate() error {
-	// If Commit is set, we expect all other fields are zero'd.
-	if m.Commit != 0 {
-		if m.Commit < 0 {
-			return NewValidationError("invalid Commit (%d; expected >= 0)", m.Commit)
-		} else if m.Journal != "" {
-			return NewValidationError("unexpected Journal with Commit (%v)", m.Journal)
-		} else if m.NextOffset != 0 {
-			return NewValidationError("unexpected NextOffset with Commit (%d)", m.NextOffset)
-		} else if m.Route != nil {
-			return NewValidationError("unexpected Route with Commit (%s)", m.Route)
-		} else if m.Content != nil {
-			return NewValidationError("unexpected Content with Commit (len %d)", len(m.Content))
-		}
-		return nil
-	}
-
-	if m.NextOffset < 0 {
-		return NewValidationError("invalid NextOffset (%d; expected >= 0)", m.NextOffset)
-	}
-
-	// If Content is set, we expect only NextOffset.
-	if m.Content != nil {
-		if m.Journal != "" {
-			return NewValidationError("unexpected Journal with Content (%v)", m.Journal)
-		} else if m.Route != nil {
-			return NewValidationError("unexpected Route with Content (%s)", m.Route)
-		}
-		return nil
-	}
-
-	if err := m.Journal.Validate(); err != nil {
-		return ExtendContext(err, "Journal")
-	} else if m.Route == nil {
-		return NewValidationError("expected Route")
-	} else if err := m.Route.Validate(); err != nil {
-		return ExtendContext(err, "Route")
-	}
-
-	return nil
-}
-
-// Validate returns an error if the ReplicateResponse is not well-formed.
-func (m *ReplicateResponse) Validate() error {
-	if err := m.Status.Validate(); err != nil {
-		return ExtendContext(err, "Status")
-	}
-	if m.Route != nil {
-		if err := m.Route.Validate(); err != nil {
-			return ExtendContext(err, "Route")
-		}
-	}
-	if m.WriteHead < 0 {
-		return NewValidationError("invalid WriteHead (%d; expected >= 0)", m.WriteHead)
-	}
-	return nil
-}
-
 // Validate returns an error if the AppendRequest is not well-formed.
 func (m *AppendRequest) Validate() error {
-	// There are two types of AppendRequest:
-	//  * Initial request - Journal is set (only).
-	//  * Content chunk - Content is set (only).
 	if m.Journal != "" {
 		if err := m.Journal.Validate(); err != nil {
-			return err
+			return ExtendContext(err, "Journal")
 		} else if len(m.Content) != 0 {
 			return NewValidationError("unexpected Content")
 		}
@@ -151,15 +92,100 @@ func (m *AppendRequest) Validate() error {
 func (m *AppendResponse) Validate() error {
 	if err := m.Status.Validate(); err != nil {
 		return ExtendContext(err, "Status")
+	} else if m.Route == nil {
+		return NewValidationError("expected Route")
+	} else if err = m.Route.Validate(); err != nil {
+		return ExtendContext(err, "Route")
+	} else if m.Commit == nil {
+		return NewValidationError("expected Commit")
+	} else if err = m.Commit.Validate(); err != nil {
+		return ExtendContext(err, "Commit")
 	}
+	return nil
+}
+
+// Validate returns an error if the ReplicateRequest is not well-formed.
+func (m *ReplicateRequest) Validate() error {
+
+	if m.Journal != "" {
+		// This is an initial request.
+
+		if err := m.Journal.Validate(); err != nil {
+			return ExtendContext(err, "Journal")
+		} else if m.Route == nil {
+			return NewValidationError("expected Route with Journal")
+		} else if err := m.Route.Validate(); err != nil {
+			return ExtendContext(err, "Route")
+		} else if m.Proposal == nil {
+			return NewValidationError("expected Proposal with Journal")
+		} else if err := m.Proposal.Validate(); err != nil {
+			return ExtendContext(err, "Proposal")
+		} else if m.Proposal.Journal != m.Journal {
+			return NewValidationError("Journal and Proposal.Journal mismatch (%s vs %s)", m.Journal, m.Proposal.Journal)
+		} else if m.Content != nil {
+			return NewValidationError("unexpected Content with Journal (len %d)", len(m.Content))
+		} else if m.ContentDelta != 0 {
+			return NewValidationError("unexpected ContentDelta with Journal (%d)", m.ContentDelta)
+		} else if m.Acknowledge == false {
+			return NewValidationError("expected Acknowledge with Journal")
+		}
+		return nil
+	}
+
 	if m.Route != nil {
-		if err := m.Route.Validate(); err != nil {
+		return NewValidationError("unexpected Route without Journal (%s)", m.Route)
+	}
+
+	if m.Proposal != nil {
+		if err := m.Proposal.Validate(); err != nil {
+			return ExtendContext(err, "Proposal")
+		} else if m.Content != nil {
+			return NewValidationError("unexpected Content with Proposal (len %d)", len(m.Content))
+		} else if m.ContentDelta != 0 {
+			return NewValidationError("unexpected ContentDelta with Proposal (%d)", m.ContentDelta)
+		}
+		return nil
+	}
+
+	if m.Content == nil {
+		return NewValidationError("expected Content or Proposal")
+	}
+	if m.Acknowledge {
+		return NewValidationError("unexpected Acknowledge with Content")
+	}
+	if m.ContentDelta < 0 {
+		return NewValidationError("invalid ContentDelta (%d; expected >= 0)", m.ContentDelta)
+	}
+
+	return nil
+}
+
+// Validate returns an error if the ReplicateResponse is not well-formed.
+func (m *ReplicateResponse) Validate() error {
+	if err := m.Status.Validate(); err != nil {
+		return ExtendContext(err, "Status")
+	}
+
+	if m.Status == Status_WRONG_ROUTE {
+		if m.Route == nil {
+			return NewValidationError("expected Route")
+		} else if err := m.Route.Validate(); err != nil {
 			return ExtendContext(err, "Route")
 		}
+	} else if m.Route != nil {
+		return NewValidationError("unexpected Route (%s)", m.Route)
 	}
-	if m.WriteHead < 0 {
-		return NewValidationError("invalid WriteHead (%d; expected >= 0)", m.WriteHead)
+
+	if m.Status == Status_FRAGMENT_MISMATCH {
+		if m.Fragment == nil {
+			return NewValidationError("expected Fragment")
+		} else if err := m.Fragment.Validate(); err != nil {
+			return ExtendContext(err, "Fragment")
+		}
+	} else if m.Fragment != nil {
+		return NewValidationError("unexpected Fragment (%s)", m.Fragment)
 	}
+
 	return nil
 }
 

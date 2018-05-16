@@ -22,9 +22,9 @@ func (n Journal) Validate() error {
 	if err := validateB64Str(n.String(), minJournalNameLen, maxJournalNameLen); err != nil {
 		return err
 	} else if path.Clean(n.String()) != n.String() {
-		return NewValidationError("must be a clean path: %v", n)
+		return NewValidationError("must be a clean path (%s)", n)
 	} else if n[0] == '/' {
-		return NewValidationError("cannot begin with '/': %v", n)
+		return NewValidationError("cannot begin with '/' (%s)", n)
 	}
 	return nil
 }
@@ -43,15 +43,10 @@ func (m *JournalSpec) Validate() error {
 		return ExtendContext(err, "Labels")
 	} else if err = m.Fragment.Validate(); err != nil {
 		return ExtendContext(err, "Fragment")
-	} else if m.TransactionLength < minTxnLen || m.TransactionLength > maxTxnLen {
-		return NewValidationError("invalid TransactionLength (%d; expected %d <= length <= %d)",
-			m.TransactionLength, minTxnLen, maxTxnLen)
-	} else if m.TransactionLength > m.Fragment.Length {
-		return NewValidationError("invalid TransactionLength (%d; expected length <= Fragment.Length %d)",
-			m.TransactionLength, m.Fragment.Length)
 	}
 
-	// m.ReadOnly has no checks.
+	// ReadOnly (type bool) has no extra validation.
+
 	return nil
 }
 
@@ -62,16 +57,17 @@ func (m *JournalSpec_Fragment) Validate() error {
 			m.Length, minFragmentLen, maxFragmentLen)
 	} else if err := m.CompressionCodec.Validate(); err != nil {
 		return ExtendContext(err, "CompressionCodec")
-	} else if m.RefreshInterval < minRefreshInterval || m.RefreshInterval > maxRefreshInterval {
-		return NewValidationError("invalid RefreshInterval (%s; expected %s <= interval <= %s)",
-			m.RefreshInterval, minRefreshInterval, maxRefreshInterval)
-	} else if m.Retention < 0 {
-		return NewValidationError("invalid Retention (%s; expected >= 0)", m.Retention)
 	}
 	for i, store := range m.Stores {
 		if err := store.Validate(); err != nil {
 			return ExtendContext(err, "Stores[%d]", i)
 		}
+	}
+	if m.RefreshInterval < minRefreshInterval || m.RefreshInterval > maxRefreshInterval {
+		return NewValidationError("invalid RefreshInterval (%s; expected %s <= interval <= %s)",
+			m.RefreshInterval, minRefreshInterval, maxRefreshInterval)
+	} else if m.Retention < 0 {
+		return NewValidationError("invalid Retention (%s; expected >= 0)", m.Retention)
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-package broker
+package fragment
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/LiveRamp/gazette/pkg/fragment"
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
@@ -20,24 +19,24 @@ const (
 	offsetJumpAgeThreshold = 6 * time.Hour
 )
 
-type fragmentIndex struct {
-	ctx    context.Context // Context over the lifetime of the fragmentIndex.
-	set    fragment.Set    // All Fragments of the index (local and remote).
-	local  fragment.Set    // Local Fragments only (having non-nil File).
+type Index struct {
+	ctx    context.Context // Context over the lifetime of the Index.
+	set    Set             // All Fragments of the index (local and remote).
+	local  Set             // Local Fragments only (having non-nil File).
 	condCh chan struct{}   // Notifies blocked queries that |set| was updated.
 	mu     sync.RWMutex    // Guards |set| and |condCh|.
 }
 
-// newFragmentIndex returns a new, empty fragmentIndex.
-func newFragmentIndex(ctx context.Context) *fragmentIndex {
-	return &fragmentIndex{
+// NewIndex returns a new, empty Index.
+func NewIndex(ctx context.Context) *Index {
+	return &Index{
 		ctx:    ctx,
 		condCh: make(chan struct{}),
 	}
 }
 
-// query the fragmentIndex for a Fragment matching the ReadRequest.
-func (fi *fragmentIndex) query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadResponse, *os.File, error) {
+// Query the Index for a Fragment matching the ReadRequest.
+func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadResponse, *os.File, error) {
 	defer fi.mu.RUnlock()
 	fi.mu.RLock()
 
@@ -87,7 +86,7 @@ func (fi *fragmentIndex) query(ctx context.Context, req *pb.ReadRequest) (*pb.Re
 		var condCh = fi.condCh
 		var err error
 
-		// Wait for |condCh| to signal, or for the request |ctx| or fragmentIndex
+		// Wait for |condCh| to signal, or for the request |ctx| or Index
 		// Context to be cancelled.
 		fi.mu.RUnlock()
 		select {
@@ -107,7 +106,7 @@ func (fi *fragmentIndex) query(ctx context.Context, req *pb.ReadRequest) (*pb.Re
 }
 
 // endOffset returns the last (largest) End offset in the index.
-func (fi *fragmentIndex) endOffset() int64 {
+func (fi *Index) EndOffset() int64 {
 	defer fi.mu.RUnlock()
 	fi.mu.RLock()
 
@@ -115,7 +114,7 @@ func (fi *fragmentIndex) endOffset() int64 {
 }
 
 // addLocal adds local Fragment |frag| to the index.
-func (fi *fragmentIndex) addLocal(frag fragment.Fragment) {
+func (fi *Index) addLocal(frag Fragment) {
 	defer fi.mu.Unlock()
 	fi.mu.Lock()
 
@@ -125,7 +124,7 @@ func (fi *fragmentIndex) addLocal(frag fragment.Fragment) {
 }
 
 // replaceRemote replaces all remote Fragments in the index with |set|.
-func (fi *fragmentIndex) replaceRemote(set fragment.Set) {
+func (fi *Index) replaceRemote(set Set) {
 	defer fi.mu.Unlock()
 	fi.mu.Lock()
 
@@ -136,7 +135,7 @@ func (fi *fragmentIndex) replaceRemote(set fragment.Set) {
 	// disk and OS page buffer resources. Note that we cannot directly Close
 	// these Fragment Files (and must instead rely on GC to collect them),
 	// as they may still be referenced by concurrent read requests.
-	fi.local = fragment.SetDifference(fi.local, set)
+	fi.local = SetDifference(fi.local, set)
 
 	// Extend |set| with remaining local Fragments not already in |set|.
 	for _, frag := range fi.local {
@@ -153,7 +152,7 @@ func (fi *fragmentIndex) replaceRemote(set fragment.Set) {
 
 // wakeBlockedQueries wakes all queries waiting for an index update.
 // fi.mu must already be held.
-func (fi *fragmentIndex) wakeBlockedQueries() {
+func (fi *Index) wakeBlockedQueries() {
 	// Close |condCh| to signal to waiting readers that the index has updated.
 	// Create a new condition channel for future readers to block on, while
 	// awaiting the next index update.
@@ -161,10 +160,10 @@ func (fi *fragmentIndex) wakeBlockedQueries() {
 	fi.condCh = make(chan struct{})
 }
 
-// watchStores periodically queries currently configured remote fragment stores
-// of the named Journal for their current index, and updates the fragmentIndex
+// WatchStores periodically queries currently configured remote fragment stores
+// of the named Journal for their current index, and updates the Index
 // accordingly. It closes |signalCh| after the first successful load.
-func (fi *fragmentIndex) watchStores(ks *keyspace.KeySpace, name pb.Journal, signalCh chan<- struct{}) {
+func (fi *Index) WatchStores(ks *keyspace.KeySpace, name pb.Journal, signalCh chan<- struct{}) {
 	for {
 		ks.Mu.RLock()
 		var item, ok = v3_allocator.LookupItem(ks, name.String())
@@ -174,7 +173,7 @@ func (fi *fragmentIndex) watchStores(ks *keyspace.KeySpace, name pb.Journal, sig
 			return // Journal no longer exists.
 		}
 		var spec = item.ItemValue.(*pb.JournalSpec)
-		var set, err = fragment.Store.LoadIndex(fi.ctx, spec.FragmentStores)
+		var set, err = Store.LoadIndex(fi.ctx, spec.Fragment.Stores)
 
 		if err != nil {
 			log.WithFields(log.Fields{"err": err, "name": name}).Warn("failed to load remote index")
@@ -188,7 +187,7 @@ func (fi *fragmentIndex) watchStores(ks *keyspace.KeySpace, name pb.Journal, sig
 		}
 
 		select {
-		case <-time.After(spec.FragmentStoreRefreshInterval):
+		case <-time.After(spec.Fragment.RefreshInterval):
 		case <-fi.ctx.Done():
 			return
 		}

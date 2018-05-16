@@ -17,8 +17,8 @@ func (s *JournalSuite) TestJournalValidationCases(c *gc.C) {
 	}{
 		{"a/valid/path/to/a/journal", ""}, // Success.
 		{"/leading/slash", "cannot begin with '/'"},
-		{"trailing/slash/", "must be a clean path: .*"},
-		{"extra-middle//slash", "must be a clean path: .*"},
+		{"trailing/slash/", `must be a clean path \(trailing/slash/\)`},
+		{"extra-middle//slash", `must be a clean path \(.*"},
 		{"not-$%|-base64", "not base64 alphabet: .*"},
 		{"", `invalid length \(0; expected 4 <= .*`},
 		{"zz", `invalid length \(2; expected 4 <= .*`},
@@ -52,8 +52,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 			Retention:        365 * 24 * time.Hour,
 		},
 
-		TransactionLength: 4096,
-		ReadOnly:          false,
+		ReadOnly: false,
 	}
 	c.Check(spec.Validate(), gc.IsNil) // Base case: validates successfully.
 
@@ -74,14 +73,6 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 	spec.Fragment.Length = 0
 	c.Check(spec.Validate(), gc.ErrorMatches, `Fragment: invalid Length \(0; expected 1024 <= length <= \d+\)`)
 	spec.Fragment.Length = 4096
-
-	spec.TransactionLength = 1 << 62
-	c.Check(spec.Validate(), gc.ErrorMatches,
-		`invalid TransactionLength \(\d+; expected 1024 <= length <= \d+\)`)
-	spec.TransactionLength = spec.Fragment.Length + 1
-	c.Check(spec.Validate(), gc.ErrorMatches,
-		`invalid TransactionLength \(4097; expected length <= Fragment.Length 4096\)`)
-	spec.TransactionLength = 1024
 
 	// Additional tests of JournalSpec_Fragment cases.
 	var f = &spec.Fragment

@@ -17,7 +17,7 @@ func read(r *replica, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 	var reader io.ReadCloser
 
 	for i := 0; true; i++ {
-		var resp, file, err = r.index.query(srv.Context(), req)
+		var resp, file, err = r.index.Query(srv.Context(), req)
 		if err != nil {
 			return err
 		}

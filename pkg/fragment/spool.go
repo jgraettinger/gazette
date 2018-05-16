@@ -3,6 +3,7 @@ package fragment
 import (
 	"crypto/sha1"
 	"encoding"
+	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -21,12 +22,8 @@ import (
 type Spool struct {
 	// Fragment at time of last commit.
 	Fragment
-
-	nextEnd    int64
-	nextSummer hash.Hash
-	// SHA1State is the binary marshalling of the state of a SHA1 hash.Hash
-	// at the completion of the last commit.
-	sha1State []byte
+	// Should the Spool proactively compress content?
+	EnableCompression bool
 
 	// Compressed form of the Fragment, compressed under Fragment.CompressionCodec.
 	// This field is somewhat speculative; only one broker (eg, the primary)
@@ -34,151 +31,182 @@ type Spool struct {
 	// completed spools to be quickly & cheaply persisted to the backing store.
 	// Should a failure occur, other brokers can construct the compressed form
 	// on-demand from the backing Fragment.File.
-	CompressedFile *os.File
+	compressedFile *os.File
 	// Compressor of |compressedFile|.
-	Compressor codecs.Compressor
+	compressor codecs.Compressor
+
+	delta    int64     // Delta offset of next byte to write, relative to Fragment.End.
+	summer   hash.Hash // Running SHA1 of the Fragment.File, through |offset|.
+	sumState []byte    // SHA1 |summer| internal state at the last Fragment commit.
+	index    *Index    // Index into which committed, local Fragments are advertised.
 }
 
-// Roll closes and (if a store is configured) persists the Spool, and then
-// "rolls" it forward to a zero-length Fragment at |offset|. The Spool must
-// be opened before use. |offset| must not be less than the current Fragment
-// End, or Roll panics. Also, |spec| must not reference a different Journal
-// than that of the Spool, or Roll panics.
-func (s *Spool) Roll(spec *pb.JournalSpec, offset int64) {
-	if offset < s.Fragment.End {
-		panic("invalid offset")
-	} else if s.Fragment.Journal != "" && s.Fragment.Journal != spec.Name {
-		panic("invalid spec Name")
+// NewSpool returns an empty Spool of |journal|.
+func NewSpool(journal pb.Journal, index *Index) Spool {
+	return Spool{
+		Fragment: Fragment{Fragment: pb.Fragment{Journal: journal}},
+		index:    index,
+		summer:   sha1.New(),
+		sumState: zeroedSHA1State,
+	}
+}
+
+// Next returns the next Fragment which can be committed by the Spool.
+func (s *Spool) Next() pb.Fragment {
+	var f = s.Fragment.Fragment
+	f.End += s.delta
+	f.Sum = pb.SHA1SumFromDigest(s.summer.Sum(nil))
+	return f
+}
+
+// Apply the ReplicateRequest to the Spool, returning any encountered error.
+func (s *Spool) Apply(r *pb.ReplicateRequest) (pb.ReplicateResponse, error) {
+	if r.Proposal != nil {
+		return s.applyCommit(r), nil
+	} else {
+		return pb.ReplicateResponse{}, s.applyContent(r)
+	}
+}
+
+func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
+	// There are three allowed commit cases:
+	//  1) Exact commit of current fragment.
+	//  2) Exact commit of current fragment, extended by |delta|.
+	//  3) Trivial commit of an empty Fragment at or beyond the current Fragment.End.
+
+	// Case 1? "Undo" any partial content, by rolling back |delta| and |summer|.
+	if s.Fragment.Fragment == *r.Proposal {
+		s.delta = 0
+		s.restoreSumState()
+		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}
 
-	var prev = *s
-	prev.finalize(false)
+	// Case 2? Apply the |delta| bytes spooled since last commit.
+	if s.Next() == *r.Proposal {
 
-	if prev.ContentLength() != 0 && len(spec.Fragment.Stores) != 0 {
-		prev.BackingStore = spec.Fragment.Stores[0]
-		go Store.Persist(prev)
+		if s.compressor != nil {
+			// Build a reader over the new content, and run it through the Compressor.
+			if _, err := io.Copy(s.compressor,
+				io.NewSectionReader(s.File, s.Fragment.ContentLength(), s.delta)); err != nil {
+
+				// |err| invalidates the compressor but does not fail the commit.
+				s.finalizeCompressor(true)
+				log.WithFields(log.Fields{"proposal": *r.Proposal, "err": err}).Error("failed to compress")
+			}
+		}
+
+		s.Fragment.End += s.delta
+		s.Fragment.Sum = pb.SHA1SumFromDigest(s.summer.Sum(nil))
+		s.index.addLocal(s.Fragment)
+
+		s.delta = 0
+		s.saveSumState()
+		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}
 
-	*s = Spool{
-		Fragment: Fragment{
-			Fragment: pb.Fragment{
-				Journal:          spec.Name,
-				Begin:            offset,
-				End:              offset,
-				CompressionCodec: spec.Fragment.CompressionCodec,
+	// Case 3? Persist the current Fragment, and re-initialize to the new one.
+	if r.Proposal.Journal == s.Fragment.Journal &&
+		r.Proposal.Begin >= s.Fragment.End &&
+		r.Proposal.ContentLength() == 0 &&
+		r.Proposal.Sum.IsZero() {
+
+		s.finalizeCompressor(false)
+		if s.ContentLength() != 0 && s.Fragment.BackingStore != "" {
+			go Store.Persist(*s)
+		}
+
+		*s = Spool{
+			Fragment: Fragment{
+				Fragment: *r.Proposal,
 			},
-		},
+			index:    s.index,
+			summer:   sha1.New(),
+			sumState: zeroedSHA1State,
+		}
+		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}
-	return
+
+	return pb.ReplicateResponse{
+		Status:   pb.Status_FRAGMENT_MISMATCH,
+		Fragment: &s.Fragment.Fragment,
+	}
 }
 
-// Open a Spool by creating a backing file. The Spool must be length-zero and
-// not already open, or Open panics.
-func (s *Spool) Open() error {
-	if s.File != nil {
-		panic("Spool.Open already called.")
-	} else if s.ContentLength() != 0 {
-		panic("Spool.Fragment not empty.")
+func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
+	if r.ContentDelta != s.delta {
+		return fmt.Errorf("invalid ContentDelta %d (expected %d)", r.ContentDelta, s.delta)
 	}
 
-	var file, err = newSpoolFile()
+	if s.Fragment.File == nil {
+		if s.ContentLength() != 0 {
+			panic("Spool.Fragment not empty.")
+		}
 
-	if err == nil {
-		s.Fragment.File = file
-		s.SHA1Summer = sha1.New()
-		s.SHA1State, err = s.SHA1Summer.(encoding.BinaryMarshaler).MarshalBinary()
-		s.Next = s.Fragment
-	}
-	return err
-}
-
-// InitCompressor prepares the Spool for incremental compression by creating a
-// backing file and compression codec. The Spool must already be open, be zero-
-// length, and not already initialized for compression.
-func (s *Spool) InitCompressor() error {
-	if s.File == nil {
-		panic("Spool.Open must be called first")
-	} else if s.CompressedFile != nil {
-		panic("Spool.InitCompressor already called.")
-	} else if s.ContentLength() != 0 {
-		panic("Spool.Fragment not empty.")
+		if file, err := newSpoolFile(); err != nil {
+			return err
+		} else {
+			s.Fragment.File = file
+		}
 	}
 
-	if file, err := newSpoolFile(); err != nil {
+	if s.EnableCompression && s.compressedFile == nil && s.ContentLength() == 0 {
+		if file, err := newSpoolFile(); err != nil {
+			return err
+		} else if compressor, err := codecs.NewCodecWriter(file, s.CompressionCodec); err != nil {
+			_ = file.Close()
+			return err
+		} else {
+			s.compressedFile = file
+			s.compressor = compressor
+		}
+	}
+
+	if n, err := s.Fragment.File.WriteAt(r.Content, s.ContentLength()+s.delta); err != nil {
 		return err
-	} else if compressor, err := codecs.NewCodecWriter(file, s.CompressionCodec); err != nil {
-		_ = file.Close()
-		return err
+	} else if _, err = s.summer.Write(r.Content); err != nil {
+		panic("SHA1.Write cannot fail: " + err.Error())
 	} else {
-		s.CompressedFile = file
-		s.Compressor = compressor
-		return nil
-	}
-}
-
-func (s *Spool) Append(p []byte) error {
-
-}
-
-func (s *Spool) Rollback() {
-
-}
-
-// Next returns the Fragment which will be created by the next Commit.
-func (s *Spool) Next() pb.Fragment {}
-
-// Commit records |delta| new bytes beyond the current Fragment End, and
-// already written to the backing Fragment.File, to the Spool. The Spool
-// Fragment is updated with the new SHA1 sum and offset extent, and the
-// committed content is optionally compressed. A returned error aborts the
-// Commit, and callers should handle by closing the current Spool and not
-// attempting to re-use it.
-func (s *Spool) Commit() error {
-	// Build a reader over the portion to be committed this transaction.
-	var sr = io.NewSectionReader(s.File, s.ContentLength(), delta)
-	var err error
-
-	if s.Compressor == nil {
-		// Run the |delta| through SHA1Summer (only).
-		_, err = io.Copy(s.SHA1Summer, sr)
-	} else {
-		// Run the |delta| through both SHA1Summer and the Compressor.
-		_, err = io.Copy(s.SHA1Summer, io.TeeReader(sr, s.Compressor))
+		s.delta += int64(n)
 	}
 
-	if err != nil {
-		// This error invalidates the Spool, as partial content has been read by
-		// SHA1Summer and (if set) the Compressor.
-		s.finalize(true)
-		return err
-	}
-
-	s.Sum = pb.SHA1SumFromDigest(s.SHA1Summer.Sum(nil))
-	s.End += delta
 	return nil
 }
 
 // finalize closes and releases resources associated with incremental Fragment
-// building. If |invalidate| is true or an error is encountered, |CompressedFile|
-// is additionally closed and released, as we cannot guarantee that |Compressor|
+// building. If |invalidate| is true or an error is encountered, |compressedFile|
+// is additionally closed and released, as we cannot guarantee that |compressor|
 // did not mix and write un-flushed content from a prior commit with content from
 // a failed commit.
-func (s *Spool) finalize(invalidate bool) {
-	s.SHA1Summer = nil
-
-	if s.Compressor != nil {
-		if err := s.Compressor.Close(); err != nil {
+func (s *Spool) finalizeCompressor(invalidate bool) {
+	if s.compressor != nil {
+		if err := s.compressor.Close(); err != nil {
 			log.WithFields(log.Fields{"err": err}).Error("failed to Close compressor")
 			invalidate = true
 		}
-		s.Compressor = nil
+		s.compressor = nil
 	}
 
-	if invalidate && s.CompressedFile != nil {
-		if err := s.CompressedFile.Close(); err != nil {
+	if invalidate && s.compressedFile != nil {
+		if err := s.compressedFile.Close(); err != nil {
 			log.WithFields(log.Fields{"err": err}).Error("failed to Close compressedFile")
 		}
-		s.CompressedFile = nil
+		s.compressedFile = nil
+	}
+}
+
+// saveSumState marshals internal state of |summer| into |sumState|.
+func (s *Spool) saveSumState() {
+	if state, err := s.summer.(encoding.BinaryMarshaler).MarshalBinary(); err != nil {
+		panic(err.Error()) // Cannot fail.
+	} else {
+		s.sumState = state
+	}
+}
+
+// restoreSumState unmarshals |sumState| into |summer|.
+func (s *Spool) restoreSumState() {
+	if err := s.summer.(encoding.BinaryUnmarshaler).UnmarshalBinary(s.sumState); err != nil {
+		panic(err.Error()) // Cannot fail.
 	}
 }
 
@@ -195,3 +223,5 @@ func newSpoolFile() (*os.File, error) {
 		return f, os.Remove(f.Name())
 	}
 }
+
+var zeroedSHA1State, _ = sha1.New().(encoding.BinaryMarshaler).MarshalBinary()

@@ -85,12 +85,15 @@ func SHA1SumFromDigest(r []byte) SHA1Sum {
 }
 
 // ToDigest converts the SHA1Sum to a flat, fixed-size array.
-func (m *SHA1Sum) ToDigest() (r [20]byte) {
+func (m SHA1Sum) ToDigest() (r [20]byte) {
 	binary.BigEndian.PutUint64(r[0:8], m.GetPart1())
 	binary.BigEndian.PutUint64(r[8:16], m.GetPart2())
 	binary.BigEndian.PutUint32(r[16:20], m.GetPart3())
 	return
 }
+
+// IsZero returns whether this SHA1Sum consists of all zeros.
+func (m SHA1Sum) IsZero() bool { return m == (SHA1Sum{}) }
 
 // CompressionCodecFromExtension matches a file extension to its corresponding CompressionCodec.
 func CompressionCodecFromExtension(ext string) (CompressionCodec, error) {

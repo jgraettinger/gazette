@@ -14,7 +14,7 @@ type store interface {
 
 	Sign(fragment pb.Fragment) (string, error)
 
-	LoadIndex(ctx context.Context, stores []string) (Set, error)
+	LoadIndex(ctx context.Context, stores []pb.FragmentStore) (Set, error)
 }
 
 type noop struct{}

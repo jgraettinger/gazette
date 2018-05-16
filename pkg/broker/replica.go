@@ -26,12 +26,12 @@ type replica struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	// Index of all known Fragments of the replica.
-	index *fragmentIndex
+	index *fragment.Index
 	// spoolCh synchronizes access to the single Spool of the replica.
 	spoolCh chan fragment.Spool
-	// txnHandoffCh allows an Append holding an in-flight pipeline, to hand
+	// plnHandoffCh allows an Append holding an in-flight pipeline, to hand
 	// the pipeline off to another ready Append wanting to continue it.
-	txnHandoffCh chan *pipeline
+	plnHandoffCh chan *pipeline
 	// initialLoadCh is closed after the first remote fragment store listing,
 	// and is used to gate Append requests (only) until the fragmentIndex
 	// has been initialized with remote listings.
@@ -49,7 +49,7 @@ func newReplica() *replica {
 		cancel:        cancel,
 		index:         newFragmentIndex(ctx),
 		spoolCh:       spoolCh,
-		txnHandoffCh:  make(chan *pipeline),
+		plnHandoffCh:  make(chan *pipeline),
 		initialLoadCh: make(chan struct{}),
 	}
 }
@@ -92,36 +92,4 @@ func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {
 			log.WithFields(log.Fields{"err": err, "key": key}).Warn("failed to update Assignment Route")
 		}
 	}(etcd, r.assignment, next.MarshalString())
-}
-
-// prepareSpool readies Spool for it's next write, by:
-//  * If not already, opening the Spool.
-//  * If not already and the replica is primary, initializing the Spool for
-//    incremental compression.
-func prepareSpool(s *fragment.Spool, r *replica) error {
-	/*
-		if eo := r.index.endOffset(); eo > s.Fragment.End {
-			s.Roll(r.spec(), eo)
-		} else if s.Fragment.ContentLength() >= r.spec().Fragment.Length {
-			s.Roll(r.spec(), s.Fragment.End)
-		}
-	*/
-
-	if s.Fragment.File == nil {
-		if err := s.Open(); err != nil {
-			return err
-		}
-	}
-
-	// As primary, we are the presumptive broker to persist the Fragment.
-	// Initialize a compressor to speculatively compress committed content as it
-	// arrives. Compression can be expensive, and compressing the Fragment as it's
-	// built effectively back-pressures the cost onto writers, ensuring we don't
-	// accept writes faster than we can compress them.
-	if r.isPrimary() && s.CompressedFile == nil && s.ContentLength() == 0 {
-		if err := s.InitCompressor(); err != nil {
-			return err
-		}
-	}
-	return nil
 }

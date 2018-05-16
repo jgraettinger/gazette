@@ -23,10 +23,9 @@ enum Status {
   NOT_JOURNAL_BROKER = 6;
 
   OFFSET_NOT_YET_AVAILABLE = 7;
-  REPLICATION_FAILED = 8;
 
   WRONG_ROUTE = 9;
-  WRONG_WRITE_HEAD = 10;
+  FRAGMENT_MISMATCH = 10;
 }
 
 // StatusResponse is an RPC response representing a Status.
@@ -224,6 +223,9 @@ message ReadResponse {
   bytes content = 7;
 }
 
+// There are two types of AppendRequest:
+//  * Initial request - Journal is set (only).
+//  * Content chunk - Content is set (only).
 message AppendRequest {
   // Journal to be appended to.
   string journal = 1 [(gogoproto.casttype) = "Journal"];
@@ -240,17 +242,24 @@ message AppendResponse {
   Fragment commit = 3;
 }
 
+// Three types of ReplicateRequest:
+//  * Initial request - Journal, Route, Proposal, and Acknowledge all set.
+//  * Streamed commit - Proposal and (optionally) Acknowledge are set.
+//  * Streamed content - Content and ContentDelta are set.
 message ReplicateRequest {
   // Journal to be replicated to.
   string journal = 1 [(gogoproto.casttype) = "Journal"];
   // Route of the transaction, also known and verified by all replicas.
   Route route = 2;
   // Proposed Fragment to commit. Independently verified by each Journal replica.
-  Fragment commit = 3;
-  // Rollback all content replicated since the last commit.
-  bool rollback = 4;
+  Fragment proposal = 3;
+  // If |commit| is set, if |acknowledge| than the replica will send an
+  // acknowledgement ReplicateResponse.
+  bool acknowledge = 4;
   // Content to be replicated.
   bytes content = 5;
+  // Delta offset of |content| relative to current Fragment |end|.
+  int64 content_delta = 6;
 }
 
 message ReplicateResponse {
@@ -268,19 +277,19 @@ message ReplicateResponse {
 message Route {
   option (gogoproto.goproto_unrecognized) = false;
 
+  // Etcd revision at which this Route was produced. |revision| enables the
+  // comparison of non-equivalent Routes, to determine which is more recent.
+  int64 revision = 1;
   // Brokers of the Route, ordered on ascending BrokerSpec (zone, name).
   // Note that only a Route-relevant subset of the spec is populated
   // (specifically name, zone, & endpoint).
-  repeated BrokerSpec.ID brokers = 1 [(gogoproto.nullable) = false];
+  repeated BrokerSpec.ID brokers = 2 [(gogoproto.nullable) = false];
   // Index of the BrokerSpec serving as primary within |brokers|,
   // or -1 of no broker is currently primary.
-  int32 primary = 2;
+  int32 primary = 3;
   // Endpoints of each Route Broker. If not empty, |endpoints| has the same
   // length and order as |brokers|, and captures the endpoint of each one.
-  repeated string endpoints = 3 [(gogoproto.casttype) = "Endpoint"];
-  // Etcd revision at which this Route was produced. |revision| is helpful in
-  // the comparison of non-equivalent Routes, to determine which is more recent.
-  int64 revision = 4;
+  repeated string endpoints = 4 [(gogoproto.casttype) = "Endpoint"];
 }
 
 service Broker {
