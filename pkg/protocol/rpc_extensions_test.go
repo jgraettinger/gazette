@@ -17,7 +17,7 @@ func (s *RPCSuite) TestReadRequestValidation(c *gc.C) {
 	c.Check(req.Validate(), gc.ErrorMatches, `Journal: cannot begin with '/' \(/bad\)`)
 	req.Journal = "good"
 
-	c.Check(req.Validate(), gc.ErrorMatches, `invalid Offset \(-2; expected -1 <= Offset <= MaxInt64`)
+	c.Check(req.Validate(), gc.ErrorMatches, `invalid Offset \(-2; expected -1 <= Offset <= MaxInt64\)`)
 	req.Offset = -1
 
 	c.Check(req.Validate(), gc.IsNil)
@@ -100,14 +100,48 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 	c.Check(resp.Validate(), gc.IsNil)
 }
 
-func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
-	var rt = &Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}}
-	var frag, _ = ParseContentPath("a/journal/00000000499602d2-000000008bd03835-0102030405060708090a0b0c0d0e0f1011121314.sz")
-	frag.Journal = "/bad/name"
+func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
+	var req = AppendRequest{
+		Journal: "/bad",
+		Content: []byte("foo"),
+	}
 
+	c.Check(req.Validate(), gc.ErrorMatches, `Journal: cannot begin with '/' \(/bad\)`)
+	req.Journal = "good"
+	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Content`)
+	req.Content = nil
+
+	c.Check(req.Validate(), gc.IsNil)
+
+	req.Journal = ""
+	req.Content = []byte("foo")
+
+	c.Check(req.Validate(), gc.IsNil)
+}
+
+func (s *RPCSuite) TestAppendResponseValidationCases(c *gc.C) {
+	var resp = AppendResponse{
+		Status: 9101,
+	}
+
+	c.Check(resp.Validate(), gc.ErrorMatches, `Status: invalid status .*`)
+	resp.Status = Status_OK
+	c.Check(resp.Validate(), gc.ErrorMatches, `expected Route`)
+	resp.Route = &Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}}
+	c.Check(resp.Validate(), gc.ErrorMatches, `Route: invalid Primary .*`)
+	resp.Route.Primary = 0
+	c.Check(resp.Validate(), gc.ErrorMatches, `expected Commit`)
+	resp.Commit = &Fragment{Journal: "/bad/name"}
+	c.Check(resp.Validate(), gc.ErrorMatches, `Commit.Journal: cannot begin with '/' \(/bad/name\)`)
+	resp.Commit.Journal = "good/name"
+
+	c.Check(resp.Validate(), gc.IsNil)
+}
+
+func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 	var req = ReplicateRequest{
 		Journal:      "/bad",
-		Route:        rt,
+		Route:        &Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}},
 		Proposal:     nil,
 		Content:      []byte("foo"),
 		ContentDelta: 100,
@@ -118,11 +152,11 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 	c.Check(req.Validate(), gc.ErrorMatches, `Route: invalid Primary .*`)
 	req.Route.Primary = 0
 	c.Check(req.Validate(), gc.ErrorMatches, `expected Proposal with Journal`)
-	req.Proposal = &frag
+	req.Proposal = &Fragment{Journal: "/bad/name"}
 	c.Check(req.Validate(), gc.ErrorMatches, `Proposal.Journal: cannot begin with '/' \(/bad/name\)`)
-	frag.Journal = "other/journal"
+	req.Proposal.Journal = "other/journal"
 	c.Check(req.Validate(), gc.ErrorMatches, `Journal and Proposal.Journal mismatch \(journal vs other/journal\)`)
-	frag.Journal = "journal"
+	req.Proposal.Journal = "journal"
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Content with Journal \(len 3\)`)
 	req.Content = nil
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected ContentDelta with Journal \(100\)`)
@@ -138,12 +172,12 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Route without Journal \(brokers:.*\)`)
 	req.Route = nil
 
-	frag.Journal = "/other/bad/name"
+	req.Proposal.Journal = "/other/bad/name"
 	req.Content = []byte("foo")
 	req.ContentDelta = -1
 
 	c.Check(req.Validate(), gc.ErrorMatches, `Proposal.Journal: cannot begin with '/' \(/other/bad/name\)`)
-	frag.Journal = "journal"
+	req.Proposal.Journal = "good/name"
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Content with Proposal \(len 3\)`)
 	req.Content = nil
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected ContentDelta with Proposal \(-1\)`)
@@ -166,14 +200,13 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 }
 
 func (s *RPCSuite) TestReplicateResponseValidationCases(c *gc.C) {
-	var frag, _ = ParseContentPath("a/journal/00000000499602d2-000000008bd03835-0102030405060708090a0b0c0d0e0f1011121314.sz")
-	frag.Journal = "/bad/name"
+	var frag = &Fragment{Journal: "/bad/name"}
 	var rt = Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}}
 
 	var resp = ReplicateResponse{
 		Status:   9101,
 		Route:    &rt,
-		Fragment: &frag,
+		Fragment: frag,
 	}
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `Status: invalid status .*`)
@@ -195,28 +228,12 @@ func (s *RPCSuite) TestReplicateResponseValidationCases(c *gc.C) {
 
 	resp.Status = Status_FRAGMENT_MISMATCH
 	resp.Route = nil
-	resp.Fragment = &frag
+	resp.Fragment = frag
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `Fragment.Journal: cannot begin with '/' \(/bad/name\)`)
 	frag.Journal = "journal"
 
 	c.Check(resp.Validate(), gc.IsNil) // Success.
-}
-
-func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
-	var req = AppendRequest{
-		Journal: "/bad",
-		Content: []byte("foo"),
-	}
-
-	c.Check(req.Validate(), gc.ErrorMatches, `Journal: cannot begin with '/': /bad`)
-	req.Journal = "good"
-
-	c.Check(req.Validate(), gc.ErrorMatches, ``)
-
-	c.Check(req.Validate(), gc.IsNil)
-
-	// Block, DoNotProxy, and MetadataOnly have no validation.
 }
 
 var _ = gc.Suite(&RPCSuite{})

@@ -16,10 +16,10 @@ func (s *JournalSuite) TestJournalValidationCases(c *gc.C) {
 		expect string
 	}{
 		{"a/valid/path/to/a/journal", ""}, // Success.
-		{"/leading/slash", "cannot begin with '/'"},
+		{"/leading/slash", `cannot begin with '/' \(/leading/slash\)`},
 		{"trailing/slash/", `must be a clean path \(trailing/slash/\)`},
-		{"extra-middle//slash", `must be a clean path \(.*"},
-		{"not-$%|-base64", "not base64 alphabet: .*"},
+		{"extra-middle//slash", `must be a clean path \(extra-middle//slash\)`},
+		{"not-$%|-base64", `not base64 alphabet \(.*\)`},
 		{"", `invalid length \(0; expected 4 <= .*`},
 		{"zz", `invalid length \(2; expected 4 <= .*`},
 	}
@@ -57,7 +57,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 	c.Check(spec.Validate(), gc.IsNil) // Base case: validates successfully.
 
 	spec.Name = "/bad/name"
-	c.Check(spec.Validate(), gc.ErrorMatches, `Name: cannot begin with '/'`)
+	c.Check(spec.Validate(), gc.ErrorMatches, `Name: cannot begin with '/' \(/bad/name\)`)
 	spec.Name = "a/journal"
 
 	spec.Replication = 0
@@ -67,7 +67,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 	spec.Replication = 3
 
 	spec.Labels.Labels[0].Name = "xxx xxx"
-	c.Check(spec.Validate(), gc.ErrorMatches, `Labels.Labels\[0\].Name: not base64 alphabet: xxx xxx`)
+	c.Check(spec.Validate(), gc.ErrorMatches, `Labels.Labels\[0\].Name: not base64 alphabet \(xxx xxx\)`)
 	spec.Labels.Labels[0].Name = "aaaa"
 
 	spec.Fragment.Length = 0

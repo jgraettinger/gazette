@@ -1,5 +1,6 @@
 package fragment
 
+/*
 import (
 	"bytes"
 	"io"
@@ -281,7 +282,7 @@ func gzipped(content string) []byte {
 	return buf.Bytes()
 }
 
-*/
 var _ = gc.Suite(&SpoolSuite{})
 
 func Test(t *testing.T) { gc.TestingT(t) }
+*/

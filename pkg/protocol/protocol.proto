@@ -28,11 +28,6 @@ enum Status {
   FRAGMENT_MISMATCH = 10;
 }
 
-// StatusResponse is an RPC response representing a Status.
-message StatusResponse {
-  Status status = 1;
-}
-
 // CompressionCode defines codecs known to Gazette.
 enum CompressionCodec {
   NONE = 0;
@@ -157,6 +152,9 @@ message BrokerSpec {
   uint32 journal_limit = 3;
 }
 
+// Fragment is a content-addressed description of a contiguous Journal span,
+// defined by the [begin, end) offset range covered by the Fragment and the
+// SHA1 sum of the corresponding Journal content.
 message Fragment {
   // Journal of the Fragment.
   string journal = 1 [(gogoproto.casttype) = "Journal"];

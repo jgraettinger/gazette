@@ -65,9 +65,9 @@ func matchLabels(s, o []Label) bool {
 
 func validateB64Str(n string, min, max int) error {
 	if l := len(n); l < min || l > max {
-		return NewValidationError("invalid length (%+v; expected %d <= length <= %d)", l, min, max)
+		return NewValidationError("invalid length (%d; expected %d <= length <= %d)", l, min, max)
 	} else if len(strings.Trim(n, base64Alphabet)) != 0 {
-		return NewValidationError("not base64 alphabet: %v", n)
+		return NewValidationError("not base64 alphabet (%s)", n)
 	}
 	return nil
 }

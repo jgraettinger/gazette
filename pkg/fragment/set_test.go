@@ -342,13 +342,10 @@ func (s *SetSuite) TestIssue97Regression(c *gc.C) {
 	})
 }
 
-func setAdd(s *Set, begin, end int) bool {
+func setAdd(s *Set, begin, end int64) bool {
 	var updated bool
 	*s, updated = s.Add(Fragment{
-		Fragment: protocol.Fragment{
-			Begin: int64(begin),
-			End:   int64(end),
-		},
+		Fragment: protocol.Fragment{Begin: begin, End: end},
 	})
 	return updated
 }

@@ -8,9 +8,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"github.com/LiveRamp/gazette/pkg/keyspace"
+	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 const (
@@ -63,7 +62,7 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadRespon
 		// of an offset covered by that Fragment until it becomes available).
 		if !found && ind != len(fi.set) &&
 			!fi.set[ind].ModTime.IsZero() &&
-			fi.set[ind].ModTime.Before(time.Now().Add(offsetJumpAgeThreshold)) {
+			fi.set[ind].ModTime.Before(timeNow().Add(-offsetJumpAgeThreshold)) {
 
 			resp.Offset = fi.set[ind].Begin
 			found = true
@@ -160,23 +159,24 @@ func (fi *Index) wakeBlockedQueries() {
 	fi.condCh = make(chan struct{})
 }
 
-// WatchStores periodically queries currently configured remote fragment stores
-// of the named Journal for their current index, and updates the Index
-// accordingly. It closes |signalCh| after the first successful load.
-func (fi *Index) WatchStores(ks *keyspace.KeySpace, name pb.Journal, signalCh chan<- struct{}) {
-	for {
-		ks.Mu.RLock()
-		var item, ok = v3_allocator.LookupItem(ks, name.String())
-		ks.Mu.RUnlock()
+// GetSpecFunc returns a JournalSpec if available, or returns false.
+type GetSpecFunc func() (spec *pb.JournalSpec, ok bool)
 
+// WatchStores periodically invokes |getSpec| to obtain a current JournalSpec,
+// queries its configured remote fragment stores at the configured cadence for
+// their Fragment listings, and updates the Index accordingly. It closes
+// |signalCh| after the first successful load, and exits if |getSpec| returns
+// !ok or if the Index context is cancelled.
+func (fi *Index) WatchStores(getSpec GetSpecFunc, signalCh chan<- struct{}) {
+	for {
+		var spec, ok = getSpec()
 		if !ok {
-			return // Journal no longer exists.
+			return
 		}
-		var spec = item.ItemValue.(*pb.JournalSpec)
-		var set, err = Store.LoadIndex(fi.ctx, spec.Fragment.Stores)
+		var set, err = walkAllStores(fi.ctx, spec.Name, spec.Fragment.Stores)
 
 		if err != nil {
-			log.WithFields(log.Fields{"err": err, "name": name}).Warn("failed to load remote index")
+			log.WithFields(log.Fields{"err": err, "name": spec.Name}).Warn("failed to load remote index")
 		} else {
 			fi.replaceRemote(set)
 
@@ -188,8 +188,38 @@ func (fi *Index) WatchStores(ks *keyspace.KeySpace, name pb.Journal, signalCh ch
 
 		select {
 		case <-time.After(spec.Fragment.RefreshInterval):
+			// Pass.
 		case <-fi.ctx.Done():
 			return
 		}
 	}
 }
+
+// walkAllStores enumerates Fragments from each of |stores| into the returned Set,
+// or returns an encountered error.
+func walkAllStores(_ context.Context, name pb.Journal, stores []pb.FragmentStore) (Set, error) {
+	var set Set
+
+	for _, store := range stores {
+		var fs cloudstore.FileSystem
+		var err error
+
+		// TODO(johnny): This should take a context.
+		if fs, err = cloudstore.NewFileSystem(nil, string(store)); err != nil {
+			return Set{}, err
+		}
+
+		err = fs.Walk(name.String()+"/", WalkFuncAdapter(func(frag pb.Fragment) error {
+			set, _ = set.Add(Fragment{Fragment: frag})
+			return nil
+		}))
+		_ = fs.Close() // TODO(johnny): Can we remove Close from the FileSystem API?
+
+		if err != nil {
+			return Set{}, err
+		}
+	}
+	return set, nil
+}
+
+var timeNow = time.Now

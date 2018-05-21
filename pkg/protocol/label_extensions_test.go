@@ -14,8 +14,8 @@ func (s *LabelSuite) TestLabelValidationCases(c *gc.C) {
 		expect      string
 	}{
 		{"a-label", "a-value", ""}, // Success.
-		{"a|label", "a-value", "Name: not base64 alphabet: a|label"},
-		{"a-label", "a|value", "Value: not base64 alphabet: a|value"},
+		{"a|label", "a-value", `Name: not base64 alphabet \(a|label\)`},
+		{"a-label", "a|value", `Value: not base64 alphabet \(a|value\)`},
 		{"a", "a-value", `Name: invalid length \(1; expected 2 <= length <= 64\)`},
 		{strings.Repeat("a", maxLabelLen+1), "a-value", `Name: invalid length \(65; expected .*`},
 		{"a-label", "", ""}, // Success
@@ -41,7 +41,7 @@ func (s *LabelSuite) TestSetValidationCases(c *gc.C) {
 	c.Check(set.Validate(), gc.IsNil)
 
 	set.Labels[1].Name = "bad label"
-	c.Check(set.Validate(), gc.ErrorMatches, `Labels\[1\].Name: not base64 alphabet: bad label`)
+	c.Check(set.Validate(), gc.ErrorMatches, `Labels\[1\].Name: not base64 alphabet \(bad label\)`)
 
 	set.Labels[1].Name = "AAA"
 	c.Check(set.Validate(), gc.ErrorMatches, `Labels not in unique, sorted order \(index 1; AAA <= CC\)`)
@@ -63,11 +63,11 @@ func (s *LabelSuite) TestSelectorValidationCases(c *gc.C) {
 	c.Check(sel.Validate(), gc.IsNil)
 
 	sel.Include.Labels[0].Name = "bad label"
-	c.Check(sel.Validate(), gc.ErrorMatches, `Include.Labels\[0\].Name: not base64 alphabet: bad label`)
+	c.Check(sel.Validate(), gc.ErrorMatches, `Include.Labels\[0\].Name: not base64 alphabet \(bad label\)`)
 	sel.Include.Labels[0].Name = "include"
 
 	sel.Exclude.Labels[0].Name = "bad label"
-	c.Check(sel.Validate(), gc.ErrorMatches, `Exclude.Labels\[0\].Name: not base64 alphabet: bad label`)
+	c.Check(sel.Validate(), gc.ErrorMatches, `Exclude.Labels\[0\].Name: not base64 alphabet \(bad label\)`)
 }
 
 func (s *LabelSuite) TestMatchingCases(c *gc.C) {

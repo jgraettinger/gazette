@@ -7,7 +7,7 @@ func (m *ReadRequest) Validate() error {
 	if err := m.Journal.Validate(); err != nil {
 		return ExtendContext(err, "Journal")
 	} else if m.Offset < -1 {
-		return NewValidationError("invalid Offset (%d; expected -1 <= Offset <= MaxInt64", m.Offset)
+		return NewValidationError("invalid Offset (%d; expected -1 <= Offset <= MaxInt64)", m.Offset)
 	}
 
 	// Block, DoNotProxy, and MetadataOnly (each type bool) require no extra validation.
@@ -190,9 +190,9 @@ func (m *ReplicateResponse) Validate() error {
 }
 
 // Validate returns an error if the Status is not well-formed.
-func (m Status) Validate() error {
-	if _, ok := Status_name[int32(m)]; !ok {
-		return NewValidationError("invalid status (%s)", m)
+func (x Status) Validate() error {
+	if _, ok := Status_name[int32(x)]; !ok {
+		return NewValidationError("invalid status (%s)", x)
 	}
 	return nil
 }

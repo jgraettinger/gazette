@@ -33,6 +33,10 @@ func (s Set) EndOffset() int64 {
 func (s Set) Add(fragment Fragment) (Set, bool) {
 	var lens = len(s)
 
+	if lens != 0 && fragment.Journal != s[0].Journal {
+		panic("journal mismatch")
+	}
+
 	// O(1) fast paths:
 	// 1) Ignore empty Fragments.
 	if fragment.ContentLength() == 0 {

@@ -94,7 +94,7 @@ func (s *RouteSuite) TestValidationCases(c *gc.C) {
 	c.Check(rt.Validate(), gc.IsNil)
 
 	rt.Brokers[0].Zone = "invalid zone"
-	c.Check(rt.Validate(), gc.ErrorMatches, `Brokers\[0\].Zone: not base64 alphabet: invalid zone`)
+	c.Check(rt.Validate(), gc.ErrorMatches, `Brokers\[0\].Zone: not base64 alphabet \(invalid zone\)`)
 	rt.Brokers[0].Zone = "zone-a"
 
 	rt.Brokers[1], rt.Brokers[2] = rt.Brokers[2], rt.Brokers[1]
