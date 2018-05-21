@@ -7,6 +7,7 @@ import (
 	"hash"
 	"io"
 	"io/ioutil"
+	"math"
 	"os"
 
 	log "github.com/sirupsen/logrus"
@@ -38,16 +39,34 @@ type Spool struct {
 	delta    int64     // Delta offset of next byte to write, relative to Fragment.End.
 	summer   hash.Hash // Running SHA1 of the Fragment.File, through |offset|.
 	sumState []byte    // SHA1 |summer| internal state at the last Fragment commit.
-	index    *Index    // Index into which committed, local Fragments are advertised.
+
+	observer SpoolObserver
+}
+
+// SpoolObserver is notified of important events in the Spool lifecycle.
+type SpoolObserver interface {
+	// SpoolCommit is called when the Spool Fragment is extended.
+	SpoolCommit(Fragment)
+	// SpoolComplete is called when the Spool has been completed.
+	SpoolComplete(Spool)
 }
 
 // NewSpool returns an empty Spool of |journal|.
-func NewSpool(journal pb.Journal, index *Index) Spool {
+func NewSpool(journal pb.Journal, observer SpoolObserver) Spool {
 	return Spool{
 		Fragment: Fragment{Fragment: pb.Fragment{Journal: journal}},
-		index:    index,
 		summer:   sha1.New(),
 		sumState: zeroedSHA1State,
+		observer: observer,
+	}
+}
+
+// Apply the ReplicateRequest to the Spool, returning any encountered error.
+func (s *Spool) Apply(r *pb.ReplicateRequest) (pb.ReplicateResponse, error) {
+	if r.Proposal != nil {
+		return s.applyCommit(r), nil
+	} else {
+		return pb.ReplicateResponse{}, s.applyContent(r)
 	}
 }
 
@@ -59,13 +78,47 @@ func (s *Spool) Next() pb.Fragment {
 	return f
 }
 
-// Apply the ReplicateRequest to the Spool, returning any encountered error.
-func (s *Spool) Apply(r *pb.ReplicateRequest) (pb.ReplicateResponse, error) {
-	if r.Proposal != nil {
-		return s.applyCommit(r), nil
-	} else {
-		return pb.ReplicateResponse{}, s.applyContent(r)
+// CodecReader returns a ReadCloser of Spool content, compressed under the
+// Spool's CompressionCodec. Callers are responsible for calling Close on
+// the returned Reader. CodecReader panics if called before the Spool is
+// completed.
+func (s *Spool) CodecReader() io.ReadCloser {
+	if s.compressor != nil {
+		panic("Spool not finalized")
 	}
+
+	if s.compressedFile != nil {
+		// We let the underlying file dictate EOF, since:
+		//  a) we only wrote complete commits to it, without possibility of rollbacks.
+		//  a) we don't actually know how large it is, without stat-ing the file
+		return ioutil.NopCloser(
+			io.NewSectionReader(s.compressedFile, 0, math.MaxInt64))
+	}
+
+	// Unlike |compressedFile|, note that |File| could extend beyond ContentLength
+	// (eg, because of a partial write which was then rolled-back).
+	var r = io.NewSectionReader(s.File, 0, s.ContentLength())
+
+	if s.CompressionCodec == pb.CompressionCodec_NONE {
+		return ioutil.NopCloser(r)
+	}
+
+	// Fallback: we must compress, but |compressedFile| is not valid.
+	// Return a Pipe which has compressed content written into it.
+	var pr, pw = io.Pipe()
+
+	go func() {
+		if zw, err := codecs.NewCodecWriter(pw, s.CompressionCodec); err != nil {
+			pw.CloseWithError(err)
+		} else if _, err = io.Copy(zw, r); err != nil {
+			_ = zw.Close()
+			pw.CloseWithError(err)
+		} else {
+			pw.CloseWithError(zw.Close())
+		}
+	}()
+
+	return pr
 }
 
 func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
@@ -97,31 +150,28 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 
 		s.Fragment.End += s.delta
 		s.Fragment.Sum = pb.SHA1SumFromDigest(s.summer.Sum(nil))
-		s.index.addLocal(s.Fragment)
+		s.observer.SpoolCommit(s.Fragment)
 
 		s.delta = 0
 		s.saveSumState()
+
 		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}
 
-	// Case 3? Persist the current Fragment, and re-initialize to the new one.
+	// Case 3? Complete the current Fragment, and re-initialize to the new one.
 	if r.Proposal.Journal == s.Fragment.Journal &&
 		r.Proposal.Begin >= s.Fragment.End &&
 		r.Proposal.ContentLength() == 0 &&
 		r.Proposal.Sum.IsZero() {
 
 		s.finalizeCompressor(false)
-		if s.ContentLength() != 0 && s.Fragment.BackingStore != "" {
-			go Store.Persist(*s)
-		}
+		s.observer.SpoolComplete(*s)
 
 		*s = Spool{
-			Fragment: Fragment{
-				Fragment: *r.Proposal,
-			},
-			index:    s.index,
+			Fragment: Fragment{Fragment: *r.Proposal},
 			summer:   sha1.New(),
 			sumState: zeroedSHA1State,
+			observer: s.observer,
 		}
 		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}
@@ -137,6 +187,7 @@ func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
 		return fmt.Errorf("invalid ContentDelta %d (expected %d)", r.ContentDelta, s.delta)
 	}
 
+	// Lazily open the Fragment.File.
 	if s.Fragment.File == nil {
 		if s.ContentLength() != 0 {
 			panic("Spool.Fragment not empty.")
@@ -149,6 +200,7 @@ func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
 		}
 	}
 
+	// Iff compression is enabled, lazily initialize a compressor.
 	if s.EnableCompression && s.compressedFile == nil && s.ContentLength() == 0 {
 		if file, err := newSpoolFile(); err != nil {
 			return err

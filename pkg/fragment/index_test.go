@@ -18,7 +18,7 @@ func (s *IndexSuite) TestSimpleRemoteAndLocalQueries(c *gc.C) {
 	var ind = NewIndex(context.Background())
 
 	var set = buildSet(c, 100, 150, 150, 200, 200, 250)
-	ind.replaceRemote(set[:2])
+	ind.ReplaceRemote(set[:2])
 
 	var resp, file, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: 110, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -31,7 +31,7 @@ func (s *IndexSuite) TestSimpleRemoteAndLocalQueries(c *gc.C) {
 
 	// Add a local fragment with backing file. Expect we can query it.
 	set[2].File = os.Stdin
-	ind.addLocal(set[2])
+	ind.AddLocal(set[2])
 
 	resp, file, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: 210, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -48,7 +48,7 @@ func (s *IndexSuite) TestRemoteReplacesLocal(c *gc.C) {
 
 	var set = buildSet(c, 100, 200)
 	set[0].File = os.Stdin
-	ind.addLocal(set[0])
+	ind.AddLocal(set[0])
 
 	// Precondition: local fragment is queryable.
 	var resp, file, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: 110, Block: true})
@@ -64,7 +64,7 @@ func (s *IndexSuite) TestRemoteReplacesLocal(c *gc.C) {
 	// return the longest overlapping fragment, but as we've removed local
 	// fragments covered by remote ones, we should see remote fragments only.
 	set = buildSet(c, 100, 150, 150, 200)
-	ind.replaceRemote(set)
+	ind.ReplaceRemote(set)
 
 	resp, file, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: 110, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -78,7 +78,7 @@ func (s *IndexSuite) TestRemoteReplacesLocal(c *gc.C) {
 
 func (s *IndexSuite) TestQueryAtHead(c *gc.C) {
 	var ind = NewIndex(context.Background())
-	ind.addLocal(buildSet(c, 100, 200)[0])
+	ind.AddLocal(buildSet(c, 100, 200)[0])
 
 	var resp, _, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: -1, Block: false})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -88,7 +88,7 @@ func (s *IndexSuite) TestQueryAtHead(c *gc.C) {
 	})
 	c.Check(err, gc.IsNil)
 
-	go ind.addLocal(buildSet(c, 200, 250)[0])
+	go ind.AddLocal(buildSet(c, 200, 250)[0])
 
 	resp, _, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: -1, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -108,8 +108,8 @@ func (s *IndexSuite) TestQueryAtMissingMiddle(c *gc.C) {
 
 	// Establish fixture with zero'd Fragment ModTimes.
 	var set = buildSet(c, 100, 200, 300, 400)
-	ind.addLocal(set[0])
-	ind.addLocal(set[1])
+	ind.AddLocal(set[0])
+	ind.AddLocal(set[1])
 
 	// Expect before and after the missing span are queryable, but the missing middle is not available.
 	var resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 110, Block: false})
@@ -121,14 +121,14 @@ func (s *IndexSuite) TestQueryAtMissingMiddle(c *gc.C) {
 
 	// Update ModTime to |baseTime|. Queries still fail (as we haven't passed the time horizon).
 	set[0].ModTime, set[1].ModTime = baseTime, baseTime
-	ind.replaceRemote(set)
+	ind.ReplaceRemote(set)
 
 	resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 210, Block: false})
 	c.Check(resp.Status, gc.Equals, pb.Status_OFFSET_NOT_YET_AVAILABLE)
 
 	// Perform a blocking query, and arrange for a satisfying Fragment to be added.
 	// Expect it's returned.
-	go ind.addLocal(buildSet(c, 200, 250)[0])
+	go ind.AddLocal(buildSet(c, 200, 250)[0])
 
 	resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 210, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -143,7 +143,7 @@ func (s *IndexSuite) TestQueryAtMissingMiddle(c *gc.C) {
 	// jumps forward to the next Fragment.
 	go func() {
 		timeNow = func() time.Time { return baseTime.Add(offsetJumpAgeThreshold + 1) }
-		ind.addLocal(buildSet(c, 400, 420)[0])
+		ind.AddLocal(buildSet(c, 400, 420)[0])
 	}()
 
 	resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 250, Block: true})
@@ -163,7 +163,7 @@ func (s *IndexSuite) TestBlockedContextCancelled(c *gc.C) {
 	var reqCtx, reqCancel = context.WithCancel(context.Background())
 
 	var ind = NewIndex(indCtx)
-	ind.addLocal(buildSet(c, 100, 200)[0])
+	ind.AddLocal(buildSet(c, 100, 200)[0])
 
 	// Cancel the request context. Expect the query returns immediately.
 	go reqCancel()

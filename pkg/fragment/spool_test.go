@@ -1,35 +1,29 @@
 package fragment
 
-/*
 import (
-	"bytes"
-	"io"
-	"io/ioutil"
-	"math/rand"
-	"os"
-	"path/filepath"
-	"testing"
-
 	gc "github.com/go-check/check"
-
-	"github.com/LiveRamp/gazette/pkg/fragment"
-	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-type SpoolSuite struct {
-	localDir string
+type SpoolSuite struct{}
+
+func (s *SpoolSuite) TestFoo(c *gc.C) {
+	var obv testSpoolObserver
+	var spool = NewSpool("a/journal", &obv)
+
+	// Commit @ zero
+	// Comm
+
 }
 
-func (s *SpoolSuite) SetUpTest(c *gc.C) {
-	var err error
-	s.localDir, err = ioutil.TempDir("", "spool-suite")
-	c.Assert(err, gc.IsNil)
+type testSpoolObserver struct {
+	commits   []Fragment
+	completes []Spool
 }
 
-func (s *SpoolSuite) TearDownTest(c *gc.C) {
-	os.RemoveAll(s.localDir)
-}
+func (o *testSpoolObserver) SpoolCommit(f Fragment) { o.commits = append(o.commits, f) }
+func (o *testSpoolObserver) SpoolComplete(s Spool)  { o.completes = append(o.completes, s) }
 
+/*
 func (s *SpoolSuite) TestMultipleWriteAndCommitFixture(c *gc.C) {
 	var spool, err = newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
@@ -105,6 +99,7 @@ func (s *SpoolSuite) TestMultipleWriteAndCommitFixture(c *gc.C) {
 	c.Check(string(content), gc.Equals, "an initial writeanota final write")
 }
 
+/*
 func (s *SpoolSuite) TestFixtureChecksumEquivalence(c *gc.C) {
 	spool, err := newSpool(s.localDir, "journal/name", 12345)
 	c.Check(err, gc.IsNil)
@@ -197,7 +192,7 @@ func (s *SpoolSuite) TestPersistence(c *gc.C) {
 	c.Assert(err, gc.IsNil) // Precondition: local file exists.
 
 	context := &MockStorageContext{}
-	c.Assert(spool.Persist(context), gc.IsNil)
+	c.Assert(spool.Completed(context), gc.IsNil)
 	spool.Delete()
 
 	_, err = os.Stat(spool.LocalPath())
@@ -218,23 +213,23 @@ func (s *SpoolSuite) TestUploadErrorHandling(c *gc.C) {
 	{
 		context := &MockStorageContext{}
 		context.CreateReturn = err
-		c.Assert(spool.Persist(context), gc.DeepEquals, err)
+		c.Assert(spool.Completed(context), gc.DeepEquals, err)
 	}
 	{
 		context := &MockStorageContext{}
 		context.WriteReturn = err
-		c.Assert(spool.Persist(context), gc.DeepEquals, err)
+		c.Assert(spool.Completed(context), gc.DeepEquals, err)
 	}
 	{
 		context := &MockStorageContext{}
 		context.CloseReturn = err
-		c.Assert(spool.Persist(context), gc.DeepEquals, err)
+		c.Assert(spool.Completed(context), gc.DeepEquals, err)
 	}
 	_, statErr := os.Stat(spool.LocalPath())
 	c.Assert(statErr, gc.IsNil) // Local file still exists.
 	{
 		context := &MockStorageContext{}
-		c.Assert(spool.Persist(context), gc.IsNil) // Successful upload.
+		c.Assert(spool.Completed(context), gc.IsNil) // Successful upload.
 		spool.Delete()
 	}
 	_, statErr = os.Stat(spool.LocalPath())
@@ -269,7 +264,7 @@ func (s *SpoolSuite) TestSpoolRecovery(c *gc.C) {
 	c.Assert(recovered[1].ContentPath(), gc.Equals, fixture2)
 
 	context := &MockStorageContext{}
-	c.Assert(recovered[0].Persist(context), gc.IsNil)
+	c.Assert(recovered[0].Completed(context), gc.IsNil)
 	c.Assert(context.RecordedWrites.Bytes(), gc.DeepEquals,
 		gzipped("fixture one content"))
 }
@@ -282,7 +277,6 @@ func gzipped(content string) []byte {
 	return buf.Bytes()
 }
 
-var _ = gc.Suite(&SpoolSuite{})
-
-func Test(t *testing.T) { gc.TestingT(t) }
 */
+
+var _ = gc.Suite(&SpoolSuite{})

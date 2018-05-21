@@ -112,8 +112,8 @@ func (fi *Index) EndOffset() int64 {
 	return fi.set.EndOffset()
 }
 
-// addLocal adds local Fragment |frag| to the index.
-func (fi *Index) addLocal(frag Fragment) {
+// AddLocal adds local Fragment |frag| to the index.
+func (fi *Index) AddLocal(frag Fragment) {
 	defer fi.mu.Unlock()
 	fi.mu.Lock()
 
@@ -122,8 +122,8 @@ func (fi *Index) addLocal(frag Fragment) {
 	fi.wakeBlockedQueries()
 }
 
-// replaceRemote replaces all remote Fragments in the index with |set|.
-func (fi *Index) replaceRemote(set Set) {
+// ReplaceRemote replaces all remote Fragments in the index with |set|.
+func (fi *Index) ReplaceRemote(set Set) {
 	defer fi.mu.Unlock()
 	fi.mu.Lock()
 
@@ -178,7 +178,7 @@ func (fi *Index) WatchStores(getSpec GetSpecFunc, signalCh chan<- struct{}) {
 		if err != nil {
 			log.WithFields(log.Fields{"err": err, "name": spec.Name}).Warn("failed to load remote index")
 		} else {
-			fi.replaceRemote(set)
+			fi.ReplaceRemote(set)
 
 			if signalCh != nil {
 				close(signalCh)
