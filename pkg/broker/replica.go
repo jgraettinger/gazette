@@ -47,7 +47,7 @@ func newReplica() *replica {
 	return &replica{
 		ctx:           ctx,
 		cancel:        cancel,
-		index:         newFragmentIndex(ctx),
+		index:         fragment.NewIndex(ctx),
 		spoolCh:       spoolCh,
 		plnHandoffCh:  make(chan *pipeline),
 		initialLoadCh: make(chan struct{}),

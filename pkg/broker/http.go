@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -209,14 +210,13 @@ func (h *HTTPAPI) writeAppendResponse(w http.ResponseWriter, r *http.Request, re
 	if resp.Route != nil {
 		w.Header().Set(RouteTokenHeader, proto.CompactTextString(resp.Route))
 	}
-	if resp.FirstOffset != 0 {
-		w.Header().Add(FirstOffsetHeader, strconv.FormatInt(resp.FirstOffset, 10))
-	}
-	if resp.LastOffset != 0 {
-		w.Header().Add(LastOffsetHeader, strconv.FormatInt(resp.LastOffset, 10))
-	}
-	if resp.WriteHead != 0 {
-		w.Header().Add(WriteHeadHeader, strconv.FormatInt(resp.WriteHead, 10))
+	if resp.Commit != nil {
+		w.Header().Add(CommitBeginHeader, strconv.FormatInt(resp.Commit.Begin, 10))
+		w.Header().Add(CommitEndHeader, strconv.FormatInt(resp.Commit.End, 10))
+		w.Header().Add(WriteHeadHeader, strconv.FormatInt(resp.Commit.End, 10))
+
+		var digest = resp.Commit.Sum.ToDigest()
+		w.Header().Add(CommitSumHeader, hex.EncodeToString(digest[:]))
 	}
 
 	switch resp.Status {
@@ -224,8 +224,6 @@ func (h *HTTPAPI) writeAppendResponse(w http.ResponseWriter, r *http.Request, re
 		w.WriteHeader(http.StatusNoContent) // 204.
 	case pb.Status_JOURNAL_NOT_FOUND:
 		w.WriteHeader(http.StatusNotFound) // 404.
-	case pb.Status_REPLICATION_FAILED:
-		http.Error(w, resp.Status.String(), http.StatusServiceUnavailable) // 503.
 	default:
 		http.Error(w, resp.Status.String(), http.StatusInternalServerError) // 500.
 	}
@@ -268,7 +266,9 @@ const (
 	FragmentLocationHeader     = "X-Fragment-Location"
 	FragmentNameHeader         = "X-Fragment-Name"
 	RouteTokenHeader           = "X-Route-Token"
-	WriteHeadHeader            = "X-Write-Head"
-	FirstOffsetHeader          = "X-First-Offset"
-	LastOffsetHeader           = "X-Last-Offset"
+
+	WriteHeadHeader   = "X-Write-Head"
+	CommitBeginHeader = "X-Commit-Begin"
+	CommitEndHeader   = "X-Commit-End"
+	CommitSumHeader   = "X-Commit-SHA1-Sum"
 )

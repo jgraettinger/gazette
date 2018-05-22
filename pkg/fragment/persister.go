@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Persister
 type Persister struct {
 	qA, qB, qC []Spool
 	mu         sync.Mutex
@@ -21,10 +22,10 @@ func NewPersister() *Persister {
 }
 
 func (p *Persister) Persist(spool Spool) {
-	if spool.EnableCompression {
+	if spool.Primary {
 		// Attempt to immediately persist the Spool.
 		go func() {
-			if err := persistSpool(spool); err != nil {
+			if err := copySpoolToStore(spool); err != nil {
 				log.WithField("err", err).Warn("failed to persist Spool")
 				p.queue(spool)
 			}
@@ -59,7 +60,7 @@ func (p *Persister) Serve() {
 		}
 
 		for _, spool := range p.qA {
-			if err := persistSpool(spool); err != nil {
+			if err := copySpoolToStore(spool); err != nil {
 				log.WithField("err", err).Warn("failed to persist Spool")
 				p.queue(spool)
 			}
@@ -77,7 +78,8 @@ func (p *Persister) Serve() {
 	close(p.doneCh)
 }
 
-func persistSpool(spool Spool) error {
+// copySpoolToStore performs an atomic copy of the Spool Fragment to its target BackingStore.
+func copySpoolToStore(spool Spool) error {
 	var fs, err = cloudstore.NewFileSystem(nil, string(spool.BackingStore))
 	if err != nil {
 		return err

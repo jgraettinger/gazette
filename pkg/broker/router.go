@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/url"
 	"sync"
 	"time"
 
@@ -367,9 +366,19 @@ func (rtr *Router) resolve(journal pb.Journal, requirePrimary bool, mayProxy boo
 	if requirePrimary {
 		res.broker = res.route.Brokers[res.route.Primary]
 	} else {
-		res.broker = res.route.RandomReplica(rtr.id.Zone)
+		res.broker = res.route.Brokers[res.route.RandomReplica(rtr.id.Zone)]
 	}
 	return
+}
+
+func (rtr *Router) getJournalSpec(name pb.Journal) (*pb.JournalSpec, bool) {
+	rtr.ks.Mu.RLock()
+	defer rtr.ks.Mu.RUnlock()
+
+	if item, ok := v3_allocator.LookupItem(rtr.ks, name.String()); ok {
+		return item.ItemValue.(*pb.JournalSpec), true
+	}
+	return nil, false
 }
 
 // UpdateLocalItems is an instance of v3_allocator.LocalItemsCallback.
@@ -392,7 +401,10 @@ func (rtr *Router) UpdateLocalItems(items []v3_allocator.LocalItem) {
 		var r, ok = prev[name]
 		if !ok {
 			r = newReplica()
-			go r.index.watchStores(rtr.ks, name, r.initialLoadCh)
+
+			go r.index.WatchStores(
+				func() (*pb.JournalSpec, bool) { return rtr.getJournalSpec(name) },
+				r.initialLoadCh)
 		}
 
 		var routeChanged = !r.route.Equivalent(&route)
@@ -414,13 +426,16 @@ func (rtr *Router) UpdateLocalItems(items []v3_allocator.LocalItem) {
 		}
 
 		if routeChanged && r.isPrimary() {
-			// Issue an empty write to drive the quick convergence
-			// of replica Route announcements in Etcd.
-			if conn, err := rtr.peerConn(rtr.id); err == nil {
-				go issueEmptyWrite(conn, name)
-			} else {
-				log.WithField("err", err).Error("failed to build loopback *grpc.ClientConn")
-			}
+			log.Error("convergence not yet implemented!")
+			/*
+				// Issue an empty write to drive the quick convergence
+				// of replica Route announcements in Etcd.
+				if conn, err := rtr.peerConn(rtr.id); err == nil {
+					go issueEmptyWrite(conn, name)
+				} else {
+					log.WithField("err", err).Error("failed to build loopback *grpc.ClientConn")
+				}
+			*/
 		}
 		next[name] = r
 	}

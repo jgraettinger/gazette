@@ -1,17 +1,12 @@
 package fragment
 
 import (
-	"errors"
-	"net/url"
 	"os"
-	"time"
 
-	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	"github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// Fragment wraps the protocol.Fragment type with a backing,
-// local file (if one exists).
+// Fragment wraps the protocol.Fragment type with a nil-able backing local File.
 type Fragment struct {
 	protocol.Fragment
 
@@ -19,6 +14,7 @@ type Fragment struct {
 	File *os.File
 }
 
+/*
 func SignURL(f Fragment, duration time.Duration) (*url.URL, error) {
 	if f.File != nil || f.BackingStore == "" {
 		return nil, errors.New("not a remote fragment")
@@ -33,7 +29,6 @@ func SignURL(f Fragment, duration time.Duration) (*url.URL, error) {
 	return fs.ToURL(f.ContentPath(), "GET", duration)
 }
 
-/*
 func (f Fragment) ReaderFromOffset(offset int64) (io.ReadCloser, error) {
 	if f.File != nil {
 		return ioutil.NopCloser(io.NewSectionReader(f.File, offset-f.Begin, f.End-offset)), nil

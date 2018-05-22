@@ -3,7 +3,6 @@ package fragment
 import (
 	"crypto/sha1"
 	"encoding"
-	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -24,7 +23,7 @@ type Spool struct {
 	// Fragment at time of last commit.
 	Fragment
 	// Should the Spool proactively compress content?
-	EnableCompression bool
+	Primary bool
 
 	// Compressed form of the Fragment, compressed under Fragment.CompressionCodec.
 	// This field is somewhat speculative; only one broker (eg, the primary)
@@ -143,8 +142,8 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 				io.NewSectionReader(s.File, s.Fragment.ContentLength(), s.delta)); err != nil {
 
 				// |err| invalidates the compressor but does not fail the commit.
-				s.finalizeCompressor(true)
 				log.WithFields(log.Fields{"proposal": *r.Proposal, "err": err}).Error("failed to compress")
+				s.finalizeCompressor(true)
 			}
 		}
 
@@ -170,11 +169,11 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 		}
 
 		*s = Spool{
-			Fragment:          Fragment{Fragment: *r.Proposal},
-			EnableCompression: s.EnableCompression,
-			summer:            sha1.New(),
-			sumState:          zeroedSHA1State,
-			observer:          s.observer,
+			Fragment: Fragment{Fragment: *r.Proposal},
+			Primary:  s.Primary,
+			summer:   sha1.New(),
+			sumState: zeroedSHA1State,
+			observer: s.observer,
 		}
 		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}
@@ -187,7 +186,7 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 
 func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
 	if r.ContentDelta != s.delta {
-		return fmt.Errorf("invalid ContentDelta %d (expected %d)", r.ContentDelta, s.delta)
+		return pb.NewValidationError("invalid ContentDelta (%d; expected %d)", r.ContentDelta, s.delta)
 	}
 
 	// Lazily open the Fragment.File.
@@ -203,13 +202,21 @@ func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
 		}
 	}
 
-	// Iff compression is enabled, lazily initialize a compressor.
-	if s.EnableCompression && s.compressedFile == nil && s.ContentLength() == 0 {
+	// Iff we're primary and compression is enabled, lazily initialize a compressor.
+	if s.Primary &&
+		s.Fragment.CompressionCodec != pb.CompressionCodec_NONE &&
+		s.compressedFile == nil &&
+		s.ContentLength() == 0 {
+
+		// Log warnings (rather than error) if we fail to initialize a spool file
+		// or compressor, as we can continue to write to the uncompressed spool file.
 		if file, err := newSpoolFile(); err != nil {
-			return err
+			log.WithField("err", err).Warn("failed to open compressed spool file")
 		} else if compressor, err := codecs.NewCodecWriter(file, s.CompressionCodec); err != nil {
+			log.WithFields(log.Fields{"err": err, "codec": s.Fragment.CompressionCodec}).
+				Warn("failed to init compressor")
+
 			_ = file.Close()
-			return err
 		} else {
 			s.compressedFile = file
 			s.compressor = compressor
@@ -271,7 +278,7 @@ func (s *Spool) restoreSumState() {
 // disk resources, but the file becomes unaddressable and its resources released
 // to the OS after an explicit call to Close, or if the os.File is garbage-
 // collected (such that the runtime finalizer calls Close on our behalf).
-func newSpoolFile() (*os.File, error) {
+var newSpoolFile = func() (*os.File, error) {
 	if f, err := ioutil.TempFile("", "spool"); err != nil {
 		return f, err
 	} else {

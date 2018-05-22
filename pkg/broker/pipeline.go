@@ -34,7 +34,7 @@ func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, conn
 	}
 
 	// Enable compression while the Spool is serving as primary within a pipeline.
-	spool.EnableCompression = true
+	spool.Primary = true
 
 	var pln = &pipeline{
 		route:         route,
@@ -84,7 +84,7 @@ func (pln *pipeline) closeSend(spoolCh chan<- fragment.Spool) {
 	pln.spool.Apply(&pb.ReplicateRequest{
 		Proposal: &pln.spool.Fragment.Fragment,
 	})
-	pln.spool.EnableCompression = false
+	pln.spool.Primary = false
 	spoolCh <- pln.spool // Release ownership of Spool.
 
 	for i, s := range pln.streams {
@@ -186,10 +186,10 @@ func (pln *pipeline) sync(proposal pb.Fragment) (rollToOffset, readThroughRev in
 				}
 			} else {
 				pln.recvErrs[i] = fmt.Errorf("unexpected Route mismatch: %s (remote) vs %s (local)",
-					resp.Route, pln.route)
+					resp.Route, &pln.route)
 			}
 
-		case pb.Status_WRONG_WRITE_HEAD:
+		case pb.Status_FRAGMENT_MISMATCH:
 			if resp.Fragment.Begin != pln.spool.Fragment.Begin &&
 				resp.Fragment.End >= pln.spool.Fragment.End {
 				// Peer has a Fragment at matched or larger End offset, and with a
@@ -199,7 +199,7 @@ func (pln *pipeline) sync(proposal pb.Fragment) (rollToOffset, readThroughRev in
 				}
 			} else {
 				pln.recvErrs[i] = fmt.Errorf("unexpected Fragment mismatch: %s (remote) vs %s (local)",
-					resp.Fragment, pln.spool.Fragment.Fragment)
+					resp.Fragment, &pln.spool.Fragment.Fragment)
 			}
 
 		default:

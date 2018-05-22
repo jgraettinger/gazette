@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"sync"
 
-	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
@@ -49,8 +48,11 @@ func read(r *replica, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 		if file != nil {
 			reader = ioutil.NopCloser(io.NewSectionReader(
 				file, resp.Offset-resp.Fragment.Begin, resp.Fragment.End-resp.Offset))
-		} else if reader, err = fragment.Store.Open(*resp.Fragment, resp.Offset); err != nil {
-			return err
+		} else {
+			// if reader, err = fragment.Store.Open(*resp.Fragment, resp.Offset); err != nil {
+			//return err
+			// }
+			panic("not yet implemented")
 		}
 
 		// Loop over chunks read from |reader|, sending each to the client.

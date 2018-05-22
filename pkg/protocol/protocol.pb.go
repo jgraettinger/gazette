@@ -290,7 +290,7 @@ type JournalSpec_Fragment struct {
 	//
 	// Multiple fragment_stores may be specified, in which case the Journal's
 	// Fragments are the union of all Fragments present across all stores, and
-	// newly Fragments always persist to the first specified store. This can be
+	// new Fragments always persist to the first specified store. This can be
 	// helpful in performing incremental migrations, where new Journal content is
 	// written to the new store, while content in the old store remains available
 	// (and, depending on fragment_retention or recovery log pruning, may
