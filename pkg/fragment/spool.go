@@ -165,13 +165,16 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 		r.Proposal.Sum.IsZero() {
 
 		s.finalizeCompressor(false)
-		s.observer.SpoolComplete(*s)
+		if s.ContentLength() != 0 {
+			s.observer.SpoolComplete(*s)
+		}
 
 		*s = Spool{
-			Fragment: Fragment{Fragment: *r.Proposal},
-			summer:   sha1.New(),
-			sumState: zeroedSHA1State,
-			observer: s.observer,
+			Fragment:          Fragment{Fragment: *r.Proposal},
+			EnableCompression: s.EnableCompression,
+			summer:            sha1.New(),
+			sumState:          zeroedSHA1State,
+			observer:          s.observer,
 		}
 		return pb.ReplicateResponse{Status: pb.Status_OK}
 	}

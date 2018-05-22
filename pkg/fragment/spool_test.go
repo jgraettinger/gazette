@@ -1,18 +1,162 @@
 package fragment
 
 import (
+	"encoding/hex"
+	"io/ioutil"
+
+	"github.com/LiveRamp/gazette/pkg/codecs"
 	gc "github.com/go-check/check"
+
+	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type SpoolSuite struct{}
 
-func (s *SpoolSuite) TestFoo(c *gc.C) {
+func (s *SpoolSuite) TestFromZeroNoCompression(c *gc.C) {
 	var obv testSpoolObserver
 	var spool = NewSpool("a/journal", &obv)
+	spool.EnableCompression = true
 
-	// Commit @ zero
-	// Comm
+	runReplicateSequence(c, &spool, 0, pb.CompressionCodec_NONE)
+	c.Check(obv.completes, gc.HasLen, 1)
+	c.Check(obv.commits, gc.HasLen, 2)
 
+	c.Check(obv.completes[0].compressedFile, gc.IsNil)
+	c.Check(obv.completes[0].compressor, gc.IsNil)
+
+	c.Check(contentString(c, obv.completes[0], pb.CompressionCodec_NONE),
+		gc.Equals, "an initial write final write")
+}
+
+func (s *SpoolSuite) TestFromZeroCompressionAndPrimary(c *gc.C) {
+	var obv testSpoolObserver
+	var spool = NewSpool("a/journal", &obv)
+	spool.EnableCompression = true
+
+	runReplicateSequence(c, &spool, 0, pb.CompressionCodec_GZIP)
+	c.Check(obv.completes, gc.HasLen, 1)
+	c.Check(obv.commits, gc.HasLen, 2)
+
+	c.Check(contentString(c, obv.completes[0], pb.CompressionCodec_GZIP),
+		gc.Equals, "an initial write final write")
+}
+
+func (s *SpoolSuite) TestFromZeroCompressionNotPrimary(c *gc.C) {
+	var obv testSpoolObserver
+	var spool = NewSpool("a/journal", &obv)
+	spool.EnableCompression = false
+
+	runReplicateSequence(c, &spool, 0, pb.CompressionCodec_GZIP)
+	c.Check(obv.completes, gc.HasLen, 1)
+	c.Check(obv.commits, gc.HasLen, 2)
+
+	c.Check(obv.completes[0].compressedFile, gc.IsNil)
+	c.Check(obv.completes[0].compressor, gc.IsNil)
+
+	c.Check(contentString(c, obv.completes[0], pb.CompressionCodec_GZIP),
+		gc.Equals, "an initial write final write")
+}
+
+func contentString(c *gc.C, s Spool, codec pb.CompressionCodec) string {
+	var zrc = s.CodecReader()
+
+	var rc, err = codecs.NewCodecReader(zrc, codec)
+	c.Assert(err, gc.IsNil)
+
+	b, err := ioutil.ReadAll(rc)
+	c.Check(err, gc.IsNil)
+
+	c.Check(rc.Close(), gc.IsNil)
+	c.Check(zrc.Close(), gc.IsNil)
+
+	return string(b)
+}
+
+func runReplicateSequence(c *gc.C, s *Spool, offset int64, codec pb.CompressionCodec) {
+	var seq = []pb.ReplicateRequest{
+		// Commit 0 (roll spool).
+		{Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            offset,
+			End:              offset,
+			Sum:              pb.SHA1Sum{},
+			CompressionCodec: codec,
+			BackingStore:     "s3://a-bucket",
+		}},
+		{
+			Content:      []byte("an init"),
+			ContentDelta: 0,
+		},
+		{
+			Content:      []byte("ial write "),
+			ContentDelta: 7,
+		},
+		// Commit 1: "an initial write"
+		{Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            offset,
+			End:              offset + 17,
+			Sum:              pb.SHA1Sum{Part1: 0x2fb7dcccaa048a26, Part2: 0xaa3f3a6205a4ea6d, Part3: 0xfc0636e6},
+			CompressionCodec: codec,
+			BackingStore:     "s3://a-bucket",
+		}},
+		{
+			Content:      []byte("WHO"),
+			ContentDelta: 0,
+		},
+		{
+			Content:      []byte("OPS!"),
+			ContentDelta: 3,
+		},
+		// Roll back to commit 1.
+		{Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            offset,
+			End:              offset + 17,
+			Sum:              pb.SHA1Sum{Part1: 0x2fb7dcccaa048a26, Part2: 0xaa3f3a6205a4ea6d, Part3: 0xfc0636e6},
+			CompressionCodec: codec,
+			BackingStore:     "s3://a-bucket",
+		}},
+		{
+			Content:      []byte("final write"),
+			ContentDelta: 0,
+		},
+		// Commit 2: "final write"
+		{Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            offset,
+			End:              offset + 17 + 11,
+			Sum:              pb.SHA1Sum{Part1: 0x61c71d3ba5e95d5d, Part2: 0xdbfc254ba7708df9, Part3: 0x5aeb0169},
+			CompressionCodec: codec,
+			BackingStore:     "s3://a-bucket",
+		}},
+		// Content which is streamed but neither committed nor rolled back (yet).
+		{
+			Content:      []byte("extra "),
+			ContentDelta: 0,
+		},
+		{
+			Content:      []byte("partial content"),
+			ContentDelta: 6,
+		},
+		// Commit 3: roll spool forward, completing prior spool.
+		{Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            offset + 17 + 11,
+			End:              offset + 17 + 11,
+			Sum:              pb.SHA1Sum{},
+			CompressionCodec: codec,
+			BackingStore:     "s3://a-bucket",
+		}},
+	}
+	for _, req := range seq {
+		var resp, err = s.Apply(&req)
+		c.Check(err, gc.IsNil)
+		c.Check(resp, gc.DeepEquals, pb.ReplicateResponse{Status: pb.Status_OK})
+		c.Log(req.String())
+		c.Log(hex.EncodeToString(s.summer.Sum(nil)))
+		c.Log(resp.String())
+	}
 }
 
 type testSpoolObserver struct {
