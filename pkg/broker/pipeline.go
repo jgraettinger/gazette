@@ -98,7 +98,7 @@ func (pln *pipeline) closeSend(spoolCh chan<- fragment.Spool) {
 func (pln *pipeline) sendErr() error {
 	for i, err := range pln.sendErrs {
 		if err != nil {
-			return fmt.Errorf("send to %s: %s", pln.route.Brokers[i], err)
+			return fmt.Errorf("send to %s: %s", &pln.route.Brokers[i], err)
 		}
 	}
 	return nil
@@ -121,7 +121,7 @@ func (pln *pipeline) gatherOK() {
 		if s == nil || pln.recvErrs[i] != nil {
 			// Pass.
 		} else if pln.recvResp[i].Status != pb.Status_OK {
-			pln.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", pln.recvResp[i])
+			pln.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", &pln.recvResp[i])
 		}
 	}
 }
@@ -149,7 +149,7 @@ func (pln *pipeline) gatherEOF() {
 func (pln *pipeline) recvErr() error {
 	for i, err := range pln.recvErrs {
 		if err != nil {
-			return fmt.Errorf("recv from %s: %s", pln.route.Brokers[i], err)
+			return fmt.Errorf("recv from %s: %s", &pln.route.Brokers[i], err)
 		}
 	}
 	return nil
