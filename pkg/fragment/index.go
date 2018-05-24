@@ -19,18 +19,20 @@ const (
 )
 
 type Index struct {
-	ctx    context.Context // Context over the lifetime of the Index.
-	set    Set             // All Fragments of the index (local and remote).
-	local  Set             // Local Fragments only (having non-nil File).
-	condCh chan struct{}   // Notifies blocked queries that |set| was updated.
-	mu     sync.RWMutex    // Guards |set| and |condCh|.
+	ctx         context.Context // Context over the lifetime of the Index.
+	set         Set             // All Fragments of the index (local and remote).
+	local       Set             // Local Fragments only (having non-nil File).
+	condCh      chan struct{}   // Notifies blocked queries that |set| was updated.
+	firstLoadCh chan struct{}   // Notifies that the first remote index load has completed.
+	mu          sync.RWMutex    // Guards |set| and |condCh|.
 }
 
 // NewIndex returns a new, empty Index.
 func NewIndex(ctx context.Context) *Index {
 	return &Index{
-		ctx:    ctx,
-		condCh: make(chan struct{}),
+		ctx:         ctx,
+		condCh:      make(chan struct{}),
+		firstLoadCh: make(chan struct{}),
 	}
 }
 
@@ -167,7 +169,9 @@ type GetSpecFunc func() (spec *pb.JournalSpec, ok bool)
 // their Fragment listings, and updates the Index accordingly. It closes
 // |signalCh| after the first successful load, and exits if |getSpec| returns
 // !ok or if the Index context is cancelled.
-func (fi *Index) WatchStores(getSpec GetSpecFunc, signalCh chan<- struct{}) {
+func (fi *Index) WatchStores(getSpec GetSpecFunc) {
+	var firstLoadCh = fi.firstLoadCh
+
 	for {
 		var spec, ok = getSpec()
 		if !ok {
@@ -180,9 +184,9 @@ func (fi *Index) WatchStores(getSpec GetSpecFunc, signalCh chan<- struct{}) {
 		} else {
 			fi.ReplaceRemote(set)
 
-			if signalCh != nil {
-				close(signalCh)
-				signalCh = nil
+			if firstLoadCh != nil {
+				close(firstLoadCh)
+				firstLoadCh = nil
 			}
 		}
 
@@ -192,6 +196,19 @@ func (fi *Index) WatchStores(getSpec GetSpecFunc, signalCh chan<- struct{}) {
 		case <-fi.ctx.Done():
 			return
 		}
+	}
+}
+
+// WaitForFirstRemoteLoad blocks until WatchStores has completed a first load
+// of configured remote Fragment stores, or the context is cancelled.
+func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {
+	select {
+	case <-fi.firstLoadCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-fi.ctx.Done():
+		return fi.ctx.Err()
 	}
 }
 

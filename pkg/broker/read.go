@@ -9,7 +9,7 @@ import (
 )
 
 // read evaluates a client's Read RPC.
-func read(r *replica, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
+func (r *replicaImpl) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 	var buffer = chunkBufferPool.Get().([]byte)
 	defer chunkBufferPool.Put(buffer)
 
@@ -39,7 +39,7 @@ func read(r *replica, req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
 			return nil
 		}
 
-		// Don't send metadata other than Offset, with chunks 2..N.
+		// Don't send metadata other than Offset in chunks 2..N of the Fragment.
 		*resp = pb.ReadResponse{
 			Status: pb.Status_OK,
 			Offset: resp.Offset,

@@ -61,7 +61,7 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	c.Check(pln.recvErr(), gc.IsNil)
 }
 
-func (s *PipelineSuite) TestPeerErrors(c *gc.C) {
+func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
@@ -74,10 +74,11 @@ func (s *PipelineSuite) TestPeerErrors(c *gc.C) {
 	c.Check(<-rm.brokerA.reqCh, gc.DeepEquals, req)
 	c.Check(<-rm.brokerC.reqCh, gc.DeepEquals, req)
 
-	// Peer A returns an error. Peer B returns a non-OK response status.
+	// Have peer A return an error. Peer B returns a non-OK response status (where OK is expected).
 	rm.brokerA.errCh <- errors.New("error!")
 	rm.brokerC.respCh <- &pb.ReplicateResponse{Status: pb.Status_FRAGMENT_MISMATCH}
 
+	// Expect pipeline retains the first recv error for each peer.
 	pln.gatherOK()
 	c.Check(pln.recvErrs[0], gc.ErrorMatches, `rpc error: code = Unknown desc = error!`)
 	c.Check(pln.recvErrs[1], gc.IsNil)
@@ -91,14 +92,39 @@ func (s *PipelineSuite) TestPeerErrors(c *gc.C) {
 	req = &pb.ReplicateRequest{Content: []byte("bar"), ContentDelta: 3}
 	pln.scatter(req)
 
+	// Expect pipeline retains the first send error for each peer, including the local Spool.
 	c.Check(pln.sendErrs[0], gc.ErrorMatches, `EOF`)
 	c.Check(pln.sendErrs[1], gc.ErrorMatches, `write .*: file already closed`)
-	c.Check(pln.sendErrs[2], gc.IsNil)
+	c.Check(pln.sendErrs[2], gc.IsNil) // Send-side of connection is still valid (only recv is broken).
 
 	c.Check(<-rm.brokerC.reqCh, gc.DeepEquals, req)
 
 	// Expect sendErr decorates the first error with peer metadata.
 	c.Check(pln.sendErr(), gc.ErrorMatches, `send to zone:"A" suffix:"1" : EOF`)
+
+	var spoolCh = make(chan fragment.Spool, 1)
+	pln.closeSend(spoolCh)
+
+	// Finish shutdown by having brokerC receive and send EOF.
+	c.Check(<-rm.brokerC.reqCh, gc.IsNil)
+	rm.brokerC.errCh <- nil
+
+	// Restart a new pipeline. Immediately send an EOF, and test handling of
+	// an unexpected received message prior to peer EOF.
+	pln = newPipeline(rm.ctx, rm.route, <-spoolCh, rm.connFn)
+	pln.closeSend(spoolCh)
+
+	c.Check(<-rm.brokerA.reqCh, gc.IsNil) // Read EOF.
+	c.Check(<-rm.brokerC.reqCh, gc.IsNil) // Read EOF.
+
+	rm.brokerA.errCh <- nil                                                   // Send EOF.
+	rm.brokerC.respCh <- &pb.ReplicateResponse{Status: pb.Status_WRONG_ROUTE} // Unexpected response.
+	rm.brokerC.errCh <- nil                                                   // Now, send EOF.
+
+	pln.gatherEOF()
+	c.Check(pln.recvErrs[0], gc.IsNil)
+	c.Check(pln.recvErrs[1], gc.IsNil)
+	c.Check(pln.recvErrs[2], gc.ErrorMatches, `unexpected response: status:WRONG_ROUTE `)
 }
 
 func (s *PipelineSuite) TestSyncCases(c *gc.C) {
@@ -107,60 +133,60 @@ func (s *PipelineSuite) TestSyncCases(c *gc.C) {
 
 	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
 
-	go func() {
-		var expect = &pb.ReplicateRequest{
-			Journal:     "a/journal",
-			Route:       &pln.route,
-			Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 123, End: 123},
-			Acknowledge: true,
-		}
-		c.Check(<-rm.brokerA.reqCh, gc.DeepEquals, expect)
-		c.Check(<-rm.brokerC.reqCh, gc.DeepEquals, expect)
+	var req = &pb.ReplicateRequest{
+		Journal:     "a/journal",
+		Route:       &pln.route,
+		Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 123, End: 123},
+		Acknowledge: true,
+	}
+	pln.scatter(req)
 
-		rm.brokerA.respCh <- &pb.ReplicateResponse{
-			Status: pb.Status_WRONG_ROUTE,
-			Route:  &pb.Route{Revision: 4567},
-		}
-		rm.brokerC.respCh <- &pb.ReplicateResponse{
-			Status:   pb.Status_FRAGMENT_MISMATCH,
-			Fragment: &pb.Fragment{Begin: 567, End: 890},
-		}
-	}()
+	c.Check(<-rm.brokerA.reqCh, gc.DeepEquals, req)
+	c.Check(<-rm.brokerC.reqCh, gc.DeepEquals, req)
+
+	rm.brokerA.respCh <- &pb.ReplicateResponse{
+		Status: pb.Status_WRONG_ROUTE,
+		Route:  &pb.Route{Revision: 4567},
+	}
+	rm.brokerC.respCh <- &pb.ReplicateResponse{
+		Status:   pb.Status_FRAGMENT_MISMATCH,
+		Fragment: &pb.Fragment{Begin: 567, End: 890},
+	}
 
 	// Expect the new Fragment offset and Etcd revision to read through are returned.
-	var rollToOffset, readRev, err = pln.sync(pb.Fragment{Journal: "a/journal", Begin: 123, End: 123})
+	var rollToOffset, readRev, err = pln.gatherSync(*req.Proposal)
 	c.Check(rollToOffset, gc.Equals, int64(890))
 	c.Check(readRev, gc.Equals, int64(4567))
 	c.Check(err, gc.IsNil)
 
-	go func() {
-		_, _ = <-rm.brokerA.reqCh, <-rm.brokerC.reqCh
+	// Again. This time peers return success.
+	req.Proposal = &pb.Fragment{Journal: "a/journal", Begin: 890, End: 890}
+	pln.scatter(req)
 
-		rm.brokerA.respCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
-		rm.brokerC.respCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
-	}()
+	_, _ = <-rm.brokerA.reqCh, <-rm.brokerC.reqCh
+	rm.brokerA.respCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
+	rm.brokerC.respCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
 
-	// Success.
-	rollToOffset, readRev, err = pln.sync(pb.Fragment{Journal: "a/journal", Begin: 890, End: 890})
+	rollToOffset, readRev, err = pln.gatherSync(*req.Proposal)
 	c.Check(rollToOffset, gc.Equals, int64(0))
 	c.Check(readRev, gc.Equals, int64(0))
 	c.Check(err, gc.IsNil)
 
-	// This time, peers return !OK status with invalid responses.
-	go func() {
-		_, _ = <-rm.brokerA.reqCh, <-rm.brokerC.reqCh
+	// Again. This time, peers return !OK status with invalid responses.
+	pln.scatter(req)
 
-		rm.brokerA.respCh <- &pb.ReplicateResponse{
-			Status: pb.Status_WRONG_ROUTE,
-			Route:  &pb.Route{Revision: pln.route.Revision}, // Revision not greater than |pln|'s.
-		}
-		rm.brokerC.respCh <- &pb.ReplicateResponse{
-			Status:   pb.Status_FRAGMENT_MISMATCH,
-			Fragment: &pb.Fragment{Begin: 567, End: 889}, // End offset < proposal.
-		}
-	}()
+	_, _ = <-rm.brokerA.reqCh, <-rm.brokerC.reqCh
 
-	rollToOffset, readRev, err = pln.sync(pb.Fragment{Journal: "a/journal", Begin: 890, End: 890})
+	rm.brokerA.respCh <- &pb.ReplicateResponse{
+		Status: pb.Status_WRONG_ROUTE,
+		Route:  &pb.Route{Revision: pln.route.Revision}, // Revision not greater than |pln|'s.
+	}
+	rm.brokerC.respCh <- &pb.ReplicateResponse{
+		Status:   pb.Status_FRAGMENT_MISMATCH,
+		Fragment: &pb.Fragment{Begin: 567, End: 889}, // End offset < proposal.
+	}
+
+	rollToOffset, readRev, err = pln.gatherSync(*req.Proposal)
 	c.Check(rollToOffset, gc.Equals, int64(0))
 	c.Check(readRev, gc.Equals, int64(0))
 	c.Check(err, gc.NotNil)
@@ -297,6 +323,7 @@ func (p *mockPeer) Replicate(srv pb.Broker_ReplicateServer) error {
 			logrus.WithFields(logrus.Fields{"id": p.addr(), "err": err}).Info("closing")
 			return err
 		case <-p.ctx.Done():
+			logrus.WithFields(logrus.Fields{"id": p.addr()}).Info("cancelled")
 			return p.ctx.Err()
 		}
 	}

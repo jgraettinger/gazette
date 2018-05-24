@@ -259,6 +259,7 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		return spec, spec != nil
 	}
 
+	// TODO(johnny) Test WaitForFirstRemoteLoad
 	ind.WatchStores(getSpec, signalCh)
 	c.Check(cases, gc.HasLen, 0) // Expect all cases ran.
 

@@ -17,11 +17,11 @@ import (
 )
 
 type HTTPAPI struct {
-	broker  *Router
+	broker  *resolverImpl
 	decoder *schema.Decoder
 }
 
-func NewHTTPAPI(broker *Router) *HTTPAPI {
+func NewHTTPAPI(broker *resolverImpl) *HTTPAPI {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
 

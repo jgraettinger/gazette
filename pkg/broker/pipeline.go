@@ -28,7 +28,7 @@ type pipeline struct {
 }
 
 // newPipeline returns a new pipeline.
-func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, connFn buildConnFn) *pipeline {
+func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, dialer dialer) *pipeline {
 	if route.Primary == -1 {
 		panic("newPipeline requires Route with Primary != -1")
 	}
@@ -53,7 +53,7 @@ func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, conn
 		}
 		var conn *grpc.ClientConn
 
-		if conn, pln.sendErrs[i] = connFn(b); pln.sendErrs[i] == nil {
+		if conn, pln.sendErrs[i] = dialer.dial(b); pln.sendErrs[i] == nil {
 			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}
@@ -126,48 +126,10 @@ func (pln *pipeline) gatherOK() {
 	}
 }
 
-// gatherEOF synchronously gathers expected EOFs from all replicas.
-// An unexpected received message is treated as an error.
-func (pln *pipeline) gatherEOF() {
-	for i, s := range pln.streams {
-		if s == nil || pln.recvErrs[i] != nil {
-			continue
-		}
-		var msg, err = s.Recv()
-
-		if err == io.EOF {
-			// Pass.
-		} else if err != nil {
-			pln.recvErrs[i] = err
-		} else {
-			pln.recvErrs[i] = fmt.Errorf("unexpected response: %s", msg.String())
-		}
-	}
-}
-
-// recvErr returns the first encountered receive-side error.
-func (pln *pipeline) recvErr() error {
-	for i, err := range pln.recvErrs {
-		if err != nil {
-			return fmt.Errorf("recv from %s: %s", &pln.route.Brokers[i], err)
-		}
-	}
-	return nil
-}
-
-func (pln *pipeline) readBarrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
-	waitFor, pln.readBarrierCh = pln.readBarrierCh, make(chan struct{})
-	closeAfter = pln.readBarrierCh
-	return
-}
-
-func (pln *pipeline) sync(proposal pb.Fragment) (rollToOffset, readThroughRev int64, err error) {
-	pln.scatter(&pb.ReplicateRequest{
-		Journal:     pln.spool.Journal,
-		Route:       &pln.route,
-		Proposal:    &proposal,
-		Acknowledge: true,
-	})
+// gatherSync calls gather, extracts and returns a peer-advertised future offset
+// or Etcd revision to read through relative to |proposal|, and treats any other
+// non-OK response status as an error.
+func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThroughRev int64, err error) {
 	pln.gather()
 
 	for i, s := range pln.streams {
@@ -210,5 +172,40 @@ func (pln *pipeline) sync(proposal pb.Fragment) (rollToOffset, readThroughRev in
 	if err = pln.recvErr(); err == nil {
 		err = pln.sendErr()
 	}
+	return
+}
+
+// gatherEOF synchronously gathers expected EOFs from all replicas.
+// An unexpected received message is treated as an error.
+func (pln *pipeline) gatherEOF() {
+	for i, s := range pln.streams {
+		if s == nil || pln.recvErrs[i] != nil {
+			continue
+		}
+		var msg, err = s.Recv()
+
+		if err == io.EOF {
+			// Pass.
+		} else if err != nil {
+			pln.recvErrs[i] = err
+		} else {
+			pln.recvErrs[i] = fmt.Errorf("unexpected response: %s", msg.String())
+		}
+	}
+}
+
+// recvErr returns the first encountered receive-side error.
+func (pln *pipeline) recvErr() error {
+	for i, err := range pln.recvErrs {
+		if err != nil {
+			return fmt.Errorf("recv from %s: %s", &pln.route.Brokers[i], err)
+		}
+	}
+	return nil
+}
+
+func (pln *pipeline) readBarrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
+	waitFor, pln.readBarrierCh = pln.readBarrierCh, make(chan struct{})
+	closeAfter = pln.readBarrierCh
 	return
 }
