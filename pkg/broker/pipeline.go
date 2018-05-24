@@ -185,20 +185,20 @@ func (pln *pipeline) sync(proposal pb.Fragment) (rollToOffset, readThroughRev in
 					readThroughRev = resp.Route.Revision
 				}
 			} else {
-				pln.recvErrs[i] = fmt.Errorf("unexpected Route mismatch: %s (remote) vs %s (local)",
+				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE revision: %s (remote) vs %s (local)",
 					resp.Route, &pln.route)
 			}
 
 		case pb.Status_FRAGMENT_MISMATCH:
-			if resp.Fragment.Begin != pln.spool.Fragment.Begin &&
-				resp.Fragment.End >= pln.spool.Fragment.End {
+			if resp.Fragment.Begin != proposal.Begin &&
+				resp.Fragment.End >= proposal.End {
 				// Peer has a Fragment at matched or larger End offset, and with a
 				// differing Begin offset.
 				if rollToOffset < resp.Fragment.End {
 					rollToOffset = resp.Fragment.End
 				}
 			} else {
-				pln.recvErrs[i] = fmt.Errorf("unexpected Fragment mismatch: %s (remote) vs %s (local)",
+				pln.recvErrs[i] = fmt.Errorf("unexpected FRAGMENT_MISMATCH: %s (remote) vs %s (local)",
 					resp.Fragment, &pln.spool.Fragment.Fragment)
 			}
 

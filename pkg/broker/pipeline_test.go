@@ -20,7 +20,7 @@ type PipelineSuite struct{}
 
 func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	var rm = newReplicationMock(c)
-	defer rm.stop()
+	defer rm.cancel()
 
 	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
 
@@ -44,7 +44,6 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 
 	pln.gatherOK()
 	c.Check(pln.recvErr(), gc.IsNil)
-
 	c.Check(pln.recvResp, gc.DeepEquals, []pb.ReplicateResponse{{}, {}, {}})
 
 	var spool = make(chan fragment.Spool, 1)
@@ -57,7 +56,6 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	rm.brokerC.errCh <- nil // Send EOF.
 
 	pln.gatherEOF()
-	rm.cancel()
 
 	c.Check(pln.sendErr(), gc.IsNil)
 	c.Check(pln.recvErr(), gc.IsNil)
@@ -65,7 +63,7 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 
 func (s *PipelineSuite) TestPeerErrors(c *gc.C) {
 	var rm = newReplicationMock(c)
-	defer rm.stop()
+	defer rm.cancel()
 
 	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
 
@@ -101,8 +99,75 @@ func (s *PipelineSuite) TestPeerErrors(c *gc.C) {
 
 	// Expect sendErr decorates the first error with peer metadata.
 	c.Check(pln.sendErr(), gc.ErrorMatches, `send to zone:"A" suffix:"1" : EOF`)
+}
 
-	rm.cancel()
+func (s *PipelineSuite) TestSyncCases(c *gc.C) {
+	var rm = newReplicationMock(c)
+	defer rm.cancel()
+
+	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
+
+	go func() {
+		var expect = &pb.ReplicateRequest{
+			Journal:     "a/journal",
+			Route:       &pln.route,
+			Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 123, End: 123},
+			Acknowledge: true,
+		}
+		c.Check(<-rm.brokerA.reqCh, gc.DeepEquals, expect)
+		c.Check(<-rm.brokerC.reqCh, gc.DeepEquals, expect)
+
+		rm.brokerA.respCh <- &pb.ReplicateResponse{
+			Status: pb.Status_WRONG_ROUTE,
+			Route:  &pb.Route{Revision: 4567},
+		}
+		rm.brokerC.respCh <- &pb.ReplicateResponse{
+			Status:   pb.Status_FRAGMENT_MISMATCH,
+			Fragment: &pb.Fragment{Begin: 567, End: 890},
+		}
+	}()
+
+	// Expect the new Fragment offset and Etcd revision to read through are returned.
+	var rollToOffset, readRev, err = pln.sync(pb.Fragment{Journal: "a/journal", Begin: 123, End: 123})
+	c.Check(rollToOffset, gc.Equals, int64(890))
+	c.Check(readRev, gc.Equals, int64(4567))
+	c.Check(err, gc.IsNil)
+
+	go func() {
+		_, _ = <-rm.brokerA.reqCh, <-rm.brokerC.reqCh
+
+		rm.brokerA.respCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
+		rm.brokerC.respCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
+	}()
+
+	// Success.
+	rollToOffset, readRev, err = pln.sync(pb.Fragment{Journal: "a/journal", Begin: 890, End: 890})
+	c.Check(rollToOffset, gc.Equals, int64(0))
+	c.Check(readRev, gc.Equals, int64(0))
+	c.Check(err, gc.IsNil)
+
+	// This time, peers return !OK status with invalid responses.
+	go func() {
+		_, _ = <-rm.brokerA.reqCh, <-rm.brokerC.reqCh
+
+		rm.brokerA.respCh <- &pb.ReplicateResponse{
+			Status: pb.Status_WRONG_ROUTE,
+			Route:  &pb.Route{Revision: pln.route.Revision}, // Revision not greater than |pln|'s.
+		}
+		rm.brokerC.respCh <- &pb.ReplicateResponse{
+			Status:   pb.Status_FRAGMENT_MISMATCH,
+			Fragment: &pb.Fragment{Begin: 567, End: 889}, // End offset < proposal.
+		}
+	}()
+
+	rollToOffset, readRev, err = pln.sync(pb.Fragment{Journal: "a/journal", Begin: 890, End: 890})
+	c.Check(rollToOffset, gc.Equals, int64(0))
+	c.Check(readRev, gc.Equals, int64(0))
+	c.Check(err, gc.NotNil)
+
+	c.Check(pln.recvErrs[0], gc.ErrorMatches, `unexpected WRONG_ROUTE revision: revision:\d+ .*`)
+	c.Check(pln.recvErrs[1], gc.IsNil)
+	c.Check(pln.recvErrs[2], gc.ErrorMatches, `unexpected FRAGMENT_MISMATCH: begin:567 end:889 .*`)
 }
 
 type replicationMock struct {
@@ -131,6 +196,7 @@ func newReplicationMock(c *gc.C) *replicationMock {
 				{Zone: "B", Suffix: "2"},
 				{Zone: "C", Suffix: "3"},
 			},
+			Revision: 1234,
 		},
 
 		brokerA: newMockPeer(c, ctx),
@@ -149,11 +215,6 @@ func newReplicationMock(c *gc.C) *replicationMock {
 	}
 
 	return m
-}
-
-func (m *replicationMock) stop() {
-	m.brokerA.srv.GracefulStop()
-	m.brokerC.srv.GracefulStop()
 }
 
 func (m *replicationMock) SpoolCommit(f fragment.Fragment) { m.commits = append(m.commits, f) }
