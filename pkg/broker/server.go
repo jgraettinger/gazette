@@ -101,7 +101,7 @@ func (srv *Server) Replicate(stream pb.Broker_ReplicateServer) error {
 
 // proxyRead forwards a ReadRequest to a resolved peer broker.
 func proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, stream pb.Broker_ReadServer, dialer dialer) error {
-	var conn, err = dialer.dial(to)
+	var conn, err = dialer.dial(stream.Context(), to)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, stream pb.Broker_ReadSe
 
 // proxyAppend forwards an AppendRequest to a resolved peer broker.
 func proxyAppend(req *pb.AppendRequest, to pb.BrokerSpec_ID, stream pb.Broker_AppendServer, dialer dialer) error {
-	var conn, err = dialer.dial(to)
+	var conn, err = dialer.dial(stream.Context(), to)
 	if err != nil {
 		return err
 	}

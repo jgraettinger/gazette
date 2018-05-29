@@ -60,7 +60,7 @@ func (rtr *resolverImpl) resolve(journal pb.Journal, requirePrimary bool, mayPro
 
 	if res.replica, ok = rtr.replicas[journal]; ok {
 		// Journal is locally replicated.
-		res.route = res.replica.route()
+		res.route = res.replica.getRoute()
 		res.broker = rtr.id
 	} else {
 
@@ -155,8 +155,7 @@ func (rtr *resolverImpl) UpdateLocalItems(items []v3_allocator.LocalItem) {
 		if !ok {
 			r = rtr.newReplica(name)
 		}
-
-		next[name] = r.transition(la.Item, assignment, route)
+		next[name] = r.transition(rtr.ks, la.Item, assignment, route)
 	}
 
 	// Obtain write-lock to atomically swap out the |replicas| map,

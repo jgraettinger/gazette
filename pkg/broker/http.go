@@ -17,17 +17,18 @@ import (
 )
 
 type HTTPAPI struct {
-	broker  *resolverImpl
-	decoder *schema.Decoder
+	resolver resolver
+	dialer   dialer
+	decoder  *schema.Decoder
 }
 
-func NewHTTPAPI(broker *resolverImpl) *HTTPAPI {
+func NewHTTPAPI(resolver resolver) *HTTPAPI {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
 
 	return &HTTPAPI{
-		broker:  broker,
-		decoder: decoder,
+		resolver: resolver,
+		decoder:  decoder,
 	}
 }
 
@@ -59,14 +60,14 @@ func (h *HTTPAPI) serveRead(w http.ResponseWriter, r *http.Request) {
 	var resolution resolution
 	var resp = new(pb.ReadResponse)
 
-	resolution, resp.Status = h.broker.resolve(req.Journal, false, true)
+	resolution, resp.Status = h.resolver.resolve(req.Journal, false, true)
 
 	if resp.Status != pb.Status_OK {
 		h.writeReadResponse(w, r, resp)
 		return
 	}
 
-	if conn, err = h.broker.peerConn(resolution.broker); err == nil {
+	if conn, err = h.dialer.dial(r.Context(), resolution.broker); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Read(r.Context(), req); err == nil {
 			err = client.RecvMsg(resp)
 		}
@@ -117,14 +118,14 @@ func (h *HTTPAPI) serveWrite(w http.ResponseWriter, r *http.Request) {
 	var resolution resolution
 	var resp = new(pb.AppendResponse)
 
-	resolution, resp.Status = h.broker.resolve(req.Journal, true, true)
+	resolution, resp.Status = h.resolver.resolve(req.Journal, true, true)
 
 	if resp.Status != pb.Status_OK {
 		h.writeAppendResponse(w, r, resp)
 		return
 	}
 
-	if conn, err = h.broker.peerConn(resolution.broker); err == nil {
+	if conn, err = h.dialer.dial(r.Context(), resolution.broker); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Append(r.Context()); err == nil {
 			err = client.SendMsg(req)
 			*req = pb.AppendRequest{} // Clear metadata: hereafter, only Content is sent.

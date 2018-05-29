@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
-	"google.golang.org/api/adexchangebuyer/v1.4"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	"github.com/LiveRamp/gazette/pkg/keyspace"
@@ -16,14 +14,67 @@ import (
 )
 
 type replica interface {
-	route() *pb.Route
+	getRoute() *pb.Route
 
-	transition(item, assignment keyspace.KeyValue, route pb.Route) replica
+	transition(ks *keyspace.KeySpace, item, assignment keyspace.KeyValue, route pb.Route) replica
 	cancel()
 
 	serveRead(*pb.ReadRequest, pb.Broker_ReadServer) error
 	serveAppend(*pb.AppendRequest, pb.Broker_AppendServer, dialer) (readThroughRev int64, err error)
 	serveReplicate(*pb.ReplicateRequest, pb.Broker_ReplicateServer) error
+}
+
+type replicaImpl struct {
+	journal keyspace.KeyValue
+	// Local assignment of |replica|, motivating this replica instance.
+	assignment keyspace.KeyValue
+	// Current broker routing topology of the replica.
+	route pb.Route
+
+	// The following fields are held constant over the lifetime of a replica:
+
+	// Context tied to processing lifetime of this replica by this broker.
+	// Cancelled when this broker is no longer responsible for the replica.
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+	// Index of all known Fragments of the replica.
+	index *fragment.Index
+	// spoolCh synchronizes access to the single Spool of the replica.
+	spoolCh chan fragment.Spool
+	// pipelineCh synchronizes access to the single pipeline of the replica.
+	pipelineCh chan *pipeline
+}
+
+func newReplicaImpl() replica {
+	var ctx, cancel = context.WithCancel(context.Background())
+
+	var spoolCh = make(chan fragment.Spool, 1)
+	spoolCh <- fragment.Spool{}
+
+	var pipelineCh = make(chan *pipeline, 1)
+	pipelineCh <- nil
+
+	return &replicaImpl{
+		// These are initialized on first transition().
+		journal:    keyspace.KeyValue{},
+		assignment: keyspace.KeyValue{},
+		route:      pb.Route{},
+
+		ctx:        ctx,
+		cancelFunc: cancel,
+		index:      fragment.NewIndex(ctx),
+		spoolCh:    spoolCh,
+		pipelineCh: pipelineCh,
+	}
+}
+
+func (r *replicaImpl) getRoute() *pb.Route { return &r.route }
+
+func (r *replicaImpl) cancel() { r.cancelFunc() }
+
+// spec returns the replica's JournalSpec.
+func (r *replicaImpl) spec() *pb.JournalSpec {
+	return r.journal.Decoded.(v3_allocator.Item).ItemValue.(*pb.JournalSpec)
 }
 
 func (r *replicaImpl) serveReplicate(req *pb.ReplicateRequest, stream pb.Broker_ReplicateServer) error {
@@ -116,48 +167,46 @@ func (r *replicaImpl) serveAppend(req *pb.AppendRequest, stream pb.Broker_Append
 	}
 }
 
-func transition() {
+func (r *replicaImpl) transition(ks *keyspace.KeySpace, item, assignment keyspace.KeyValue, route pb.Route) replica {
+	// No need to transition if the |item|, |assignment|, and |route| are unchanged.
+	if item.Raw.ModRevision == r.journal.Raw.ModRevision &&
+		assignment.Raw.ModRevision == r.assignment.Raw.ModRevision &&
+		r.route.Equivalent(&route) {
+		return r
+	}
+
+	var clone = new(replicaImpl)
+	*clone = *r
+
+	clone.journal = item
+	clone.assignment = assignment
+	clone.route = route.Copy()
+	clone.route.AttachEndpoints(ks)
+
+	return clone
+
 	/*
-				var routeChanged = !r.route().Equivalent(&route)
-
-				// Transition if the Item, local Assignment, or Route have changed.
-				if r.journal.Raw.ModRevision != la.Item.Raw.ModRevision ||
-					r.assignment.Raw.ModRevision != assignment.Raw.ModRevision ||
-					routeChanged {
-
-					var clone = new(replica)
-					*clone = *r
-
-					clone.journal = la.Item
-					clone.assignment = assignment
-					clone.route = route.Copy()
-					clone.route.AttachEndpoints(rtr.ks)
-
-					r = clone
+		if routeChanged && r.isPrimary() {
+			log.Error("convergence not yet implemented!")
+				// Issue an empty write to drive the quick convergence
+				// of replica Route announcements in Etcd.
+				if conn, err := rtr.peerConn(rtr.id); err == nil {
+					go issueEmptyWrite(conn, name)
+				} else {
+					log.WithField("err", err).Error("failed to build loopback *grpc.ClientConn")
 				}
-
-				if routeChanged && r.isPrimary() {
-					log.Error("convergence not yet implemented!")
-					/*
-						// Issue an empty write to drive the quick convergence
-						// of replica Route announcements in Etcd.
-						if conn, err := rtr.peerConn(rtr.id); err == nil {
-							go issueEmptyWrite(conn, name)
-						} else {
-							log.WithField("err", err).Error("failed to build loopback *grpc.ClientConn")
-						}
-					* /
-				}
-		func (rtr *resolverImpl) getJournalSpec(name pb.Journal) (*pb.JournalSpec, bool) {
-			rtr.ks.Mu.RLock()
-			defer rtr.ks.Mu.RUnlock()
-
-			if item, ok := v3_allocator.LookupItem(rtr.ks, name.String()); ok {
-				return item.ItemValue.(*pb.JournalSpec), true
-			}
-			return nil, false
+			* /
 		}
+			/*
+		func (rtr *resolverImpl) getJournalSpec(name pb.Journal) (*pb.JournalSpec, bool) {
+		rtr.ks.Mu.RLock()
+		defer rtr.ks.Mu.RUnlock()
 
+		if item, ok := v3_allocator.LookupItem(rtr.ks, name.String()); ok {
+		return item.ItemValue.(*pb.JournalSpec), true
+		}
+		return nil, false
+		}
 	*/
 }
 
@@ -298,53 +347,7 @@ func (r *replicaImpl) startPipeline(ctx context.Context, dialer dialer) (*pipeli
 	}
 }
 
-type replicaImpl struct {
-	journal keyspace.KeyValue
-	// Local assignment of |replica|, motivating this replica instance.
-	assignment keyspace.KeyValue
-	// Current broker routing topology of the replica.
-	route pb.Route
-
-	// The following fields are held constant over the lifetime of a replica:
-
-	// Context tied to processing lifetime of this replica by this broker.
-	// Cancelled when this broker is no longer responsible for the replica.
-	ctx    context.Context
-	cancel context.CancelFunc
-	// Index of all known Fragments of the replica.
-	index *fragment.Index
-	// spoolCh synchronizes access to the single Spool of the replica.
-	spoolCh chan fragment.Spool
-	// pipelineCh synchronizes access to the single pipeline of the replica.
-	pipelineCh chan *pipeline
-}
-
-func newReplica() *replica {
-	var ctx, cancel = context.WithCancel(context.Background())
-
-	var spoolCh = make(chan fragment.Spool, 1)
-	spoolCh <- fragment.Spool{}
-
-	return &replica{
-		ctx:           ctx,
-		cancel:        cancel,
-		index:         fragment.NewIndex(ctx),
-		spoolCh:       spoolCh,
-		plnHandoffCh:  make(chan *pipeline),
-		initialLoadCh: make(chan struct{}),
-	}
-}
-
-// spec returns the replica's JournalSpec.
-func (r *replica) spec() *pb.JournalSpec {
-	return r.journal.Decoded.(v3_allocator.Item).ItemValue.(*pb.JournalSpec)
-}
-
-// isPrimary returns whether the replica is primary.
-func (r *replica) isPrimary() bool {
-	return r.assignment.Decoded.(v3_allocator.Assignment).Slot == 0
-}
-
+/*
 func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {
 	// |announced| is the Route currently recorded by this replica's Assignment.
 	var announced = r.assignment.Decoded.(v3_allocator.Assignment).AssignmentValue.(*pb.Route)
@@ -374,3 +377,4 @@ func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {
 		}
 	}(etcd, r.assignment, next.MarshalString())
 }
+*/

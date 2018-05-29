@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 
 // dialer returns a ClientConn for a peer identified by its BrokerSpec_ID.
 type dialer interface {
-	dial(id pb.BrokerSpec_ID) (*grpc.ClientConn, error)
+	dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error)
 }
 
 type dialerImpl struct {
@@ -37,7 +38,7 @@ func newDialer(ks *keyspace.KeySpace) dialer {
 	}
 }
 
-func (d *dialerImpl) dial(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
+func (d *dialerImpl) dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
 	if v, ok := d.cache.Get(id); ok {
 		return v.(*grpc.ClientConn), nil
 	}
@@ -47,12 +48,12 @@ func (d *dialerImpl) dial(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
 	d.ks.Mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no BrokerSpec found for (%s)", id)
+		return nil, fmt.Errorf("no BrokerSpec found (id: %s)", &id)
 	}
 	var spec = member.MemberValue.(*pb.BrokerSpec)
 	var url = spec.Endpoint.URL()
 
-	var conn, err = grpc.Dial(url.Host,
+	var conn, err = grpc.DialContext(ctx, url.Host,
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: time.Second * 30}),
 		grpc.WithInsecure(),
 	)

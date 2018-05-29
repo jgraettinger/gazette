@@ -22,7 +22,7 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
+	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm)
 
 	var req = &pb.ReplicateRequest{Content: []byte("foobar")}
 	pln.scatter(req)
@@ -65,7 +65,7 @@ func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
+	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm)
 
 	var req = &pb.ReplicateRequest{Content: []byte("foo")}
 	pln.scatter(req)
@@ -111,7 +111,7 @@ func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 
 	// Restart a new pipeline. Immediately send an EOF, and test handling of
 	// an unexpected received message prior to peer EOF.
-	pln = newPipeline(rm.ctx, rm.route, <-spoolCh, rm.connFn)
+	pln = newPipeline(rm.ctx, rm.route, <-spoolCh, rm)
 	pln.closeSend(spoolCh)
 
 	c.Check(<-rm.brokerA.reqCh, gc.IsNil) // Read EOF.
@@ -131,7 +131,7 @@ func (s *PipelineSuite) TestSyncCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm.connFn)
+	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm)
 
 	var req = &pb.ReplicateRequest{
 		Journal:     "a/journal",
@@ -203,8 +203,6 @@ type replicationMock struct {
 	route            pb.Route
 	brokerA, brokerC *mockPeer
 
-	connFn buildConnFn
-
 	commits   []fragment.Fragment
 	completes []fragment.Spool
 }
@@ -229,18 +227,18 @@ func newReplicationMock(c *gc.C) *replicationMock {
 		brokerC: newMockPeer(c, ctx),
 	}
 
-	m.connFn = func(id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
-		switch id {
-		case pb.BrokerSpec_ID{Zone: "A", Suffix: "1"}:
-			return m.brokerA.dial()
-		case pb.BrokerSpec_ID{Zone: "C", Suffix: "3"}:
-			return m.brokerC.dial()
-		default:
-			return nil, fmt.Errorf("unexpected ID: %s", id)
-		}
-	}
-
 	return m
+}
+
+func (m *replicationMock) dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
+	switch id {
+	case pb.BrokerSpec_ID{Zone: "A", Suffix: "1"}:
+		return m.brokerA.dial(ctx)
+	case pb.BrokerSpec_ID{Zone: "C", Suffix: "3"}:
+		return m.brokerC.dial(ctx)
+	default:
+		return nil, fmt.Errorf("unexpected ID: %s", id)
+	}
 }
 
 func (m *replicationMock) SpoolCommit(f fragment.Fragment) { m.commits = append(m.commits, f) }
@@ -257,8 +255,8 @@ type mockPeer struct {
 	errCh  chan error
 }
 
-func (p *mockPeer) dial() (*grpc.ClientConn, error) {
-	return grpc.Dial(p.listener.Addr().String(), grpc.WithInsecure())
+func (p *mockPeer) dial(ctx context.Context) (*grpc.ClientConn, error) {
+	return grpc.DialContext(ctx, p.listener.Addr().String(), grpc.WithInsecure())
 }
 
 func newMockPeer(c *gc.C, ctx context.Context) *mockPeer {
