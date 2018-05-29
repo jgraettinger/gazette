@@ -187,7 +187,7 @@ func main() {
 	var grpcSrv = grpc.NewServer(grpc.KeepaliveParams(cfg.GRPC.KeepAlive))
 	pb.RegisterBrokerServer(grpcSrv, b)
 
-	var httpAPI = broker.NewHTTPAPI(b)
+	var httpAPI = broker.NewHTTPGateway(b)
 
 	// Start serving over GRPC.
 	go func() {

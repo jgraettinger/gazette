@@ -16,23 +16,23 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-type HTTPAPI struct {
+type HTTPGateway struct {
 	resolver resolver
 	dialer   dialer
 	decoder  *schema.Decoder
 }
 
-func NewHTTPAPI(resolver resolver) *HTTPAPI {
+func NewHTTPGateway(resolver resolver) *HTTPGateway {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
 
-	return &HTTPAPI{
+	return &HTTPGateway{
 		resolver: resolver,
 		decoder:  decoder,
 	}
 }
 
-func (h *HTTPAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET", "HEAD":
 		h.serveRead(w, r)
@@ -43,7 +43,7 @@ func (h *HTTPAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *HTTPAPI) serveRead(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPGateway) serveRead(w http.ResponseWriter, r *http.Request) {
 	var req, err = h.parseReadRequest(r)
 
 	if err != nil {
@@ -101,7 +101,7 @@ func (h *HTTPAPI) serveRead(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *HTTPAPI) serveWrite(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPGateway) serveWrite(w http.ResponseWriter, r *http.Request) {
 	var req, err = h.parseAppendRequest(r)
 
 	if err != nil {
@@ -167,7 +167,7 @@ func (h *HTTPAPI) serveWrite(w http.ResponseWriter, r *http.Request) {
 	h.writeAppendResponse(w, r, resp)
 }
 
-func (h *HTTPAPI) parseAppendRequest(r *http.Request) (*pb.AppendRequest, error) {
+func (h *HTTPGateway) parseAppendRequest(r *http.Request) (*pb.AppendRequest, error) {
 	var schema struct{}
 
 	var err error
@@ -184,7 +184,7 @@ func (h *HTTPAPI) parseAppendRequest(r *http.Request) (*pb.AppendRequest, error)
 	return req, err
 }
 
-func (h *HTTPAPI) parseReadRequest(r *http.Request) (*pb.ReadRequest, error) {
+func (h *HTTPGateway) parseReadRequest(r *http.Request) (*pb.ReadRequest, error) {
 	var schema struct {
 		Offset int64
 		Block  bool
@@ -207,7 +207,7 @@ func (h *HTTPAPI) parseReadRequest(r *http.Request) (*pb.ReadRequest, error) {
 	return req, err
 }
 
-func (h *HTTPAPI) writeAppendResponse(w http.ResponseWriter, r *http.Request, resp *pb.AppendResponse) {
+func (h *HTTPGateway) writeAppendResponse(w http.ResponseWriter, r *http.Request, resp *pb.AppendResponse) {
 	if resp.Route != nil {
 		w.Header().Set(RouteTokenHeader, proto.CompactTextString(resp.Route))
 	}
@@ -230,7 +230,7 @@ func (h *HTTPAPI) writeAppendResponse(w http.ResponseWriter, r *http.Request, re
 	}
 }
 
-func (h *HTTPAPI) writeReadResponse(w http.ResponseWriter, r *http.Request, resp *pb.ReadResponse) {
+func (h *HTTPGateway) writeReadResponse(w http.ResponseWriter, r *http.Request, resp *pb.ReadResponse) {
 	if resp.Route != nil {
 		w.Header().Set(RouteTokenHeader, proto.CompactTextString(resp.Route))
 	}

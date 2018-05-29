@@ -149,6 +149,13 @@ func (fi *Index) ReplaceRemote(set Set) {
 
 	fi.set = set
 	fi.wakeBlockedQueries()
+
+	select {
+	case <-fi.firstLoadCh:
+		// Pass.
+	default:
+		close(fi.firstLoadCh)
+	}
 }
 
 // wakeBlockedQueries wakes all queries waiting for an index update.
@@ -170,8 +177,6 @@ type GetSpecFunc func() (spec *pb.JournalSpec, ok bool)
 // |signalCh| after the first successful load, and exits if |getSpec| returns
 // !ok or if the Index context is cancelled.
 func (fi *Index) WatchStores(getSpec GetSpecFunc) {
-	var firstLoadCh = fi.firstLoadCh
-
 	for {
 		var spec, ok = getSpec()
 		if !ok {
@@ -183,11 +188,6 @@ func (fi *Index) WatchStores(getSpec GetSpecFunc) {
 			log.WithFields(log.Fields{"err": err, "name": spec.Name}).Warn("failed to load remote index")
 		} else {
 			fi.ReplaceRemote(set)
-
-			if firstLoadCh != nil {
-				close(firstLoadCh)
-				firstLoadCh = nil
-			}
 		}
 
 		select {

@@ -3,7 +3,6 @@ package broker
 import (
 	"context"
 	"fmt"
-	"io"
 
 	log "github.com/sirupsen/logrus"
 
@@ -45,7 +44,7 @@ type replicaImpl struct {
 	pipelineCh chan *pipeline
 }
 
-func newReplicaImpl() replica {
+func newReplicaImpl() *replicaImpl {
 	var ctx, cancel = context.WithCancel(context.Background())
 
 	var spoolCh = make(chan fragment.Spool, 1)
@@ -75,96 +74,6 @@ func (r *replicaImpl) cancel() { r.cancelFunc() }
 // spec returns the replica's JournalSpec.
 func (r *replicaImpl) spec() *pb.JournalSpec {
 	return r.journal.Decoded.(v3_allocator.Item).ItemValue.(*pb.JournalSpec)
-}
-
-func (r *replicaImpl) serveReplicate(req *pb.ReplicateRequest, stream pb.Broker_ReplicateServer) error {
-	var spool, err = r.acquireSpool(stream.Context(), false)
-	if err != nil {
-		return err
-	}
-
-	var resp = new(pb.ReplicateResponse)
-	for {
-		if *resp, err = spool.Apply(req); err != nil {
-			return err
-		}
-
-		if req.Acknowledge {
-			if err = stream.Send(resp); err != nil {
-				return err
-			}
-		} else if resp.Status != pb.Status_OK {
-			return fmt.Errorf("no ack requested but status != OK: %s", resp)
-		}
-
-		if err = stream.RecvMsg(req); err == io.EOF {
-			break
-		} else if err != nil {
-			return err
-		} else if err = req.Validate(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (r *replicaImpl) serveAppend(req *pb.AppendRequest, stream pb.Broker_AppendServer, dialer dialer) (int64, error) {
-	var pln, rev, err = r.acquirePipeline(stream.Context(), dialer)
-	if pln == nil {
-		return rev, err
-	}
-
-	// We now have sole ownership of the *send* side of the pipeline.
-
-	var appender = beginAppending(pln, r.spec().Fragment)
-	for appender.onRecv(req, stream.RecvMsg(req)) {
-	}
-	var waitFor, closeAfter = pln.readBarrier()
-	var plnSendErr = pln.sendErr()
-
-	if plnSendErr == nil {
-		r.pipelineCh <- pln // Release the send side of |pln|.
-	} else {
-		pln.closeSend(r.spoolCh)
-		r.pipelineCh <- nil
-
-		log.WithFields(log.Fields{"err": err, "journal": r.spec().Name}).
-			Warn("pipeline send failed")
-	}
-
-	// There may be pipelined commits prior to this one, who have not yet read
-	// their responses. Block until they do so, such that our responses are the
-	// next to receive. Similarly, defer a close to signal to RPCs pipelined
-	// after this one, that they may in turn read their responses. When this
-	// completes, we have sole ownership of the *receive* side of |pln|.
-	<-waitFor
-	defer func() { close(closeAfter) }()
-
-	pln.gatherOK()
-
-	if plnSendErr != nil {
-		pln.gatherEOF()
-	}
-
-	if pln.recvErr() != nil {
-		log.WithFields(log.Fields{"err": pln.recvErr(), "journal": r.spec().Name}).
-			Warn("pipeline receive failed")
-	}
-
-	if appender.reqErr != nil {
-		return 0, appender.reqErr
-	} else if plnSendErr != nil {
-		return 0, plnSendErr
-	} else if pln.recvErr() != nil {
-		return 0, pln.recvErr()
-	} else {
-		return 0, stream.SendAndClose(&pb.AppendResponse{
-			Status: pb.Status_OK,
-			Route:  &pln.route,
-			Commit: appender.reqFragment,
-		})
-	}
 }
 
 func (r *replicaImpl) transition(ks *keyspace.KeySpace, item, assignment keyspace.KeyValue, route pb.Route) replica {
@@ -286,7 +195,13 @@ func (r *replicaImpl) acquirePipeline(ctx context.Context, dialer dialer) (*pipe
 	}
 
 	if pln == nil {
-		pln, err = r.startPipeline(ctx, dialer)
+		// Construct a new pipeline.
+		if spool, err := r.acquireSpool(ctx, true); err != nil {
+			return nil, 0, err
+		} else {
+			pln = newPipeline(r.ctx, r.route, spool, dialer)
+			err = pln.start(r.spoolCh)
+		}
 	}
 
 	if err != nil {
@@ -297,54 +212,6 @@ func (r *replicaImpl) acquirePipeline(ctx context.Context, dialer dialer) (*pipe
 		return nil, pln.readThroughRev, nil
 	}
 	return pln, 0, nil
-}
-
-func (r *replicaImpl) startPipeline(ctx context.Context, dialer dialer) (*pipeline, error) {
-	var pln *pipeline
-
-	if spool, err := r.acquireSpool(ctx, true); err != nil {
-		return nil, err
-	} else {
-		pln = newPipeline(r.ctx, r.route, spool, dialer)
-	}
-
-	var proposal = pln.spool.Fragment.Fragment
-
-	for {
-		pln.scatter(&pb.ReplicateRequest{
-			Journal:     pln.spool.Journal,
-			Route:       &pln.route,
-			Proposal:    &proposal,
-			Acknowledge: true,
-		})
-		var rollToOffset, readThroughRev, err = pln.gatherSync(proposal)
-
-		if err != nil {
-			pln.closeSend(r.spoolCh)
-			pln.gatherEOF()
-			return nil, err
-		}
-
-		if rollToOffset != 0 {
-			// Update our |proposal| to roll forward to the new offset. Loop to try
-			// again. This time all peers should agree on the new Fragment.
-			proposal.Begin = rollToOffset
-			proposal.End = rollToOffset
-			proposal.Sum = pb.SHA1Sum{}
-			continue
-		}
-
-		if readThroughRev != 0 {
-			// Peer has a non-equivalent Route at a later Etcd revision. Close the
-			// pipeline, and set its |readThroughRev| as an indication to other RPCs
-			// of the revision which must first be read through before attempting
-			// another pipeline.
-			pln.closeSend(r.spoolCh)
-			pln.gatherEOF()
-			pln.readThroughRev = readThroughRev
-		}
-		return pln, nil
-	}
 }
 
 /*

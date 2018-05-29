@@ -60,6 +60,55 @@ func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, dial
 	return pln
 }
 
+// start synchronizes all pipeline peers by scattering proposals and gathering
+// peer responses. On disagreement, start will iteratively update the proposal
+// if it's possible to do so and reach agreement. If peers disagree on Etcd
+// revision, start() will close the pipeline and set |readThroughRev|.
+func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
+	var proposal = pln.spool.Fragment.Fragment
+
+	for {
+		pln.scatter(&pb.ReplicateRequest{
+			Journal:     pln.spool.Journal,
+			Route:       &pln.route,
+			Proposal:    &proposal,
+			Acknowledge: true,
+		})
+		var rollToOffset, readThroughRev = pln.gatherSync(proposal)
+
+		var err = pln.recvErr()
+		if err == nil {
+			err = pln.sendErr()
+		}
+
+		if err != nil {
+			pln.closeSend(spoolCh)
+			pln.gatherEOF()
+			return err
+		}
+
+		if rollToOffset != 0 {
+			// Update our |proposal| to roll forward to the new offset. Loop to try
+			// again. This time all peers should agree on the new Fragment.
+			proposal.Begin = rollToOffset
+			proposal.End = rollToOffset
+			proposal.Sum = pb.SHA1Sum{}
+			continue
+		}
+
+		if readThroughRev != 0 {
+			// Peer has a non-equivalent Route at a later Etcd revision. Close the
+			// pipeline, and set its |readThroughRev| as an indication to other RPCs
+			// of the revision which must first be read through before attempting
+			// another pipeline.
+			pln.closeSend(spoolCh)
+			pln.gatherEOF()
+			pln.readThroughRev = readThroughRev
+		}
+		return nil
+	}
+}
+
 // scatter asynchronously applies the ReplicateRequest to all replicas.
 func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 	for i, s := range pln.streams {
@@ -129,7 +178,7 @@ func (pln *pipeline) gatherOK() {
 // gatherSync calls gather, extracts and returns a peer-advertised future offset
 // or Etcd revision to read through relative to |proposal|, and treats any other
 // non-OK response status as an error.
-func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThroughRev int64, err error) {
+func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThroughRev int64) {
 	pln.gather()
 
 	for i, s := range pln.streams {
@@ -167,10 +216,6 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 		default:
 			pln.recvErrs[i] = fmt.Errorf("unexpected Status: %s", resp)
 		}
-	}
-
-	if err = pln.recvErr(); err == nil {
-		err = pln.sendErr()
 	}
 	return
 }

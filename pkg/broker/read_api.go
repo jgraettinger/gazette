@@ -5,8 +5,56 @@ import (
 	"io/ioutil"
 	"sync"
 
+	log "github.com/sirupsen/logrus"
+
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
+
+// Read dispatches the BrokerServer.Read API.
+func (srv *Server) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
+	if err := req.Validate(); err != nil {
+		return err
+	}
+
+	var res, status = srv.resolver.resolve(req.Journal, false, !req.DoNotProxy)
+	if status != pb.Status_OK {
+		return stream.Send(&pb.ReadResponse{Status: status, Route: res.route})
+	} else if res.replica == nil {
+		return proxyRead(req, res.broker, stream, srv.dialer)
+	}
+
+	if err := res.replica.serveRead(req, stream); err != nil {
+		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Read")
+		return err
+	}
+	return nil
+}
+
+// proxyRead forwards a ReadRequest to a resolved peer broker.
+func proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, stream pb.Broker_ReadServer, dialer dialer) error {
+	var conn, err = dialer.dial(stream.Context(), to)
+	if err != nil {
+		return err
+	}
+	client, err := pb.NewBrokerClient(conn).Read(stream.Context(), req)
+	if err != nil {
+		return err
+	} else if err = client.CloseSend(); err != nil {
+		return err
+	}
+
+	var resp = new(pb.ReadResponse)
+
+	for {
+		if err = client.RecvMsg(resp); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
+		} else if err = stream.Send(resp); err != nil {
+			return err
+		}
+	}
+}
 
 // read evaluates a client's Read RPC.
 func (r *replicaImpl) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
