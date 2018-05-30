@@ -38,7 +38,7 @@ func (s *ScenariosSuite) TestInitialAllocation(c *gc.C) {
 	), gc.IsNil)
 	c.Check(serveUntilIdle(c, s.ctx, s.client, s.ks), gc.Equals, 1)
 
-	// Expect Items are fully replicated, each Item spans both zones, and no Member ItemLimit is breached.
+	// Expect Items are fully replicated, each Item spans both Zones, and no Member ItemLimit is breached.
 	c.Check(keys(s.ks.Prefixed(s.ks.Root+AssignmentsPrefix)), gc.DeepEquals, []string{
 		"/root/assign/item-1|zone-a|member-A2|0",
 		"/root/assign/item-2|zone-a|member-A1|0",
@@ -70,7 +70,7 @@ func (s *ScenariosSuite) TestReplaceWhenNotConsistent(c *gc.C) {
 	), gc.IsNil)
 
 	// As no Assignments are consistent, the scheduler may over-commit
-	// items but cannot remove any current slots.
+	// Items but cannot remove any current slots.
 	c.Check(serveUntilIdle(c, s.ctx, s.client, s.ks), gc.Equals, 1)
 
 	// Expect member-new has Assignments which will (eventually) allow Assignments
@@ -257,7 +257,7 @@ func (s *ScenariosSuite) TestUpdateDesiredReplication(c *gc.C) {
 	c.Check(markAllConsistent(s.ctx, s.client, s.ks), gc.IsNil)
 	c.Check(serveUntilIdle(c, s.ctx, s.client, s.ks), gc.Equals, 2)
 
-	// All items are now fully replicated. Each member has a primary.
+	// All Items are now fully replicated. Each member has a primary.
 	c.Check(keys(s.ks.Prefixed(s.ks.Root+AssignmentsPrefix)), gc.DeepEquals, []string{
 		"/root/assign/item-1|zone-a|member-A1|2", // Acquired.
 		"/root/assign/item-1|zone-a|member-A2|0",
@@ -269,7 +269,7 @@ func (s *ScenariosSuite) TestUpdateDesiredReplication(c *gc.C) {
 }
 
 func (s *ScenariosSuite) TestMaxAssignmentAcrossZones(c *gc.C) {
-	// Construct a fixture across two zones, with matched Member and Item slots.
+	// Construct a fixture across two Zones, with matched Member and Item slots.
 	c.Check(insert(s.ctx, s.client,
 		"/root/items/item-1", `{"R": 1}`,
 		"/root/items/item-2", `{"R": 2}`,
@@ -329,7 +329,7 @@ func (s *ScenariosSuite) TestMaxAssignmentAcrossZones(c *gc.C) {
 }
 
 func (s *ScenariosSuite) TestAddNewZones(c *gc.C) {
-	// Initial fixture has one zones, and equal member & item slots.
+	// Initial fixture has one Zones, and equal member & item slots.
 	c.Check(insert(s.ctx, s.client,
 		"/root/items/item-1", `{"R": 1}`,
 		"/root/items/item-2", `{"R": 2}`,
@@ -455,7 +455,7 @@ func (s *ScenariosSuite) TestRecoveryOnLeaseAndZoneEviction(c *gc.C) {
 }
 
 func (s *ScenariosSuite) TestMemberSlotScaling(c *gc.C) {
-	// Initial fixture has one zones, and equal member & item slots.
+	// Initial fixture has one Zones, and equal member & item slots.
 	c.Check(insert(s.ctx, s.client,
 		"/root/items/item-1", `{"R": 1}`,
 		"/root/items/item-2", `{"R": 2}`,
@@ -612,9 +612,9 @@ func serveUntilIdle(c *gc.C, ctx context.Context, client *clientv3.Client, ks *k
 
 	// Create and serve an Allocator which will |cancel| when it becomes idle.
 	var alloc = Allocator{
-		KeySpace:           ks,
-		LocalKey:           string(resp.Kvs[0].Key),
-		LocalItemsCallback: func([]LocalItem) {}, // No-op.
+		KeySpace:      ks,
+		LocalKey:      string(resp.Kvs[0].Key),
+		StateCallback: func(*State) {}, // No-op.
 		testHook: func(round int, idle bool) {
 			if idle {
 				result = round // Preserve and return the round on which the Allocator became idle.

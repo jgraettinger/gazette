@@ -58,11 +58,11 @@ func (s *AllocatorSuite) TestConvergeFixtureCases(c *gc.C) {
 	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
 	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
 
-	var as, err = newAllocState(ks, MemberKey(ks, "us-east", "foo"))
+	var as, err = NewState(ks, MemberKey(ks, "us-east", "foo"))
 	c.Assert(err, gc.IsNil)
 
 	// Tweak the fixture to associate a lease with Member us-east/foo
-	as.members[1].Raw.Lease = 0xfeedbeef
+	as.Members[1].Raw.Lease = 0xfeedbeef
 
 	// Case 1: desired state matches current state, aside from fix-ups for missing Items / Members.
 	var txn mockTxnBuilder
@@ -76,9 +76,9 @@ func (s *AllocatorSuite) TestConvergeFixtureCases(c *gc.C) {
 
 	var expectCmps = []clientv3.Cmp{
 		clientv3.Compare(clientv3.CreateRevision("/root/items/item-missing"), "=", 0),
-		modRevisionUnchanged(as.assignments[2]), // assign/item-missing|us-west|baz|0
-		modRevisionUnchanged(as.items[1]),       // items/item-two
-		modRevisionUnchanged(as.assignments[3]), // assign/item-two|missing|member|2
+		modRevisionUnchanged(as.Assignments[2]), // assign/item-missing|us-west|baz|0
+		modRevisionUnchanged(as.Items[1]),       // items/item-two
+		modRevisionUnchanged(as.Assignments[3]), // assign/item-two|missing|member|2
 	}
 	c.Check(txn.cmps, gc.DeepEquals, expectCmps)
 	c.Check(txn.ops, gc.DeepEquals, []clientv3.Op{
@@ -100,7 +100,7 @@ func (s *AllocatorSuite) TestConvergeFixtureCases(c *gc.C) {
 	// In addition to the cleanup checks of the previous case,
 	// expect Member us-east/foo is also verified as unchanged.
 	c.Check(txn.cmps, gc.DeepEquals, append(
-		append(expectCmps[:2:2], modRevisionUnchanged(as.members[1])), expectCmps[2:]...))
+		append(expectCmps[:2:2], modRevisionUnchanged(as.Members[1])), expectCmps[2:]...))
 
 	c.Check(txn.ops, gc.DeepEquals, []clientv3.Op{
 		clientv3.OpDelete("/root/assign/item-missing|us-west|baz|0"),

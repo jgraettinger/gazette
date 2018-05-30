@@ -79,11 +79,6 @@ type LocalItem struct {
 	Index       int                // The index of the local Assignment within |Assignments|.
 }
 
-// LocalItemsCallback is periodically invoked by Allocator to inform
-// the local instance of its current Item Assignments. Note that slice
-// []LocalItem must not be retained and referenced outside of this callback.
-type LocalItemsCallback func([]LocalItem)
-
 // NewAllocatorKeyValueDecoder returns a KeyValueDecoder utilizing the supplied
 // AllocatorDecoder, and suitable for use with NewKeySpace of the same |prefix|.
 // Some implementations may wish to further wrap the returned KeyValueDecoder

@@ -58,9 +58,9 @@ func benchmarkSimulatedDeploy(b *testing.B, client *clientv3.Client) {
 	}
 
 	var alloc = Allocator{
-		KeySpace:           ks,
-		LocalKey:           MemberKey(ks, "zone-b", "leader"),
-		LocalItemsCallback: func([]LocalItem) {}, // No-op.
+		KeySpace:      ks,
+		LocalKey:      MemberKey(ks, "zone-b", "leader"),
+		StateCallback: func(*State) {}, // No-op.
 	}
 
 	// Insert a Member key which will act as the leader, and will not be rolled.

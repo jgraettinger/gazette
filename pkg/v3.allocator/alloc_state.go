@@ -12,105 +12,107 @@ import (
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 )
 
-// allocState is an extracted representation of the allocator KeySpace.
-type allocState struct {
-	ks *keyspace.KeySpace
+// State is an extracted representation of the allocator KeySpace.
+type State struct {
+	KS *keyspace.KeySpace
 
 	// Sub-slices of the KeySpace representing allocator entities.
-	members     keyspace.KeyValues
-	items       keyspace.KeyValues
-	assignments keyspace.KeyValues
+	Members     keyspace.KeyValues
+	Items       keyspace.KeyValues
+	Assignments keyspace.KeyValues
 
-	localKey       string      // Unique key of this allocator instance.
-	localMemberInd int         // Index of |localKey| within |members|.
-	localItems     []LocalItem // Assignments of this instance.
+	LocalKey       string      // Unique key of this allocator instance.
+	LocalMemberInd int         // Index of |LocalKey| within |Members|.
+	LocalItems     []LocalItem // Assignments of this instance.
 
-	zones       []string // Sorted and unique zones of |members|.
-	memberSlots int      // Total number of item slots summed across all |members|.
-	itemSlots   int      // Total desired replication slots summed across all |items|.
-	networkHash uint64   // Content-sum which captures Items & Members, and their constraints.
+	Zones       []string // Sorted and unique Zones of |Members|.
+	MemberSlots int      // Total number of item slots summed across all |Members|.
+	ItemSlots   int      // Total desired replication slots summed across all |Items|.
+	NetworkHash uint64   // Content-sum which captures Items & Members, and their constraints.
 
 	// Number of total Assignments, and primary Assignments by Member.
-	// These share cardinality with |members|.
-	memberTotalCount   []int
-	memberPrimaryCount []int
+	// These share cardinality with |Members|.
+	MemberTotalCount   []int
+	MemberPrimaryCount []int
 }
 
-func newAllocState(ks *keyspace.KeySpace, localKey string) (*allocState, error) {
-	var s = &allocState{
-		ks: ks,
+// NewState extracts a State representation from the KeySpace,
+// pivoted around the Member instance identified by |localKey|.
+func NewState(ks *keyspace.KeySpace, localKey string) (*State, error) {
+	var s = &State{
+		KS: ks,
 
-		members:     ks.Prefixed(ks.Root + MembersPrefix),
-		items:       ks.Prefixed(ks.Root + ItemsPrefix),
-		assignments: ks.Prefixed(ks.Root + AssignmentsPrefix),
+		Members:     ks.Prefixed(ks.Root + MembersPrefix),
+		Items:       ks.Prefixed(ks.Root + ItemsPrefix),
+		Assignments: ks.Prefixed(ks.Root + AssignmentsPrefix),
 
-		localKey: localKey,
+		LocalKey: localKey,
 	}
-	s.memberTotalCount = make([]int, len(s.members))
-	s.memberPrimaryCount = make([]int, len(s.members))
+	s.MemberTotalCount = make([]int, len(s.Members))
+	s.MemberPrimaryCount = make([]int, len(s.Members))
 
 	// Walk Members to:
-	//  * Group the set of ordered |zones| across all Members.
-	//  * Initialize |memberSlots|.
-	//  * Initialize |networkHash|.
-	for i := range s.members {
-		var m = memberAt(s.members, i)
+	//  * Group the set of ordered |Zones| across all Members.
+	//  * Initialize |MemberSlots|.
+	//  * Initialize |NetworkHash|.
+	for i := range s.Members {
+		var m = memberAt(s.Members, i)
 		var R = m.ItemLimit()
 
-		if len(s.zones) == 0 {
-			s.zones = append(s.zones, m.Zone)
-		} else if z := s.zones[len(s.zones)-1]; z < m.Zone {
-			s.zones = append(s.zones, m.Zone)
+		if len(s.Zones) == 0 {
+			s.Zones = append(s.Zones, m.Zone)
+		} else if z := s.Zones[len(s.Zones)-1]; z < m.Zone {
+			s.Zones = append(s.Zones, m.Zone)
 		} else if z > m.Zone {
 			panic("invalid Member order")
 		}
 
-		s.memberSlots += R
-		s.networkHash = foldCRC(s.networkHash, s.members[i].Raw.Key, R)
+		s.MemberSlots += R
+		s.NetworkHash = foldCRC(s.NetworkHash, s.Members[i].Raw.Key, R)
 	}
 
-	// Fetch |localMember| identified by |localKey|.
-	if ind, found := s.members.Search(s.localKey); !found {
-		return nil, fmt.Errorf("member key not found: %s", s.localKey)
+	// Fetch |localMember| identified by |LocalKey|.
+	if ind, found := s.Members.Search(s.LocalKey); !found {
+		return nil, fmt.Errorf("member key not found: %s", s.LocalKey)
 	} else {
-		s.localMemberInd = ind
+		s.LocalMemberInd = ind
 	}
 
 	// Left-join Items with their Assignments to:
-	//   * Initialize |itemSlots|.
-	//   * Initialize |networkHash|.
-	//   * Collect Items and Assignments which map to the |localKey| Member.
+	//   * Initialize |ItemSlots|.
+	//   * Initialize |NetworkHash|.
+	//   * Collect Items and Assignments which map to the |LocalKey| Member.
 	//   * Accumulate per-Member counts of primary and total Assignments.
 	var it = leftJoin{
-		lenL: len(s.items),
-		lenR: len(s.assignments),
+		lenL: len(s.Items),
+		lenR: len(s.Assignments),
 		compare: func(l, r int) int {
-			return strings.Compare(itemAt(s.items, l).ID, assignmentAt(s.assignments, r).ItemID)
+			return strings.Compare(itemAt(s.Items, l).ID, assignmentAt(s.Assignments, r).ItemID)
 		},
 	}
 	for cur, ok := it.next(); ok; cur, ok = it.next() {
-		var item = itemAt(s.items, cur.left)
+		var item = itemAt(s.Items, cur.left)
 		var R = item.DesiredReplication()
 
-		s.itemSlots += R
-		s.networkHash = foldCRC(s.networkHash, s.items[cur.left].Raw.Key, R)
+		s.ItemSlots += R
+		s.NetworkHash = foldCRC(s.NetworkHash, s.Items[cur.left].Raw.Key, R)
 
 		for r := cur.rightBegin; r != cur.rightEnd; r++ {
-			var a = assignmentAt(s.assignments, r)
+			var a = assignmentAt(s.Assignments, r)
 			var key = MemberKey(ks, a.MemberZone, a.MemberSuffix)
 
 			if key == localKey {
-				s.localItems = append(s.localItems, LocalItem{
-					Item:        s.items[cur.left],
-					Assignments: s.assignments[cur.rightBegin:cur.rightEnd],
+				s.LocalItems = append(s.LocalItems, LocalItem{
+					Item:        s.Items[cur.left],
+					Assignments: s.Assignments[cur.rightBegin:cur.rightEnd],
 					Index:       r - cur.rightBegin,
 				})
 			}
-			if ind, found := s.members.Search(key); found {
+			if ind, found := s.Members.Search(key); found {
 				if a.Slot == 0 {
-					s.memberPrimaryCount[ind]++
+					s.MemberPrimaryCount[ind]++
 				}
-				s.memberTotalCount[ind]++
+				s.MemberTotalCount[ind]++
 			}
 		}
 	}
@@ -119,45 +121,45 @@ func newAllocState(ks *keyspace.KeySpace, localKey string) (*allocState, error) 
 
 // shouldExit returns true iff the termination condition is met: our local
 // Member ItemLimit is zero, and no local Assignments remain.
-func (s *allocState) shouldExit() bool {
-	return memberAt(s.members, s.localMemberInd).ItemLimit() == 0 && len(s.localItems) == 0
+func (s *State) shouldExit() bool {
+	return memberAt(s.Members, s.LocalMemberInd).ItemLimit() == 0 && len(s.LocalItems) == 0
 }
 
 // isLeader returns true iff the local Member key has the earliest
 // CreateRevision of all Member keys.
-func (s *allocState) isLeader() bool {
+func (s *State) isLeader() bool {
 	var leader keyspace.KeyValue
-	for _, kv := range s.members {
+	for _, kv := range s.Members {
 		if leader.Raw.CreateRevision == 0 || kv.Raw.CreateRevision < leader.Raw.CreateRevision {
 			leader = kv
 		}
 	}
-	return string(leader.Raw.Key) == s.localKey
+	return string(leader.Raw.Key) == s.LocalKey
 }
 
-func (s *allocState) debugLog() {
+func (s *State) debugLog() {
 	var la []string
-	for _, a := range s.localItems {
+	for _, a := range s.LocalItems {
 		la = append(la, string(a.Assignments[a.Index].Raw.Key))
 	}
 
 	log.WithFields(log.Fields{
-		"assignments":    len(s.assignments),
-		"itemSlots":      s.itemSlots,
-		"items":          len(s.items),
-		"localItems":     la,
-		"localKey":       s.localKey,
-		"localMemberInd": s.localMemberInd,
-		"memberSlots":    s.memberSlots,
-		"members":        len(s.members),
-		"networkHash":    s.networkHash,
-		"rev":            s.ks.Header.Revision,
-		"zones":          s.zones,
-	}).Info("extracted allocState")
+		"Assignments":    len(s.Assignments),
+		"ItemSlots":      s.ItemSlots,
+		"Items":          len(s.Items),
+		"LocalItems":     la,
+		"LocalKey":       s.LocalKey,
+		"LocalMemberInd": s.LocalMemberInd,
+		"MemberSlots":    s.MemberSlots,
+		"Members":        len(s.Members),
+		"NetworkHash":    s.NetworkHash,
+		"Revision":       s.KS.Header.Revision,
+		"Zones":          s.Zones,
+	}).Info("extracted State")
 }
 
 // memberLoadRatio maps an |assignment| to a Member "load ratio". Given all
-// |members| and their corresponding |counts| (1:1 with |members|),
+// |Members| and their corresponding |counts| (1:1 with |Members|),
 // memberLoadRatio maps |assignment| to a Member and, if found, returns the
 // ratio of the Member's index in |counts| to the Member's ItemLimit. If the
 // Member is not found, infinity is returned.

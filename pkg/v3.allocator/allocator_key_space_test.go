@@ -54,7 +54,7 @@ func (s *AllocKeySpaceSuite) TestAllocKeySpaceDecoding(c *gc.C) {
 	}
 }
 
-func (s *AllocKeySpaceSuite) TestItemAssignments(c *gc.C) {
+func (s *AllocKeySpaceSuite) TestKeyAndLookupHelpers(c *gc.C) {
 	var client = etcdCluster.RandClient()
 	var ctx = context.Background()
 	buildAllocKeySpaceFixture(c, ctx, client)
@@ -62,27 +62,37 @@ func (s *AllocKeySpaceSuite) TestItemAssignments(c *gc.C) {
 	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
 	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
 
-	var expect = []struct{ a, m int }{
-		{0, 9},  // /root/assign/item-1|us-east|foo|1
-		{1, 10}, // /root/assign/item-1|us-west|baz|0
-	}
-	ItemAssignments(ks, "item-1", func(a Assignment, m Member) {
-		c.Check(a, gc.DeepEquals, assignmentAt(ks.KeyValues, expect[0].a))
-		c.Check(m, gc.DeepEquals, memberAt(ks.KeyValues, expect[0].m))
-		expect = expect[1:]
-	})
-	c.Check(expect, gc.HasLen, 0)
+	var item, ok = LookupItem(ks, "item-1")
+	c.Check(ok, gc.Equals, true)
+	c.Check(item, gc.DeepEquals, Item{ID: "item-1", ItemValue: testItem{R: 2}})
 
-	expect = []struct{ a, m int }{
-		{4, 8},  // /root/assign/item-two|us-east|bar|0
-		{5, 10}, // /root/assign/item-two|us-west|baz|1
-	}
-	ItemAssignments(ks, "item-two", func(a Assignment, m Member) {
-		c.Check(a, gc.DeepEquals, assignmentAt(ks.KeyValues, expect[0].a))
-		c.Check(m, gc.DeepEquals, memberAt(ks.KeyValues, expect[0].m))
-		expect = expect[1:]
-	})
-	c.Check(expect, gc.HasLen, 0)
+	item, ok = LookupItem(ks, "item-does-not-exist")
+	c.Check(ok, gc.Equals, false)
+	c.Check(item, gc.DeepEquals, Item{})
+
+	member, ok := LookupMember(ks, "us-east", "foo")
+	c.Check(ok, gc.Equals, true)
+	c.Check(member, gc.DeepEquals, Member{Zone: "us-east", Suffix: "foo", MemberValue: testMember{R: 2}})
+
+	member, ok = LookupMember(ks, "us-west", "not-found")
+	c.Check(ok, gc.Equals, false)
+	c.Check(member, gc.DeepEquals, Member{})
+
+	c.Check(ks.Prefixed(ItemAssignmentsPrefix(ks, "item-two")),
+		gc.DeepEquals, ks.KeyValues[3:6])
+
+	// Expect use of separator ensures the prefix of another item doesn't return its assignments.
+	c.Check(ks.Prefixed(ItemAssignmentsPrefix(ks, "item-tw")),
+		gc.DeepEquals, ks.KeyValues[3:3])
+
+	ind, ok := ks.Search(AssignmentKey(ks,
+		Assignment{ItemID: "item-two", MemberZone: "us-west", MemberSuffix: "baz", Slot: 1}))
+	c.Check(ok, gc.Equals, true)
+	c.Check(ind, gc.Equals, 5)
+
+	ind, ok = ks.Search(AssignmentKey(ks,
+		Assignment{ItemID: "item-two", MemberZone: "us-west", MemberSuffix: "baz", Slot: 10}))
+	c.Check(ok, gc.Equals, false)
 }
 
 func (s *AllocKeySpaceSuite) TestAssignmentCompare(c *gc.C) {

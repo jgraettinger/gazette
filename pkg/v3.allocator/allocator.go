@@ -2,9 +2,9 @@
 // of Items across a number of Members, where each Member runs an instance of
 // the Allocator. Items and Members may come and go over time; each may have
 // constraints on desired replication and assignment limits which must be
-// satisfied, and replicas may be placed across distinct failure zones.
+// satisfied, and replicas may be placed across distinct failure Zones.
 // Allocator coordinates over Etcd, and uses a greedy, incremental maximum-flow
-// solver to quickly determine minimal re-assignments which best balance Items
+// solver to quickly determine minimal re-Assignments which best balance Items
 // across Members (subject to constraints).
 package v3_allocator
 
@@ -26,13 +26,19 @@ import (
 // under an Etcd Allocator KeySpace, across a number of Members, also
 // captured within that KeySpace.
 type Allocator struct {
-	KeySpace           *keyspace.KeySpace
-	LocalKey           string // Unique MemberKey of this Allocator instance.
-	LocalItemsCallback        // Callback invoked with local Assignments.
+	KeySpace      *keyspace.KeySpace
+	LocalKey      string // Unique MemberKey of this Allocator instance.
+	StateCallback        // Callback invoked with each updated State.
 
 	// testHook is an optional testing hook, invoked after each convergence round.
 	testHook func(round int, isIdle bool)
 }
+
+// StateCallback is periodically invoked by Allocator to inform
+// the client of the current State, including current Item Assignments
+// of the local instance. Note that State member fields must not be
+// retained or referenced outside of this callback.
+type StateCallback func(*State)
 
 // Serve loads and watches the Allocator KeySpace, and if this Allocator
 // instance is the current leader, performs scheduling rounds to ensure
@@ -58,7 +64,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 	ctx, cancel = context.WithCancel(ctx)
 
 	// Begin a goroutine which will run on each signaled KeySpace update. It will
-	// minimally call back with local assignments. If this Member is the current
+	// minimally call back with local Assignments. If this Member is the current
 	// leader, it will also perform a scheduling iteration.
 	go func() {
 		a.KeySpace.Mu.RLock()
@@ -73,7 +79,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 		// watched through its revision before driving further action.
 		var txnResponse *clientv3.TxnResponse
 		// The leader runs push/relabel to re-compute a |desired| network only when
-		// the allocState |networkHash| changes. Otherwise, it incrementally converges
+		// the State |NetworkHash| changes. Otherwise, it incrementally converges
 		// towards the previous solution, which is still a valid maximum assignment.
 		// This caching is both more efficient, and also mitigates the impact of
 		// small instabilities in the prioritized push/relabel solution.
@@ -81,7 +87,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 		var lastNetworkHash uint64
 
 		for round := 0; true; {
-			var as, err = newAllocState(a.KeySpace, a.LocalKey)
+			var as, err = NewState(a.KeySpace, a.LocalKey)
 			if err != nil {
 				failErr = err // Treat as a non-recoverable error.
 				break
@@ -90,7 +96,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 			}
 
 			var revision = a.KeySpace.Header.Revision
-			a.LocalItemsCallback(as.localItems)
+			a.StateCallback(as)
 
 			// TODO(johnny): Remove when the Allocator is further along in integration testing.
 			as.debugLog()
@@ -98,8 +104,8 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 			if as.isLeader() && (txnResponse == nil || revision >= txnResponse.Header.Revision) {
 
 				// Do we need to re-solve for a maximum assignment?
-				if as.networkHash != lastNetworkHash {
-					lastNetworkHash = as.networkHash
+				if as.NetworkHash != lastNetworkHash {
+					lastNetworkHash = as.NetworkHash
 
 					// Build a prioritized flowNetwork and solve for maximum flow.
 					fn.init(as)
@@ -107,7 +113,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 
 					// Extract desired max-flow Assignments for each Item.
 					desired = desired[:0]
-					for item := range as.items {
+					for item := range as.Items {
 						desired = extractItemFlow(as, fn, item, desired)
 					}
 				}
@@ -115,7 +121,7 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 				// Use batched transactions to amortize the network cost of Etcd updates,
 				// and re-verify our Member key with each flush to ensure we're still leader.
 				var txn = newBatchedTxn(ctx, client,
-					modRevisionUnchanged(as.members[as.localMemberInd]))
+					modRevisionUnchanged(as.Members[as.LocalMemberInd]))
 
 				// Converge the current state towards |desired|.
 				if err = converge(txn, as, desired); err == nil {
@@ -153,41 +159,41 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 
 // converge identifies and applies incremental changes which bring the current
 // state closer to the |desired| state, subject to Item and Member constraints.
-func converge(txn checkpointTxn, as *allocState, desired []Assignment) error {
+func converge(txn checkpointTxn, as *State, desired []Assignment) error {
 	var itemState = itemState{global: as}
 	var lastCRE int // cur.rightEnd of the previous iteration.
 
 	// Walk Items, joined with their current Assignments. Simultaneously walk
 	// |desired| Assignments to join against those as well.
 	var it = leftJoin{
-		lenL: len(as.items),
-		lenR: len(as.assignments),
+		lenL: len(as.Items),
+		lenR: len(as.Assignments),
 		compare: func(l, r int) int {
-			return strings.Compare(itemAt(as.items, l).ID, assignmentAt(as.assignments, r).ItemID)
+			return strings.Compare(itemAt(as.Items, l).ID, assignmentAt(as.Assignments, r).ItemID)
 		},
 	}
 	for cur, ok := it.next(); ok; cur, ok = it.next() {
 		// Remove any Assignments skipped between the last cursor iteration, and this
 		// one. They must not have an Associated Item (eg, it was deleted).
-		if err := removeDeadAssignments(txn, as.ks, as.assignments[lastCRE:cur.rightBegin]); err != nil {
+		if err := removeDeadAssignments(txn, as.KS, as.Assignments[lastCRE:cur.rightBegin]); err != nil {
 			return err
 		}
 		lastCRE = cur.rightEnd
 
-		var itemID, limit = itemAt(as.items, cur.left).ID, 0
+		var itemID, limit = itemAt(as.Items, cur.left).ID, 0
 		// Determine leading sub-slice of |desired| which are Assignments of |itemID|.
 		for ; limit != len(desired) && desired[limit].ItemID == itemID; limit++ {
 		}
 
 		// Initialize |itemState|, computing the delta of current and |desired| Item Assignments.
-		itemState.init(cur.left, as.assignments[cur.rightBegin:cur.rightEnd], desired[:limit])
+		itemState.init(cur.left, as.Assignments[cur.rightBegin:cur.rightEnd], desired[:limit])
 		if err := itemState.constrainAndBuildOps(txn); err != nil {
 			return err
 		}
 		desired = desired[limit:]
 	}
 	// Remove any trailing, dead Assignments.
-	if err := removeDeadAssignments(txn, as.ks, as.assignments[lastCRE:]); err != nil {
+	if err := removeDeadAssignments(txn, as.KS, as.Assignments[lastCRE:]); err != nil {
 		return err
 	}
 
@@ -198,7 +204,7 @@ func converge(txn checkpointTxn, as *allocState, desired []Assignment) error {
 func removeDeadAssignments(txn checkpointTxn, ks *keyspace.KeySpace, asn keyspace.KeyValues) error {
 	for len(asn) != 0 {
 		var itemID, limit = assignmentAt(asn, 0).ItemID, 1
-		// Determine leading sub-slice of |assignments| which are Assignments of |itemID|.
+		// Determine leading sub-slice of |asn| which are Assignments of |itemID|.
 		for ; limit != len(asn) && assignmentAt(asn, limit).ItemID == itemID; limit++ {
 		}
 		// Verify Item does not exist.

@@ -14,7 +14,7 @@ import (
 // Item limits, and a previous solution are encoded via network Arcs, their
 // capacities, and priorities. Eg, zone constraints may be represented
 // through intermediate "Zone Items" nodes, and a capacity from each Item which
-// is one less than the desired replication (eg, not all assignments may be in
+// is one less than the desired replication (eg, not all Assignments may be in
 // a single zone). Current Assignments are captured as priorities on Arcs within
 // the constructed network. This modeling allows the incremental allocation
 // problem to be reduced to that of obtaining a maximum flow over the resulting
@@ -53,13 +53,13 @@ type flowNetwork struct {
 	sink      pr.Node
 }
 
-func (fn *flowNetwork) init(s *allocState) {
+func (fn *flowNetwork) init(s *State) {
 	// Size Nodes and set labeled height. Push/Relabel initializes all Node labels
 	// to their distance from the Sink node, with the exception of the Source, which
 	// is initialized to the total number of vertices.
-	fn.items = pr.InitNodes(fn.items, len(s.items), 3)
-	fn.zoneItems = pr.InitNodes(fn.zoneItems, len(s.items)*len(s.zones), 2)
-	fn.members = pr.InitNodes(fn.members, len(s.members), 1)
+	fn.items = pr.InitNodes(fn.items, len(s.Items), 3)
+	fn.zoneItems = pr.InitNodes(fn.zoneItems, len(s.Items)*len(s.Zones), 2)
+	fn.members = pr.InitNodes(fn.members, len(s.Members), 1)
 	fn.sink = pr.Node{Arcs: fn.sink.Arcs[:0], Height: 0}
 	fn.source = pr.Node{
 		Arcs:   fn.source.Arcs[:0],
@@ -71,21 +71,21 @@ func (fn *flowNetwork) init(s *allocState) {
 	// degrade with the degree of excess flow which cannot be assigned. Make
 	// the solution faster and more stable by bounding the effective item
 	// slots to the number of member slots.
-	var remainingSlots = s.memberSlots
+	var remainingSlots = s.MemberSlots
 
-	// Perform a left-join of |items| with |assignments| (ordered on item ID, member zone, member suffix).
+	// Perform a left-join of |Items| with |Assignments| (ordered on item ID, member zone, member suffix).
 	// Build arcs from Source to each Item, to ZoneItems, to Members, and finally to the Sink.
 	var it = leftJoin{
-		lenL: len(s.items),
-		lenR: len(s.assignments),
+		lenL: len(s.Items),
+		lenR: len(s.Assignments),
 		compare: func(l, r int) int {
-			return strings.Compare(itemAt(s.items, l).ID, assignmentAt(s.assignments, r).ItemID)
+			return strings.Compare(itemAt(s.Items, l).ID, assignmentAt(s.Assignments, r).ItemID)
 		},
 	}
 	for cur, ok := it.next(); ok; cur, ok = it.next() {
 		var item = cur.left
-		var itemAssignments = s.assignments[cur.rightBegin:cur.rightEnd]
-		var itemSlots = itemAt(s.items, item).DesiredReplication()
+		var itemAssignments = s.Assignments[cur.rightBegin:cur.rightEnd]
+		var itemSlots = itemAt(s.Items, item).DesiredReplication()
 
 		switch {
 		case itemSlots < 0:
@@ -98,24 +98,24 @@ func (fn *flowNetwork) init(s *allocState) {
 		buildItemArcs(s, fn, item, itemAssignments, itemSlots)
 	}
 
-	for member := range s.members {
-		var limit = memberAt(s.members, member).ItemLimit()
+	for member := range s.Members {
+		var limit = memberAt(s.Members, member).ItemLimit()
 
 		// If there are more member slots than item slots, scale down the capacity of each
-		// member by the ratio of items to members, rounded up. This balances the smaller
-		// set of items evenly across all members, rather than having some members near or
+		// member by the ratio of Items to Members, rounded up. This balances the smaller
+		// set of Items evenly across all Members, rather than having some Members near or
 		// fully allocated while others are idle (which is an otherwise valid max-flow).
-		if s.memberSlots > s.itemSlots && s.itemSlots > 0 {
-			limit = limit * s.itemSlots
-			if limit%s.memberSlots == 0 {
-				limit = limit / s.memberSlots
+		if s.MemberSlots > s.ItemSlots && s.ItemSlots > 0 {
+			limit = limit * s.ItemSlots
+			if limit%s.MemberSlots == 0 {
+				limit = limit / s.MemberSlots
 			} else {
-				limit = (limit / s.memberSlots) + 1
+				limit = (limit / s.MemberSlots) + 1
 			}
 		}
 		// Arc from Member to Sink, with capacity of the adjusted Member ItemLimit.
 		// Previous flow is the number of current Assignments.
-		addArc(&fn.members[member], &fn.sink, limit, s.memberTotalCount[member])
+		addArc(&fn.members[member], &fn.sink, limit, s.MemberTotalCount[member])
 	}
 
 	// Sort all Node Arcs by priority.
@@ -126,69 +126,69 @@ func (fn *flowNetwork) init(s *allocState) {
 	pr.SortNodeArcs(fn.sink)
 }
 
-func buildItemArcs(s *allocState, fn *flowNetwork, item int, itemAssignments keyspace.KeyValues, itemSlots int) {
+func buildItemArcs(s *State, fn *flowNetwork, item int, itemAssignments keyspace.KeyValues, itemSlots int) {
 	// Item capacity is defined by its replication factor. Within a zone (and
-	// assuming there are multiple zones), capacity is the replication factor
+	// assuming there are multiple Zones), capacity is the replication factor
 	// minus one (eg, requiring that replicas be split across at least two
-	// zones), lower-bounded to one.
+	// Zones), lower-bounded to one.
 	var zoneSlots = itemSlots
-	if zoneSlots > 1 && len(s.zones) > 1 {
+	if zoneSlots > 1 && len(s.Zones) > 1 {
 		zoneSlots--
 	}
 
 	// Arc from Source to Item, with capacity of the total desired item replication.
-	// Previous flow is the number of current assignments.
+	// Previous flow is the number of current Assignments.
 	addArc(&fn.source, &fn.items[item], itemSlots, len(itemAssignments))
 
-	// Perform a left-join of all zones with |itemAssignments| (also ordered on zone).
+	// Perform a left-join of all Zones with |itemAssignments| (also ordered on zone).
 	var zit = leftJoin{
-		lenL: len(s.zones),
+		lenL: len(s.Zones),
 		lenR: len(itemAssignments),
 		compare: func(l, r int) int {
-			return strings.Compare(s.zones[l], assignmentAt(itemAssignments, r).MemberZone)
+			return strings.Compare(s.Zones[l], assignmentAt(itemAssignments, r).MemberZone)
 		},
 	}
-	// Within the join, we'll be performing nested left-joins of |members| with
-	// Assignments in the current zone. Take advantage of the fact that |members|
+	// Within the join, we'll be performing nested left-joins of |Members| with
+	// Assignments in the current zone. Take advantage of the fact that |Members|
 	// is also ordered on zone and begin each iteration where the last left off,
-	// so that total time is O(len(fn.zones) + len(members)).
+	// so that total time is O(len(fn.Zones) + len(Members)).
 	var moff int
 
 	for zcur, ok := zit.next(); ok; zcur, ok = zit.next() {
 		var zone = zcur.left
-		var zoneItem = item*len(s.zones) + zone
+		var zoneItem = item*len(s.Zones) + zone
 		var zoneAssignments = itemAssignments[zcur.rightBegin:zcur.rightEnd]
 
 		// Arc from Item to ZoneItem, with capacity of |zoneSlots|, and previous flow being
-		// the total number of current assignments to members in this zone.
+		// the total number of current Assignments to Members in this zone.
 		addArc(&fn.items[item], &fn.zoneItems[zoneItem], zoneSlots, len(zoneAssignments))
 
-		// Perform a left-join of |members| with |zoneAssignments| (also ordered on member suffix).
+		// Perform a left-join of |Members| with |zoneAssignments| (also ordered on member suffix).
 		var mit = leftJoin{
-			lenL: len(s.members) - moff,
+			lenL: len(s.Members) - moff,
 			lenR: len(zoneAssignments),
 			compare: func(l, r int) int {
-				return strings.Compare(memberAt(s.members, l+moff).Suffix, assignmentAt(zoneAssignments, r).MemberSuffix)
+				return strings.Compare(memberAt(s.Members, l+moff).Suffix, assignmentAt(zoneAssignments, r).MemberSuffix)
 			},
 		}
 		for mcur, ok := mit.next(); ok; mcur, ok = mit.next() {
 			var member = mcur.left + moff
 
-			switch c := strings.Compare(s.zones[zone], memberAt(s.members, member).Zone); c {
+			switch c := strings.Compare(s.Zones[zone], memberAt(s.Members, member).Zone); c {
 			case -1:
-				// We've ranged through all members having this zone. Set |moff|
+				// We've ranged through all Members having this zone. Set |moff|
 				// so the next iteration begins with the next zone.
 				moff = member
 				mit = leftJoin{} // Zero such that next iteration terminates.
 				continue
 			case 1:
-				// |zones| must include all zones appearing in |members|,
-				// and |members| is ordered on Member (Zone, Suffix).
+				// |Zones| must include all Zones appearing in |Members|,
+				// and |Members| is ordered on Member (Zone, Suffix).
 				panic("invalid member / zone order")
 			}
 
 			// Arc from ZoneItem to Member, with capacity of 1 and a previous flow being
-			// the number of current assignments to this member (which can be zero or one).
+			// the number of current Assignments to this member (which can be zero or one).
 			addArc(&fn.zoneItems[zoneItem], &fn.members[member], 1, mcur.rightEnd-mcur.rightBegin)
 		}
 	}
@@ -207,22 +207,22 @@ func addArc(from, to *pr.Node, capacity, prevFlow int) {
 	pr.AddArc(from, to, capacity, priority)
 }
 
-func extractItemFlow(s *allocState, fn *flowNetwork, item int, out []Assignment) []Assignment {
+func extractItemFlow(s *State, fn *flowNetwork, item int, out []Assignment) []Assignment {
 	var start = len(out) // First offset of extracted Assignments.
 
 	// Walk Arcs of each of the Item's ZoneItems, to collect
 	// the |desired| Assignment state for this Item.
-	for zone := range s.zones {
-		var zoneItem = item*len(s.zones) + zone
+	for zone := range s.Zones {
+		var zoneItem = item*len(s.Zones) + zone
 
 		for _, a := range fn.zoneItems[zoneItem].Arcs {
 			if a.Flow <= 0 {
 				continue
 			}
-			var member = memberAt(s.members, int(a.Target.ID))
+			var member = memberAt(s.Members, int(a.Target.ID))
 
 			out = append(out, Assignment{
-				ItemID:       itemAt(s.items, item).ID,
+				ItemID:       itemAt(s.Items, item).ID,
 				MemberZone:   member.Zone,
 				MemberSuffix: member.Suffix,
 			})

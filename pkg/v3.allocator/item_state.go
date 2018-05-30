@@ -11,10 +11,10 @@ import (
 // itemState is an extracted representation of an Item and a collection of
 // desired changes to its Assignments.
 type itemState struct {
-	global *allocState
+	global *State
 
-	item    int                // Index of current Item within |global.items|.
-	current keyspace.KeyValues // Sub-slice of Item's current Assignments within |global.assignments|.
+	item    int                // Index of current Item within |global.Items|.
+	current keyspace.KeyValues // Sub-slice of Item's current Assignments within |global.Assignments|.
 
 	add     []Assignment       // Assignments we seek to add.
 	remove  keyspace.KeyValues // Assignments we seek to remove.
@@ -77,22 +77,22 @@ func (s *itemState) init(item int, current keyspace.KeyValues, desired []Assignm
 // constraints, moving them to |s.reorder|.
 func (s *itemState) constrainRemovals() {
 	// Order |u.remove| on decreasing member load ratio
-	// (the ratio of the member's total assignments, vs its item limit).
+	// (the ratio of the member's total Assignments, vs its item limit).
 	sort.Slice(s.remove, func(i, j int) bool {
-		var ri = memberLoadRatio(s.global.ks, s.remove[i], s.global.memberTotalCount)
-		var rj = memberLoadRatio(s.global.ks, s.remove[j], s.global.memberTotalCount)
+		var ri = memberLoadRatio(s.global.KS, s.remove[i], s.global.MemberTotalCount)
+		var rj = memberLoadRatio(s.global.KS, s.remove[j], s.global.MemberTotalCount)
 		return ri > rj
 	})
-	var item = itemAt(s.global.items, s.item)
+	var item = itemAt(s.global.Items, s.item)
 
-	// Determine the current number of consistent item assignments.
+	// Determine the current number of consistent item Assignments.
 	var N int
 	for _, a := range s.current {
 		if item.IsConsistent(a, s.current) {
 			N += 1
 		}
 	}
-	// Release assignments in decreasing order of member load ratio. Halt if
+	// Release Assignments in decreasing order of member load ratio. Halt if
 	// releasing an Assignment would violate the Item replication guarantee.
 	var limit int
 
@@ -105,7 +105,7 @@ func (s *itemState) constrainRemovals() {
 	}
 
 	// Truncate removals to |limit|. Append the rest to |reorder|,
-	// as we will not be removing these assignments.
+	// as we will not be removing these Assignments.
 	s.reorder = append(s.reorder, s.remove[limit:]...)
 	s.remove = s.remove[:limit]
 }
@@ -117,17 +117,17 @@ func (s *itemState) constrainReorders() {
 	sort.Slice(s.reorder, func(i, j int) bool {
 		return assignmentAt(s.reorder, i).Slot < assignmentAt(s.reorder, j).Slot
 	})
-	// The ordering is trivially satisfied iff there are no assignments,
+	// The ordering is trivially satisfied iff there are no Assignments,
 	// and is otherwise satisfied iff there is a current primary.
 	if len(s.reorder) == 0 || assignmentAt(s.reorder, 0).Slot == 0 {
 		return
 	}
-	var item = itemAt(s.global.items, s.item)
+	var item = itemAt(s.global.Items, s.item)
 
 	// There is no current primary. Select an assignment to promote, preferring:
-	// a) assignments which are currently consistent, and then
-	// b) assignments having a lower primary load ratio
-	//    (the ratio of the member's primary assignments, vs its item limit).
+	// a) Assignments which are currently consistent, and then
+	// b) Assignments having a lower primary load ratio
+	//    (the ratio of the member's primary Assignments, vs its item limit).
 
 	var primary = struct {
 		index        int
@@ -138,7 +138,7 @@ func (s *itemState) constrainReorders() {
 
 	for i := range s.reorder {
 		var c = item.IsConsistent(s.reorder[i], s.current)
-		var r = memberLoadRatio(s.global.ks, s.reorder[i], s.global.memberPrimaryCount)
+		var r = memberLoadRatio(s.global.KS, s.reorder[i], s.global.MemberPrimaryCount)
 
 		if primary.index == -1 ||
 			c == true && primary.isConsistent == false ||
@@ -158,12 +158,12 @@ func (s *itemState) constrainAdds() {
 	for i := 0; i != len(s.add); {
 		var a = s.add[i]
 
-		var ind, found = s.global.members.Search(MemberKey(s.global.ks, a.MemberZone, a.MemberSuffix))
+		var ind, found = s.global.Members.Search(MemberKey(s.global.KS, a.MemberZone, a.MemberSuffix))
 		if !found {
 			panic("member not found")
 		}
 
-		if memberAt(s.global.members, ind).ItemLimit() <= s.global.memberTotalCount[ind] {
+		if memberAt(s.global.Members, ind).ItemLimit() <= s.global.MemberTotalCount[ind] {
 			// Addition would violate member's ItemLimit. Remove this Assignment.
 			copy(s.add[i:], s.add[i+1:])
 			s.add = s.add[:len(s.add)-1]
@@ -179,7 +179,7 @@ func (s *itemState) buildRemoveOps(txn checkpointTxn) {
 		// Verify the Item (and Assignment itself) have not changed. Otherwise, the
 		// Item Replication may have increased (and this removal could violate it).
 		if i == 0 {
-			txn.If(modRevisionUnchanged(s.global.items[s.item]))
+			txn.If(modRevisionUnchanged(s.global.Items[s.item]))
 		}
 		txn.If(modRevisionUnchanged(r))
 		// Delete the Assignment to remove.
@@ -187,11 +187,11 @@ func (s *itemState) buildRemoveOps(txn checkpointTxn) {
 
 		// Update to reflect the member's total count has decreased.
 		var a = assignmentAt(s.remove, i)
-		if ind, found := s.global.members.Search(MemberKey(s.global.ks, a.MemberZone, a.MemberSuffix)); found {
+		if ind, found := s.global.Members.Search(MemberKey(s.global.KS, a.MemberZone, a.MemberSuffix)); found {
 			if a.Slot == 0 {
-				s.global.memberPrimaryCount[ind] -= 1
+				s.global.MemberPrimaryCount[ind] -= 1
 			}
-			s.global.memberTotalCount[ind] -= 1
+			s.global.MemberTotalCount[ind] -= 1
 		}
 	}
 }
@@ -207,8 +207,8 @@ func (s *itemState) buildPromoteOps(txn checkpointTxn) {
 		a.Slot = 0 // Promote to Primary.
 
 		// Update to reflect the member's primary count has increased.
-		if ind, found := s.global.members.Search(MemberKey(s.global.ks, a.MemberZone, a.MemberSuffix)); found {
-			s.global.memberPrimaryCount[ind] += 1
+		if ind, found := s.global.Members.Search(MemberKey(s.global.KS, a.MemberZone, a.MemberSuffix)); found {
+			s.global.MemberPrimaryCount[ind] += 1
 		}
 		s.buildMoveOps(txn, s.reorder[0], a)
 	}
@@ -217,23 +217,23 @@ func (s *itemState) buildPromoteOps(txn checkpointTxn) {
 // buildAddOps adds operations to |txn| to create new Assignments for each of |s.add|.
 func (s *itemState) buildAddOps(txn checkpointTxn) {
 	for _, a := range s.add {
-		var ind, found = s.global.members.Search(MemberKey(s.global.ks, a.MemberZone, a.MemberSuffix))
+		var ind, found = s.global.Members.Search(MemberKey(s.global.KS, a.MemberZone, a.MemberSuffix))
 		if !found {
 			panic("member not found")
 		}
 
 		// Verify the Member has not changed. Otherwise, its ItemLimit may have decreased
 		// (and this addition could violate it).
-		txn.If(modRevisionUnchanged(s.global.members[ind]))
+		txn.If(modRevisionUnchanged(s.global.Members[ind]))
 		// Put an Assignment with an empty value under the Member's Lease.
-		txn.Then(clientv3.OpPut(AssignmentKey(s.global.ks, a), "",
-			clientv3.WithLease(clientv3.LeaseID(s.global.members[ind].Raw.Lease))))
+		txn.Then(clientv3.OpPut(AssignmentKey(s.global.KS, a), "",
+			clientv3.WithLease(clientv3.LeaseID(s.global.Members[ind].Raw.Lease))))
 
 		// Update to reflect the member's total count (and potentially primary count) has increased.
 		if a.Slot == 0 {
-			s.global.memberPrimaryCount[ind] += 1
+			s.global.MemberPrimaryCount[ind] += 1
 		}
-		s.global.memberTotalCount[ind] += 1
+		s.global.MemberTotalCount[ind] += 1
 	}
 }
 
@@ -257,7 +257,7 @@ func (s *itemState) buildMoveOps(txn checkpointTxn, cur keyspace.KeyValue, a Ass
 	txn.If(modRevisionUnchanged(cur)).
 		Then(
 			clientv3.OpDelete(string(cur.Raw.Key)),
-			clientv3.OpPut(AssignmentKey(s.global.ks, a), string(cur.Raw.Value),
+			clientv3.OpPut(AssignmentKey(s.global.KS, a), string(cur.Raw.Value),
 				clientv3.WithLease(clientv3.LeaseID(cur.Raw.Lease))))
 }
 

@@ -133,7 +133,7 @@ func (s *ItemStateSuite) TestRemoveAndPromotePrimary(c *gc.C) {
 		"/root/assign/item|zone|member-2|2": `consistent`, // Primary load ratio of 1/2.
 		"/root/assign/item|zone|member-3|3": `consistent`, // Primary load ratio of 1/3 (selected).
 
-		// Other primary Assignments of fixture members.
+		// Other primary Assignments of fixture Members.
 		"/root/assign/zzzz-2|zone|member-2|0": ``,
 		"/root/assign/zzzz-3|zone|member-3|0": ``,
 	})
@@ -249,10 +249,10 @@ func (s *ItemStateSuite) TestBuildRemoveOps(c *gc.C) {
 	var item = ks.Prefixed(ks.Root + ItemsPrefix)[0]
 	var current = ks.Prefixed(ItemAssignmentsPrefix(ks, "item"))
 
-	// Precondition: counts reflect |current| assignments.
+	// Precondition: counts reflect |current| Assignments.
 	c.Check(current, gc.HasLen, 2)
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{1, 1})
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{1, 0})
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{1, 1})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{1, 0})
 
 	is.init(0, current, []Assignment{})
 	var txn mockTxnBuilder
@@ -271,8 +271,8 @@ func (s *ItemStateSuite) TestBuildRemoveOps(c *gc.C) {
 	})
 
 	// Expect Member counts were updated to reflect the release of total & primary replicas.
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{0, 0})
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{0, 0})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{0, 0})
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{0, 0})
 }
 
 func (s *ItemStateSuite) TestBuildPromoteOps(c *gc.C) {
@@ -291,9 +291,9 @@ func (s *ItemStateSuite) TestBuildPromoteOps(c *gc.C) {
 	current[0].Raw.Lease = 0xfeed
 	current[1].Raw.Lease = 0xbeef
 
-	// Precondition: counts reflect |current| assignments.
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{1, 1})
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{0, 0})
+	// Precondition: counts reflect |current| Assignments.
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{1, 1})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{0, 0})
 
 	is.init(0, current, []Assignment{
 		{ItemID: "item", MemberZone: "zone", MemberSuffix: "member-0"},
@@ -314,8 +314,8 @@ func (s *ItemStateSuite) TestBuildPromoteOps(c *gc.C) {
 	})
 
 	// Expect Member counts were updated to reflect the release of total & primary replicas.
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{0, 1})
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{1, 1})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{0, 1})
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{1, 1})
 }
 
 func (s *ItemStateSuite) TestBuildAddOps(c *gc.C) {
@@ -327,14 +327,14 @@ func (s *ItemStateSuite) TestBuildAddOps(c *gc.C) {
 	})
 	var members = ks.Prefixed(ks.Root + MembersPrefix)
 
-	// Tweak fixture to model Etcd leases on |members|.
+	// Tweak fixture to model Etcd leases on |Members|.
 	c.Check(members, gc.HasLen, 2)
 	members[0].Raw.Lease = 0xfeed
 	members[1].Raw.Lease = 0xbeef
 
 	// Precondition: counts reflect lack of Assignments.
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{0, 0})
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{0, 0})
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{0, 0})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{0, 0})
 
 	is.init(0, nil, []Assignment{
 		{ItemID: "item", MemberZone: "zone", MemberSuffix: "member-0"},
@@ -355,8 +355,8 @@ func (s *ItemStateSuite) TestBuildAddOps(c *gc.C) {
 	})
 
 	// Expect Member counts were updated to reflect the addition of total & primary replicas.
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{1, 0})
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{1, 1})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{1, 0})
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{1, 1})
 }
 
 func (s *ItemStateSuite) TestBuildPackOps(c *gc.C) {
@@ -399,8 +399,8 @@ func (s *ItemStateSuite) TestBuildPackOps(c *gc.C) {
 	})
 
 	// Expect counts are unchanged.
-	c.Check(is.global.memberPrimaryCount, gc.DeepEquals, []int{1, 0, 0, 0})
-	c.Check(is.global.memberTotalCount, gc.DeepEquals, []int{1, 1, 1, 1})
+	c.Check(is.global.MemberPrimaryCount, gc.DeepEquals, []int{1, 0, 0, 0})
+	c.Check(is.global.MemberTotalCount, gc.DeepEquals, []int{1, 1, 1, 1})
 }
 
 func buildItemStateFixture(c *gc.C, fixture map[string]string) (*keyspace.KeySpace, *itemState) {
@@ -418,7 +418,7 @@ func buildItemStateFixture(c *gc.C, fixture map[string]string) (*keyspace.KeySpa
 	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
 	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
 
-	as, err := newAllocState(ks, MemberKey(ks, "zone", "member-1"))
+	as, err := NewState(ks, MemberKey(ks, "zone", "member-1"))
 	c.Assert(err, gc.IsNil)
 
 	return ks, &itemState{global: as}

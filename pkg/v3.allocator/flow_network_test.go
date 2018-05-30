@@ -18,7 +18,7 @@ func (s *FlowNetworkSuite) TestFlowOverSimpleFixture(c *gc.C) {
 	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
 	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
 
-	var state, err = newAllocState(ks, MemberKey(ks, "us-west", "baz"))
+	var state, err = NewState(ks, MemberKey(ks, "us-west", "baz"))
 	c.Assert(err, gc.IsNil)
 
 	var fn flowNetwork
@@ -110,7 +110,7 @@ func verifyNode(c *gc.C, node, expect *pr.Node) {
 	}
 	// Verify any additional arcs are residuals.
 	for _, a := range node.Arcs[len(expect.Arcs):] {
-		c.Check(a.Capacity, gc.Equals, int8(0))
+		c.Check(a.Capacity, gc.Equals, int32(0))
 	}
 }
 
