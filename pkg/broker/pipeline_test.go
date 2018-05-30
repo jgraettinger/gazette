@@ -154,7 +154,7 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 		Fragment: &pb.Fragment{Begin: 567, End: 890},
 	}
 
-	// Expect the new Fragment offset and Etcd revision to read through are returned.
+	// Expect the new Fragment offset and etcd revision to read through are returned.
 	var rollToOffset, readRev = pln.gatherSync(*req.Proposal)
 	c.Check(rollToOffset, gc.Equals, int64(890))
 	c.Check(readRev, gc.Equals, int64(4567))
@@ -246,7 +246,7 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 		// Next round.
 		_, _ = <-rm.brokerA.replReqCh, <-rm.brokerC.replReqCh
 
-		// Peer C response with a larger Etcd revision.
+		// Peer C response with a larger etcd revision.
 		rm.brokerA.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
 		rm.brokerC.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_WRONG_ROUTE, Route: &pb.Route{Revision: 4567}}
 
@@ -366,6 +366,46 @@ func (s *testServer) mustDial() *grpc.ClientConn {
 	var conn, err = s.dial(s.ctx)
 	s.c.Assert(err, gc.IsNil)
 	return conn
+}
+
+type mockServer struct {
+	*testServer
+
+	readCh      chan readReqServer
+	appendCh    chan pb.Broker_AppendServer
+	replicateCh chan pb.Broker_ReplicateServer
+	errCh       chan error
+}
+
+type readReqServer struct {
+	req    *pb.ReadRequest
+	stream pb.Broker_ReadServer
+}
+
+func newMockServer(c *gc.C, ctx context.Context) *mockServer {
+	var s = &mockServer{
+		readCh:      make(chan readReqServer),
+		appendCh:    make(chan pb.Broker_AppendServer),
+		replicateCh: make(chan pb.Broker_ReplicateServer),
+		errCh:       make(chan error),
+	}
+	s.testServer = newTestServer(c, ctx, s)
+	return s
+}
+
+func (s *mockServer) Read(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
+	s.readCh <- readReqServer{req, srv}
+	return <-s.errCh
+}
+
+func (s *mockServer) Append(srv pb.Broker_AppendServer) error {
+	s.appendCh <- srv
+	return <-s.errCh
+}
+
+func (s *mockServer) Replicate(srv pb.Broker_ReplicateServer) error {
+	s.replicateCh <- srv
+	return <-s.errCh
 }
 
 type mockPeer struct {

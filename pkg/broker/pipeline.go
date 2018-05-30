@@ -23,7 +23,7 @@ type pipeline struct {
 	recvErrs      []error
 
 	// readThroughRev, if set, indicates that a pipeline cannot be established
-	// until we have read through (and our Route reflects) this Etcd revision.
+	// until we have read through (and our Route reflects) this etcd revision.
 	readThroughRev int64
 }
 
@@ -62,7 +62,7 @@ func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, dial
 
 // start synchronizes all pipeline peers by scattering proposals and gathering
 // peer responses. On disagreement, start will iteratively update the proposal
-// if it's possible to do so and reach agreement. If peers disagree on Etcd
+// if it's possible to do so and reach agreement. If peers disagree on etcd
 // revision, start() will close the pipeline and set |readThroughRev|.
 func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
 	var proposal = pln.spool.Fragment.Fragment
@@ -97,7 +97,7 @@ func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
 		}
 
 		if readThroughRev != 0 {
-			// Peer has a non-equivalent Route at a later Etcd revision. Close the
+			// Peer has a non-equivalent Route at a later etcd revision. Close the
 			// pipeline, and set its |readThroughRev| as an indication to other RPCs
 			// of the revision which must first be read through before attempting
 			// another pipeline.
@@ -176,7 +176,7 @@ func (pln *pipeline) gatherOK() {
 }
 
 // gatherSync calls gather, extracts and returns a peer-advertised future offset
-// or Etcd revision to read through relative to |proposal|, and treats any other
+// or etcd revision to read through relative to |proposal|, and treats any other
 // non-OK response status as an error.
 func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThroughRev int64) {
 	pln.gather()
@@ -191,7 +191,7 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 			// Pass.
 		case pb.Status_WRONG_ROUTE:
 			if !resp.Route.Equivalent(&pln.route) && resp.Route.Revision > pln.route.Revision {
-				// Peer has a non-equivalent Route at a later Etcd revision.
+				// Peer has a non-equivalent Route at a later etcd revision.
 				if resp.Route.Revision > readThroughRev {
 					readThroughRev = resp.Route.Revision
 				}

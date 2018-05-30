@@ -98,7 +98,7 @@ func (r *replicaImpl) transition(ks *keyspace.KeySpace, item, assignment keyspac
 		if routeChanged && r.isPrimary() {
 			log.Error("convergence not yet implemented!")
 				// Issue an empty write to drive the quick convergence
-				// of replica Route announcements in Etcd.
+				// of replica Route announcements in etcd.
 				if conn, err := rtr.peerConn(rtr.id); err == nil {
 					go issueEmptyWrite(conn, name)
 				} else {
@@ -107,7 +107,7 @@ func (r *replicaImpl) transition(ks *keyspace.KeySpace, item, assignment keyspac
 			* /
 		}
 			/*
-		func (rtr *resolverImpl) getJournalSpec(name pb.Journal) (*pb.JournalSpec, bool) {
+		func (rtr *resolver) getJournalSpec(name pb.Journal) (*pb.JournalSpec, bool) {
 		rtr.ks.Mu.RLock()
 		defer rtr.ks.Mu.RUnlock()
 

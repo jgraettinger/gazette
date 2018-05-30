@@ -11,7 +11,7 @@ import (
 )
 
 // Append dispatches the BrokerServer.Append API.
-func (srv *Server) Append(stream pb.Broker_AppendServer) error {
+func (s *Service) Append(stream pb.Broker_AppendServer) error {
 	var req, err = stream.Recv()
 	if err != nil {
 		return err
@@ -19,25 +19,27 @@ func (srv *Server) Append(stream pb.Broker_AppendServer) error {
 		return err
 	}
 
-	for done := false; !done && err == nil; {
+	var rev int64 = 1
 
-		var res, status = srv.resolver.resolve(req.Journal, true, true)
-		if status != pb.Status_OK {
-			return stream.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
-		} else if res.replica == nil {
-			return proxyAppend(req, res.broker, stream, srv.dialer)
+	for done := false; !done && err == nil; {
+		// Wait for revision |rev| before attempting the RPC.
+		if err = s.resolver.waitForRevision(stream.Context(), rev); err != nil {
+			break
 		}
 
-		var rev, err = res.replica.serveAppend(req, stream, srv.dialer)
+		var res, status = s.resolver.resolve(req.Journal, true, true)
+		if status != pb.Status_OK {
+			err = stream.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
+			break
+		} else if res.replica == nil {
+			err = proxyAppend(req, res.broker, stream, s.dialer)
+			break
+		}
 
-		if err == nil {
-			if rev == 0 {
-				done = true
-			} else {
-				// A peer told us of a future & non-equivalent Route revision.
-				// Wait for that revision and attempt the RPC again.
-				err = srv.resolver.waitForRevision(stream.Context(), rev)
-			}
+		// Iff |err| == nil && |rev| != 0, a peer told us of a future & non-
+		// equivalent Route revision. Attempt the RPC again at that revision.
+		if rev, err = res.replica.serveAppend(req, stream, s.dialer); err == nil && rev == 0 {
+			done = true
 		}
 	}
 

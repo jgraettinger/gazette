@@ -11,16 +11,18 @@ import (
 )
 
 // Read dispatches the BrokerServer.Read API.
-func (srv *Server) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
+func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 	if err := req.Validate(); err != nil {
+		return err
+	} else if err = s.resolver.waitForRevision(stream.Context(), 1); err != nil {
 		return err
 	}
 
-	var res, status = srv.resolver.resolve(req.Journal, false, !req.DoNotProxy)
+	var res, status = s.resolver.resolve(req.Journal, false, !req.DoNotProxy)
 	if status != pb.Status_OK {
 		return stream.Send(&pb.ReadResponse{Status: status, Route: res.route})
 	} else if res.replica == nil {
-		return proxyRead(req, res.broker, stream, srv.dialer)
+		return proxyRead(req, res.broker, stream, s.dialer)
 	}
 
 	if err := res.replica.serveRead(req, stream); err != nil {

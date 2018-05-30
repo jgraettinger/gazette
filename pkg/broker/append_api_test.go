@@ -1,13 +1,8 @@
 package broker
 
 import (
-	"context"
 	"io"
-	"time"
 
-	"github.com/LiveRamp/gazette/pkg/keyspace"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
-	"github.com/coreos/etcd/clientv3"
 	gc "github.com/go-check/check"
 	"github.com/pkg/errors"
 
@@ -17,96 +12,126 @@ import (
 
 type AppendSuite struct{}
 
-func newEtcdContextFixture(c *gc.C, ctx context.Context, localAddr, peerAddr string) *EtcdContext {
-	var etcd = NewEtcdContext(etcdCluster.RandClient(), "/root")
+/*
+func newEtcdFixture(c *gc.C, peerAddr, localAddr string) (*clientv3.Client, *keyspace.KeySpace, pb.BrokerSpec) {
+	var etcd = etcdCluster.RandClient()
+	var ctx = context.Background()
 
-	var _, err = etcd.Client.Delete(ctx, "", clientv3.WithPrefix())
+	// Assert that previous tests have cleaned up after themselves.
+	var resp, err = etcd.Get(ctx, "", clientv3.WithFromKey())
 	c.Assert(err, gc.IsNil)
+	c.Assert(resp.Kvs, gc.HasLen, 0)
 
 	var peerID = pb.BrokerSpec_ID{Zone: "peer", Suffix: "broker"}
 	var localID = pb.BrokerSpec_ID{Zone: "local", Suffix: "broker"}
 
+	var ks = NewKeySpace("/root")
+
 	// Create peer first, making it the allocation coordinator.
-	// Our actual allocator won't make changes to our fixture.
-	c.Check(etcd.CreateBrokerSpec(ctx, 0, &pb.BrokerSpec{
-		Id:       peerID,
-		Endpoint: pb.Endpoint("http://" + peerAddr),
-	}), gc.IsNil)
-	c.Check(etcd.CreateBrokerSpec(ctx, 0, &pb.BrokerSpec{
+	// (Our actual allocator won't make changes to our fixture).
+	_, err = etcd.Put(ctx,
+		v3_allocator.MemberKey(ks, peerID.Zone, peerID.Suffix),
+		pb.BrokerSpec{
+			Id:       peerID,
+			Endpoint: pb.Endpoint("http://" + peerAddr),
+		}.MarshalString())
+
+	c.Assert(err, gc.IsNil)
+
+	var journals = map[pb.Journal][]pb.BrokerSpec_ID{
+		"a/journal":      {localID, peerID},
+		"remote/journal": {peerID, localID},
+	}
+	for journal, brokers := range journals {
+
+		// Create JournalSpec.
+		_, err = etcd.Put(ctx,
+			v3_allocator.ItemKey(ks, journal.String()),
+			pb.JournalSpec{
+				Name:        "a/journal",
+				Replication: 2,
+				Fragment: pb.JournalSpec_Fragment{
+					Length:           1024,
+					CompressionCodec: pb.CompressionCodec_SNAPPY,
+					RefreshInterval:  time.Second,
+				},
+			}.MarshalString())
+
+		c.Assert(err, gc.IsNil)
+
+		// Create broker assignments.
+		for slot, id := range brokers {
+			var key = v3_allocator.AssignmentKey(ks, v3_allocator.Assignment{
+				ItemID:       journal.String(),
+				MemberZone:   id.Zone,
+				MemberSuffix: id.Suffix,
+				Slot:         slot,
+			})
+
+			_, err = etcd.Put(ctx, key, "")
+			c.Assert(err, gc.IsNil)
+		}
+	}
+	return etcd, ks, pb.BrokerSpec{
 		Id:       localID,
 		Endpoint: pb.Endpoint("http://" + localAddr),
-	}), gc.IsNil)
-
-	var fragSpec = pb.JournalSpec_Fragment{
-		Length:           1024,
-		CompressionCodec: pb.CompressionCodec_SNAPPY,
-		RefreshInterval:  time.Second,
 	}
+}
 
-	c.Check(etcd.UpsertJournalSpec(ctx, keyspace.KeyValue{}, &pb.JournalSpec{
-		Name:        "a/journal",
-		Replication: 2,
-		Fragment:    fragSpec,
-	}), gc.IsNil)
-
-	c.Check(etcd.UpsertJournalSpec(ctx, keyspace.KeyValue{}, &pb.JournalSpec{
-		Name:        "remote/journal",
-		Replication: 2,
-		Fragment:    fragSpec,
-	}), gc.IsNil)
-
-	var keys = []string{
-		v3_allocator.AssignmentKey(etcd.KeySpace, v3_allocator.Assignment{
-			ItemID:       "a/journal",
-			MemberZone:   "local",
-			MemberSuffix: "broker",
-			Slot:         0,
-		}),
-		v3_allocator.AssignmentKey(etcd.KeySpace, v3_allocator.Assignment{
-			ItemID:       "a/journal",
-			MemberZone:   "peer",
-			MemberSuffix: "broker",
-			Slot:         1,
-		}),
-		v3_allocator.AssignmentKey(etcd.KeySpace, v3_allocator.Assignment{
-			ItemID:       "remote/journal",
-			MemberZone:   "peer",
-			MemberSuffix: "broker",
-			Slot:         0,
-		}),
-		v3_allocator.AssignmentKey(etcd.KeySpace, v3_allocator.Assignment{
-			ItemID:       "remote/journal",
-			MemberZone:   "local",
-			MemberSuffix: "broker",
-			Slot:         1,
-		}),
-	}
-
-	for _, key := range keys {
-		var resp, err = etcd.Client.Txn(ctx).
-			If(clientv3.Compare(clientv3.ModRevision(key), "=", 0)).
-			Then(clientv3.OpPut(key, "")).
-			Commit()
-		c.Check(err, gc.IsNil)
-		c.Check(resp.Succeeded, gc.Equals, true)
-	}
-
-	c.Check(etcd.KeySpace.Load(ctx, etcd.Client, 0), gc.IsNil)
-	return etcd
+func cleanupEtcdFixture(c *gc.C) {
+	var _, err = etcdCluster.RandClient().Delete(context.Background(), "", clientv3.WithFromKey())
+	c.Assert(err, gc.IsNil)
 }
 
 func (s *AppendSuite) TestAppend(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
+	var srv = newTestServer(c)
 	var peer = newMockPeer(c, ctx)
 
-	var resolver = newResolver(ks)
+	var etcd, ks, spec = newEtcdFixture(c, peer.addr(), srv.addr())
+	defer cleanupEtcdFixture(c)
 
-	var aServer = &Server{}
-	var srv = newTestServer(c, ctx, aServer)
+	var session, err = concurrency.NewSession(etcd, concurrency.WithContext(ctx))
+	c.Assert(err, gc.IsNil)
 
-	_ = newEtcdContextFixture(c, ctx, srv.addr(), peer.addr())
+	svc, err := NewService(spec, ks, etcd, session.Lease())
+	c.Assert(err, gc.IsNil)
+
+	go func() {
+		var client = pb.NewBrokerClient(srv.mustDial())
+		var stream, err = client.Append(ctx)
+		c.Assert(err, gc.IsNil)
+
+		stream.Send(&pb.AppendRequest{
+			Journal: "a/journal",
+		})
+
+		cancel()
+	}()
+
+	c.Check(svc.Run(ctx), gc.IsNil)
+}
+*/
+
+func (s *AppendSuite) TestServeAppend(c *gc.C) {
+	var rm = newReplicationMock(c)
+	var srv = newMockServer(c, rm.ctx)
+
+	defer rm.cancel()
+
+	var client, err = pb.NewBrokerClient(srv.mustDial())
+	c.Assert(err, gc.IsNil)
+
+	stream, err := client.Append(rm.ctx)
+	c.Assert(err, gc.IsNil)
+
+	var rep = newReplicaImpl()
+	rep.transition()
+
+	rep.serveAppend(nil, <-srv.appendCh, rm)
+
 }
 
 func (s *AppendSuite) TestAppenderCases(c *gc.C) {

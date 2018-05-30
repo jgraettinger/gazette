@@ -9,24 +9,18 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// Server implements pb.BrokerServer
-type Server struct {
-	resolver resolver
-	dialer   dialer
-}
-
 // Replicate dispatches the BrokerServer.Replicate API.
-func (srv *Server) Replicate(stream pb.Broker_ReplicateServer) error {
+func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 	var req, err = stream.Recv()
 	if err != nil {
 		return err
 	} else if err = req.Validate(); err != nil {
 		return err
-	} else if err = srv.resolver.waitForRevision(stream.Context(), req.Route.Revision); err != nil {
+	} else if err = s.resolver.waitForRevision(stream.Context(), req.Route.Revision); err != nil {
 		return err
 	}
 
-	var res, status = srv.resolver.resolve(req.Journal, false, false)
+	var res, status = s.resolver.resolve(req.Journal, false, false)
 	if status != pb.Status_OK {
 		return stream.Send(&pb.ReplicateResponse{Status: status, Route: res.route})
 	}

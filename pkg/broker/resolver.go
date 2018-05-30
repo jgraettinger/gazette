@@ -9,18 +9,17 @@ import (
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-// resolver enacts the routing decisions of an Etcd allocator into a updated,
+// resolver enacts the routing decisions of an etcd allocator into a updated,
 // local table of journals and their initialized replica instances. It powers
 // resolution of journals to local replicas or remote peers.
-type resolver interface {
-	// resolver resolves journals to a target broker resolution, which may be local
-	// or (if |mayProxy|) a proxy-able peer. If a resolution is not possible, a
-	// Status != Status_OK is returned indicating why resolution failed.
-	resolve(journal pb.Journal, requirePrimary bool, mayProxy bool) (resolution, pb.Status)
+type resolver struct {
+	ks *keyspace.KeySpace
+	id pb.BrokerSpec_ID
 
-	// waitForRevision blocks until the context is canceled, or the resolver's
-	// routing table reflects an Etcd revision >= |revision|.
-	waitForRevision(ctx context.Context, revision int64) error
+	newReplica func(pb.Journal) replica
+	replicas   map[pb.Journal]replica // Guarded by |mu|.
+	updateCh   chan struct{}          // Guarded by |mu|.
+	mu         sync.RWMutex
 }
 
 // resolution is the result of resolving a journal to a Route and
@@ -31,28 +30,21 @@ type resolution struct {
 	replica replica
 }
 
-type resolverImpl struct {
-	ks *keyspace.KeySpace
-	id pb.BrokerSpec_ID
-
-	newReplica func(pb.Journal) replica
-	replicas   map[pb.Journal]replica // Guarded by |mu|.
-	updateCh   chan struct{}          // Guarded by |mu|.
-	mu         sync.RWMutex
-}
-
-// newResolver builds and returns an empty, initialized resolverImpl.
-func newResolver(ks *keyspace.KeySpace, id pb.BrokerSpec_ID, newReplica func(pb.Journal) replica) *resolverImpl {
-	return &resolverImpl{
+// newResolver builds and returns an empty, initialized resolver.
+func newResolver(ks *keyspace.KeySpace, id pb.BrokerSpec_ID, newReplica func(pb.Journal) replica) *resolver {
+	return &resolver{
 		ks:         ks,
 		id:         id,
 		newReplica: newReplica,
-		replicas:   make(map[pb.Journal]replica),
+		replicas:   nil,
 		updateCh:   make(chan struct{}),
 	}
 }
 
-func (rtr *resolverImpl) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool) (res resolution, status pb.Status) {
+// resolve a journal to a target broker resolution, which may be local
+// or (if |mayProxy|) a proxy-able peer. If a resolution is not possible, a
+// Status != Status_OK is returned indicating why resolution failed.
+func (rtr *resolver) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool) (res resolution, status pb.Status) {
 	defer rtr.mu.RUnlock()
 	rtr.mu.RLock()
 
@@ -116,27 +108,34 @@ func (rtr *resolverImpl) resolve(journal pb.Journal, requirePrimary bool, mayPro
 	return
 }
 
-func (rtr *resolverImpl) waitForRevision(ctx context.Context, rev int64) error {
-	rtr.mu.RLock()
-	for rtr.ks.Header.Revision < rev {
+// waitForRevision blocks until the context is canceled, or the resolver's
+// routing table reflects an etcd revision >= |revision|.
+func (rtr *resolver) waitForRevision(ctx context.Context, rev int64) error {
+	for {
+		rtr.ks.Mu.RLock()
+		var curRev = rtr.ks.Header.Revision
+		rtr.ks.Mu.RUnlock()
+
+		if curRev >= rev {
+			return nil
+		}
+
+		rtr.mu.RLock()
 		var ch = rtr.updateCh
 		rtr.mu.RUnlock()
 
 		select {
 		case <-ch:
-			// KeySpace updated. Loop to check against |rev|.
+			continue // KeySpace updated. Check |rev| again.
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		rtr.mu.RLock()
 	}
-	rtr.mu.RUnlock()
-	return nil
 }
 
-// UpdateLocalItems is an instance of v3_allocator.LocalItemsCallback.
+// UpdateLocalItems is an implementation of v3_allocator.LocalItemsCallback.
 // It expects that KeySpace is already read-locked when called.
-func (rtr *resolverImpl) UpdateLocalItems(items []v3_allocator.LocalItem) {
+func (rtr *resolver) UpdateLocalItems(items []v3_allocator.LocalItem) {
 	rtr.mu.RLock()
 	var prev = rtr.replicas
 	rtr.mu.RUnlock()
@@ -159,7 +158,7 @@ func (rtr *resolverImpl) UpdateLocalItems(items []v3_allocator.LocalItem) {
 	}
 
 	// Obtain write-lock to atomically swap out the |replicas| map,
-	// and to signal any RPCs waiting on an Etcd update.
+	// and to signal any RPCs waiting on an etcd update.
 	rtr.mu.Lock()
 	rtr.replicas = next
 	close(rtr.updateCh)

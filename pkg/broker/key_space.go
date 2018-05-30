@@ -1,86 +1,23 @@
 package broker
 
 import (
-	"context"
 	"fmt"
-	"time"
-
-	"github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/mvcc/mvccpb"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
+	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/mvcc/mvccpb"
 )
-
-type EtcdContext struct {
-	Client   *clientv3.Client
-	KeySpace *keyspace.KeySpace
-}
 
 // NewBrokerKeySpace returns a KeySpace suitable for use with an Allocator.
 // It decodes allocator Items as JournalSpec messages, Members as BrokerSpecs,
 // and Assignments as Routes.
-func NewEtcdContext(etcd *clientv3.Client, prefix string) *EtcdContext {
-	return &EtcdContext{
-		Client:   etcd,
-		KeySpace: v3_allocator.NewAllocatorKeySpace(prefix, decoder{}),
-	}
+func NewKeySpace(prefix string) *keyspace.KeySpace {
+	return v3_allocator.NewAllocatorKeySpace(prefix, decoder{})
 }
 
-func (e *EtcdContext) CreateBrokerSpec(ctx context.Context, leaseID clientv3.LeaseID, spec *pb.BrokerSpec) error {
-	if err := spec.Validate(); err != nil {
-		return err
-	}
-	var key = v3_allocator.MemberKey(e.KeySpace, spec.Id.Zone, spec.Id.Suffix)
-
-	for {
-		var resp, err = e.Client.Txn(ctx).
-			If(clientv3.Compare(clientv3.ModRevision(key), "=", 0)).
-			Then(clientv3.OpPut(key, spec.MarshalString(), clientv3.WithLease(leaseID))).
-			Commit()
-
-		if err != nil {
-			return err
-		} else if resp.Succeeded {
-			return nil
-		}
-
-		log.WithField("key", key).Warn("waiting for a previous BrokerSpec to go away")
-
-		select {
-		case <-time.After(time.Second * 10):
-		// Pass
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-func (e *EtcdContext) UpdateBrokerSpec(ctx context.Context, kv keyspace.KeyValue, spec *pb.BrokerSpec) error {
-	var key = v3_allocator.MemberKey(e.KeySpace, spec.Id.Zone, spec.Id.Suffix)
-
-	if err := spec.Validate(); err != nil {
-		return err
-	} else if key != string(kv.Raw.Key) {
-		return fmt.Errorf("expected kv.Raw.Key to match MemberKey (%s vs %s)", string(kv.Raw.Key), key)
-	}
-
-	var resp, err = e.Client.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision)).
-		Then(clientv3.OpPut(key, spec.MarshalString(), clientv3.WithIgnoreLease())).
-		Commit()
-
-	if err != nil {
-		return err
-	} else if !resp.Succeeded {
-		return fmt.Errorf("update transaction failed")
-	} else {
-		return nil
-	}
-}
-
+/*
 func (e *EtcdContext) UpsertJournalSpec(ctx context.Context, kv keyspace.KeyValue, spec *pb.JournalSpec) error {
 	var key = v3_allocator.ItemKey(e.KeySpace, spec.Name.String())
 
@@ -103,7 +40,9 @@ func (e *EtcdContext) UpsertJournalSpec(ctx context.Context, kv keyspace.KeyValu
 		return nil
 	}
 }
+*/
 
+/*
 func (e *EtcdContext) UpdateAssignmentRoute(ctx context.Context, kv keyspace.KeyValue, spec *pb.Route) error {
 	var key = string(kv.Raw.Key)
 
@@ -126,6 +65,7 @@ func (e *EtcdContext) UpdateAssignmentRoute(ctx context.Context, kv keyspace.Key
 		return nil
 	}
 }
+*/
 
 // decoder is an instance of v3_allocator.AllocatorDecoder.
 type decoder struct{}
@@ -167,4 +107,14 @@ func (d decoder) DecodeAssignment(itemID, memberZone, memberSuffix string, slot 
 		return nil, err
 	}
 	return s, nil
+}
+
+func txnSucceeds(r *clientv3.TxnResponse, err error) error {
+	if err != nil {
+		return err
+	} else if !r.Succeeded {
+		return fmt.Errorf("transaction unexpectedly failed: %q", r.Responses)
+	} else {
+		return nil
+	}
 }
