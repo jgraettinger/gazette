@@ -66,9 +66,9 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	var allocator = &v3_allocator.Allocator{
-		KeySpace:           s.ks,
-		LocalKey:           s.specKey,
-		LocalItemsCallback: s.resolver.UpdateLocalItems,
+		KeySpace:      s.ks,
+		LocalKey:      s.specKey,
+		StateCallback: s.resolver.onAllocatorStateChange,
 	}
 	return allocator.Serve(ctx, s.etcd)
 }

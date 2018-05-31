@@ -133,18 +133,18 @@ func (rtr *resolver) waitForRevision(ctx context.Context, rev int64) error {
 	}
 }
 
-// UpdateLocalItems is an implementation of v3_allocator.LocalItemsCallback.
+// onAllocatorStateChange is an implementation of v3_allocator.StateCallback.
 // It expects that KeySpace is already read-locked when called.
-func (rtr *resolver) UpdateLocalItems(items []v3_allocator.LocalItem) {
+func (rtr *resolver) onAllocatorStateChange(state *v3_allocator.State) {
 	rtr.mu.RLock()
 	var prev = rtr.replicas
 	rtr.mu.RUnlock()
 
-	var next = make(map[pb.Journal]replica, len(items))
+	var next = make(map[pb.Journal]replica, len(state.LocalItems))
 	var route pb.Route
 
 	// Walk |items| and create or transition replicas as required to match.
-	for _, la := range items {
+	for _, la := range state.LocalItems {
 		var name = pb.Journal(la.Item.Decoded.(v3_allocator.Item).ID)
 
 		var assignment = la.Assignments[la.Index]

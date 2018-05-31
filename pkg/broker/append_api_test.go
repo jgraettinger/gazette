@@ -1,8 +1,13 @@
 package broker
 
 import (
+	"context"
 	"io"
+	"time"
 
+	"github.com/LiveRamp/gazette/pkg/keyspace"
+	"github.com/LiveRamp/gazette/pkg/v3.allocator"
+	"github.com/coreos/etcd/clientv3"
 	gc "github.com/go-check/check"
 	"github.com/pkg/errors"
 
@@ -12,13 +17,12 @@ import (
 
 type AppendSuite struct{}
 
-/*
-func newEtcdFixture(c *gc.C, peerAddr, localAddr string) (*clientv3.Client, *keyspace.KeySpace, pb.BrokerSpec) {
+func newEtcdFixture(c *gc.C, peerAddr string) (*clientv3.Client, *keyspace.KeySpace, pb.BrokerSpec_ID) {
 	var etcd = etcdCluster.RandClient()
 	var ctx = context.Background()
 
 	// Assert that previous tests have cleaned up after themselves.
-	var resp, err = etcd.Get(ctx, "", clientv3.WithFromKey())
+	var resp, err = etcd.Get(ctx, "", clientv3.WithPrefix())
 	c.Assert(err, gc.IsNil)
 	c.Assert(resp.Kvs, gc.HasLen, 0)
 
@@ -27,15 +31,20 @@ func newEtcdFixture(c *gc.C, peerAddr, localAddr string) (*clientv3.Client, *key
 
 	var ks = NewKeySpace("/root")
 
-	// Create peer first, making it the allocation coordinator.
-	// (Our actual allocator won't make changes to our fixture).
 	_, err = etcd.Put(ctx,
 		v3_allocator.MemberKey(ks, peerID.Zone, peerID.Suffix),
-		pb.BrokerSpec{
+		(&pb.BrokerSpec{
 			Id:       peerID,
 			Endpoint: pb.Endpoint("http://" + peerAddr),
-		}.MarshalString())
+		}).MarshalString())
+	c.Assert(err, gc.IsNil)
 
+	_, err = etcd.Put(ctx,
+		v3_allocator.MemberKey(ks, localID.Zone, localID.Suffix),
+		(&pb.BrokerSpec{
+			Id:       localID,
+			Endpoint: pb.Endpoint("http://[100::]"), // Black-hole address.
+		}).MarshalString())
 	c.Assert(err, gc.IsNil)
 
 	var journals = map[pb.Journal][]pb.BrokerSpec_ID{
@@ -47,15 +56,15 @@ func newEtcdFixture(c *gc.C, peerAddr, localAddr string) (*clientv3.Client, *key
 		// Create JournalSpec.
 		_, err = etcd.Put(ctx,
 			v3_allocator.ItemKey(ks, journal.String()),
-			pb.JournalSpec{
-				Name:        "a/journal",
+			(&pb.JournalSpec{
+				Name:        journal,
 				Replication: 2,
 				Fragment: pb.JournalSpec_Fragment{
 					Length:           1024,
 					CompressionCodec: pb.CompressionCodec_SNAPPY,
 					RefreshInterval:  time.Second,
 				},
-			}.MarshalString())
+			}).MarshalString())
 
 		c.Assert(err, gc.IsNil)
 
@@ -72,17 +81,17 @@ func newEtcdFixture(c *gc.C, peerAddr, localAddr string) (*clientv3.Client, *key
 			c.Assert(err, gc.IsNil)
 		}
 	}
-	return etcd, ks, pb.BrokerSpec{
-		Id:       localID,
-		Endpoint: pb.Endpoint("http://" + localAddr),
-	}
+
+	c.Assert(ks.Load(context.Background(), etcd, 0), gc.IsNil)
+	return etcd, ks, localID
 }
 
 func cleanupEtcdFixture(c *gc.C) {
-	var _, err = etcdCluster.RandClient().Delete(context.Background(), "", clientv3.WithFromKey())
+	var _, err = etcdCluster.RandClient().Delete(context.Background(), "", clientv3.WithPrefix())
 	c.Assert(err, gc.IsNil)
 }
 
+/*
 func (s *AppendSuite) TestAppend(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -116,22 +125,37 @@ func (s *AppendSuite) TestAppend(c *gc.C) {
 */
 
 func (s *AppendSuite) TestServeAppend(c *gc.C) {
-	var rm = newReplicationMock(c)
-	var srv = newMockServer(c, rm.ctx)
+	var ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
 
-	defer rm.cancel()
+	var peer = newMockPeer(c, ctx)
+	var _, ks, localID = newEtcdFixture(c, peer.addr())
+	defer cleanupEtcdFixture(c)
 
-	var client, err = pb.NewBrokerClient(srv.mustDial())
+	var allocState, err = v3_allocator.NewState(ks,
+		v3_allocator.MemberKey(ks, localID.Zone, localID.Suffix))
 	c.Assert(err, gc.IsNil)
 
-	stream, err := client.Append(rm.ctx)
+	var resolver = newResolver(ks, localID, func(journal pb.Journal) replica {
+		return newReplicaImpl()
+	})
+	resolver.onAllocatorStateChange(allocState)
+
+	var srv = newTestServer(c, ctx, &Service{resolver: resolver, dialer: newDialer(ks)})
+	brokerClient := pb.NewBrokerClient(srv.mustDial())
+
+	clientStream, err := brokerClient.Append(ctx)
 	c.Assert(err, gc.IsNil)
 
-	var rep = newReplicaImpl()
-	rep.transition()
+	c.Check(clientStream.Send(&pb.AppendRequest{Journal: "a/journal"}), gc.IsNil)
 
-	rep.serveAppend(nil, <-srv.appendCh, rm)
+	c.Check(<-peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{})
+	peer.replRespCh <- &pb.ReplicateResponse{}
 
+	c.Check(clientStream.Send(&pb.AppendRequest{Content: []byte("foobar")}), gc.IsNil)
+	c.Check(<-peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{})
+
+	c.Check(clientStream.CloseSend(), gc.IsNil)
 }
 
 func (s *AppendSuite) TestAppenderCases(c *gc.C) {

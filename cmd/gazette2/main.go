@@ -209,9 +209,9 @@ func main() {
 	}()
 
 	var alloc = v3_allocator.Allocator{
-		KeySpace:           ks,
-		LocalKey:           localKey,
-		LocalItemsCallback: b.UpdateLocalItems,
+		KeySpace:      ks,
+		LocalKey:      localKey,
+		StateCallback: b.UpdateLocalItems,
 	}
 
 	if err = alloc.Serve(ctx, etcd); err != nil {
