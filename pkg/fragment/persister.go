@@ -21,7 +21,7 @@ func NewPersister() *Persister {
 	return &Persister{doneCh: make(chan struct{})}
 }
 
-func (p *Persister) Persist(spool Spool) {
+func (p *Persister) SpoolComplete(spool Spool) {
 	if spool.Primary {
 		// Attempt to immediately persist the Spool.
 		go func() {

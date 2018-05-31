@@ -47,12 +47,6 @@ type replicaImpl struct {
 func newReplicaImpl() *replicaImpl {
 	var ctx, cancel = context.WithCancel(context.Background())
 
-	var spoolCh = make(chan fragment.Spool, 1)
-	spoolCh <- fragment.Spool{}
-
-	var pipelineCh = make(chan *pipeline, 1)
-	pipelineCh <- nil
-
 	return &replicaImpl{
 		// These are initialized on first transition().
 		journal:    keyspace.KeyValue{},
@@ -62,8 +56,8 @@ func newReplicaImpl() *replicaImpl {
 		ctx:        ctx,
 		cancelFunc: cancel,
 		index:      fragment.NewIndex(ctx),
-		spoolCh:    spoolCh,
-		pipelineCh: pipelineCh,
+		spoolCh:    make(chan fragment.Spool, 1),
+		pipelineCh: make(chan *pipeline, 1),
 	}
 }
 
@@ -92,8 +86,6 @@ func (r *replicaImpl) transition(ks *keyspace.KeySpace, item, assignment keyspac
 	clone.route = route.Copy()
 	clone.route.AttachEndpoints(ks)
 
-	return clone
-
 	/*
 		if routeChanged && r.isPrimary() {
 			log.Error("convergence not yet implemented!")
@@ -104,19 +96,36 @@ func (r *replicaImpl) transition(ks *keyspace.KeySpace, item, assignment keyspac
 				} else {
 					log.WithField("err", err).Error("failed to build loopback *grpc.ClientConn")
 				}
-			* /
-		}
-			/*
-		func (rtr *resolver) getJournalSpec(name pb.Journal) (*pb.JournalSpec, bool) {
-		rtr.ks.Mu.RLock()
-		defer rtr.ks.Mu.RUnlock()
-
-		if item, ok := v3_allocator.LookupItem(rtr.ks, name.String()); ok {
-		return item.ItemValue.(*pb.JournalSpec), true
-		}
-		return nil, false
 		}
 	*/
+
+	if r.journal.Raw.ModRevision != 0 {
+		return clone
+	}
+
+	// This is the first transition of this replicaImpl.
+	// Perform first-time initialization.
+
+	var journal = clone.spec().Name
+
+	go clone.index.WatchStores(func() (spec *pb.JournalSpec, ok bool) {
+		ks.Mu.RLock()
+		defer ks.Mu.RUnlock()
+
+		if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
+			return item.ItemValue.(*pb.JournalSpec), true
+		}
+		return nil, false
+	})
+
+	clone.spoolCh <- fragment.NewSpool(journal, struct {
+		*fragment.Index
+		*fragment.Persister
+	}{clone.index, nil})
+
+	clone.pipelineCh <- nil
+
+	return clone
 }
 
 func (r *replicaImpl) acquireSpool(ctx context.Context, waitForRemoteLoad bool) (spool fragment.Spool, err error) {

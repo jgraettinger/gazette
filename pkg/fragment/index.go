@@ -114,8 +114,8 @@ func (fi *Index) EndOffset() int64 {
 	return fi.set.EndOffset()
 }
 
-// AddLocal adds local Fragment |frag| to the index.
-func (fi *Index) AddLocal(frag Fragment) {
+// SpoolCommit adds local Spool Fragment |frag| to the index.
+func (fi *Index) SpoolCommit(frag Fragment) {
 	defer fi.mu.Unlock()
 	fi.mu.Lock()
 

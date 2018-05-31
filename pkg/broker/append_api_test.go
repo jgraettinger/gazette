@@ -1,13 +1,8 @@
 package broker
 
 import (
-	"context"
 	"io"
-	"time"
 
-	"github.com/LiveRamp/gazette/pkg/keyspace"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
-	"github.com/coreos/etcd/clientv3"
 	gc "github.com/go-check/check"
 	"github.com/pkg/errors"
 
@@ -17,145 +12,259 @@ import (
 
 type AppendSuite struct{}
 
-func newEtcdFixture(c *gc.C, peerAddr string) (*clientv3.Client, *keyspace.KeySpace, pb.BrokerSpec_ID) {
-	var etcd = etcdCluster.RandClient()
-	var ctx = context.Background()
-
-	// Assert that previous tests have cleaned up after themselves.
-	var resp, err = etcd.Get(ctx, "", clientv3.WithPrefix())
-	c.Assert(err, gc.IsNil)
-	c.Assert(resp.Kvs, gc.HasLen, 0)
-
-	var peerID = pb.BrokerSpec_ID{Zone: "peer", Suffix: "broker"}
-	var localID = pb.BrokerSpec_ID{Zone: "local", Suffix: "broker"}
-
-	var ks = NewKeySpace("/root")
-
-	_, err = etcd.Put(ctx,
-		v3_allocator.MemberKey(ks, peerID.Zone, peerID.Suffix),
-		(&pb.BrokerSpec{
-			Id:       peerID,
-			Endpoint: pb.Endpoint("http://" + peerAddr),
-		}).MarshalString())
-	c.Assert(err, gc.IsNil)
-
-	_, err = etcd.Put(ctx,
-		v3_allocator.MemberKey(ks, localID.Zone, localID.Suffix),
-		(&pb.BrokerSpec{
-			Id:       localID,
-			Endpoint: pb.Endpoint("http://[100::]"), // Black-hole address.
-		}).MarshalString())
-	c.Assert(err, gc.IsNil)
-
-	var journals = map[pb.Journal][]pb.BrokerSpec_ID{
-		"a/journal":      {localID, peerID},
-		"remote/journal": {peerID, localID},
-	}
-	for journal, brokers := range journals {
-
-		// Create JournalSpec.
-		_, err = etcd.Put(ctx,
-			v3_allocator.ItemKey(ks, journal.String()),
-			(&pb.JournalSpec{
-				Name:        journal,
-				Replication: 2,
-				Fragment: pb.JournalSpec_Fragment{
-					Length:           1024,
-					CompressionCodec: pb.CompressionCodec_SNAPPY,
-					RefreshInterval:  time.Second,
-				},
-			}).MarshalString())
-
+func (s *AppendSuite) TestSingle(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
 		c.Assert(err, gc.IsNil)
 
-		// Create broker assignments.
-		for slot, id := range brokers {
-			var key = v3_allocator.AssignmentKey(ks, v3_allocator.Assignment{
-				ItemID:       journal.String(),
-				MemberZone:   id.Zone,
-				MemberSuffix: id.Suffix,
-				Slot:         slot,
-			})
+		var resolution, _ = f.resolver.resolve("a/journal", false, false)
 
-			_, err = etcd.Put(ctx, key, "")
-			c.Assert(err, gc.IsNil)
-		}
-	}
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "a/journal"}), gc.IsNil)
+		s.expectPipelineSync(c, f.peer, resolution.route)
 
-	c.Assert(ks.Load(context.Background(), etcd, 0), gc.IsNil)
-	return etcd, ks, localID
+		c.Check(stream.Send(&pb.AppendRequest{Content: []byte("foo")}), gc.IsNil)
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{Content: []byte("foo"), ContentDelta: 0})
+		c.Check(stream.Send(&pb.AppendRequest{Content: []byte("bar")}), gc.IsNil)
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{Content: []byte("bar"), ContentDelta: 3})
+
+		// Close the Append RPC. Expect peer receives a commit request.
+		c.Check(stream.CloseSend(), gc.IsNil)
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
+			Proposal: &pb.Fragment{
+				Journal:          "a/journal",
+				CompressionCodec: pb.CompressionCodec_SNAPPY,
+				Begin:            0,
+				End:              6,
+				Sum:              sumOf("foobar"),
+			},
+			Acknowledge: true,
+		})
+		f.peer.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK} // Acknowledge.
+
+		resp, err := stream.CloseAndRecv()
+		c.Check(err, gc.IsNil)
+
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_OK,
+			Route:  resolution.route,
+			Commit: &pb.Fragment{
+				Journal: "a/journal",
+				Begin:   0,
+				End:     6,
+				Sum:     sumOf("foobar"),
+			},
+		})
+	})
 }
 
-func cleanupEtcdFixture(c *gc.C) {
-	var _, err = etcdCluster.RandClient().Delete(context.Background(), "", clientv3.WithPrefix())
-	c.Assert(err, gc.IsNil)
-}
+func (s *AppendSuite) TestPipeline(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var resolution, _ = f.resolver.resolve("a/journal", false, false)
 
-/*
-func (s *AppendSuite) TestAppend(c *gc.C) {
-	var ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
-
-	var srv = newTestServer(c)
-	var peer = newMockPeer(c, ctx)
-
-	var etcd, ks, spec = newEtcdFixture(c, peer.addr(), srv.addr())
-	defer cleanupEtcdFixture(c)
-
-	var session, err = concurrency.NewSession(etcd, concurrency.WithContext(ctx))
-	c.Assert(err, gc.IsNil)
-
-	svc, err := NewService(spec, ks, etcd, session.Lease())
-	c.Assert(err, gc.IsNil)
-
-	go func() {
-		var client = pb.NewBrokerClient(srv.mustDial())
-		var stream, err = client.Append(ctx)
+		// Build two raced Append requests.
+		stream1, err := f.client.Append(f.ctx)
 		c.Assert(err, gc.IsNil)
 
-		stream.Send(&pb.AppendRequest{
-			Journal: "a/journal",
+		stream2, err := f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
+
+		// |stream1| is sequenced first; expect it's replicated to the peer.
+		c.Check(stream1.Send(&pb.AppendRequest{Journal: "a/journal"}), gc.IsNil)
+		s.expectPipelineSync(c, f.peer, resolution.route)
+		c.Check(stream1.Send(&pb.AppendRequest{Content: []byte("foo")}), gc.IsNil)
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{Content: []byte("foo"), ContentDelta: 0})
+
+		c.Check(stream1.CloseSend(), gc.IsNil) // Expect client close triggers commit.
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
+			Proposal: &pb.Fragment{
+				Journal:          "a/journal",
+				CompressionCodec: pb.CompressionCodec_SNAPPY,
+				Begin:            0,
+				End:              3,
+				Sum:              sumOf("foo"),
+			},
+			Acknowledge: true,
 		})
 
-		cancel()
-	}()
+		// |stream2| follows. Expect it's also replicated, and no extra pipeline syncing is required.
+		c.Check(stream2.Send(&pb.AppendRequest{Journal: "a/journal"}), gc.IsNil)
+		c.Check(stream2.Send(&pb.AppendRequest{Content: []byte("bar")}), gc.IsNil)
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{Content: []byte("bar"), ContentDelta: 0})
+		c.Check(stream2.Send(&pb.AppendRequest{Content: []byte("baz")}), gc.IsNil)
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{Content: []byte("baz"), ContentDelta: 3})
 
-	c.Check(svc.Run(ctx), gc.IsNil)
-}
-*/
+		c.Check(stream2.CloseSend(), gc.IsNil) // Expect a commit.
+		c.Check(<-f.peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
+			Proposal: &pb.Fragment{
+				Journal:          "a/journal",
+				CompressionCodec: pb.CompressionCodec_SNAPPY,
+				Begin:            0,
+				End:              9,
+				Sum:              sumOf("foobarbaz"),
+			},
+			Acknowledge: true,
+		})
 
-func (s *AppendSuite) TestServeAppend(c *gc.C) {
-	var ctx, cancel = context.WithCancel(context.Background())
-	defer cancel()
+		// Peer finally acknowledges first commit. This unblocks |stream1|'s response.
+		f.peer.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
+		resp, err := stream1.CloseAndRecv()
+		c.Check(err, gc.IsNil)
 
-	var peer = newMockPeer(c, ctx)
-	var _, ks, localID = newEtcdFixture(c, peer.addr())
-	defer cleanupEtcdFixture(c)
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_OK,
+			Route:  resolution.route,
+			Commit: &pb.Fragment{
+				Journal: "a/journal",
+				Begin:   0,
+				End:     3,
+				Sum:     sumOf("foo"),
+			},
+		})
 
-	var allocState, err = v3_allocator.NewState(ks,
-		v3_allocator.MemberKey(ks, localID.Zone, localID.Suffix))
-	c.Assert(err, gc.IsNil)
+		// Peer acknowledges second commit. |stream2|'s response is unblocked.
+		f.peer.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
+		resp, err = stream2.CloseAndRecv()
+		c.Check(err, gc.IsNil)
 
-	var resolver = newResolver(ks, localID, func(journal pb.Journal) replica {
-		return newReplicaImpl()
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_OK,
+			Route:  resolution.route,
+			Commit: &pb.Fragment{
+				Journal: "a/journal",
+				Begin:   3,
+				End:     9,
+				Sum:     sumOf("barbaz"),
+			},
+		})
+
 	})
-	resolver.onAllocatorStateChange(allocState)
+}
 
-	var srv = newTestServer(c, ctx, &Service{resolver: resolver, dialer: newDialer(ks)})
-	brokerClient := pb.NewBrokerClient(srv.mustDial())
+func (s *AppendSuite) TestInvalidRequest(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
 
-	clientStream, err := brokerClient.Append(ctx)
-	c.Assert(err, gc.IsNil)
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "/invalid/name"}), gc.IsNil)
 
-	c.Check(clientStream.Send(&pb.AppendRequest{Journal: "a/journal"}), gc.IsNil)
+		_, err = stream.CloseAndRecv()
+		c.Check(err, gc.ErrorMatches, `rpc error: code = Unknown desc = Journal: cannot begin with '/' .*`)
+	})
+}
 
-	c.Check(<-peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{})
-	peer.replRespCh <- &pb.ReplicateResponse{}
+func (s *AppendSuite) TestNoPrimary(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
 
-	c.Check(clientStream.Send(&pb.AppendRequest{Content: []byte("foobar")}), gc.IsNil)
-	c.Check(<-peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{})
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "no/primary"}), gc.IsNil)
+		resp, err := stream.CloseAndRecv()
 
-	c.Check(clientStream.CloseSend(), gc.IsNil)
+		var resolution, _ = f.resolver.resolve("no/primary", false, true)
+
+		c.Check(err, gc.IsNil)
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_NO_JOURNAL_PRIMARY_BROKER,
+			Route:  resolution.route,
+		})
+	})
+}
+
+func (s *AppendSuite) TestNoBrokers(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
+
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "no/brokers"}), gc.IsNil)
+
+		resp, err := stream.CloseAndRecv()
+		c.Check(err, gc.IsNil)
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_NO_JOURNAL_BROKERS,
+			Route:  &pb.Route{Primary: -1},
+		})
+	})
+}
+
+func (s *AppendSuite) TestNotFound(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
+
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "no/brokers"}), gc.IsNil)
+
+		resp, err := stream.CloseAndRecv()
+		c.Check(err, gc.IsNil)
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_NO_JOURNAL_BROKERS,
+			Route:  &pb.Route{Primary: -1},
+		})
+	})
+
+}
+
+// TODO(johnny): Test startup retry case, whereby the peer returns a later revision.
+
+func (s *AppendSuite) expectPipelineSync(c *gc.C, peer *mockPeer, route *pb.Route) {
+	// Expect an initial request synchronizing the replication pipeline.
+	c.Check(<-peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
+		Journal: "a/journal",
+		Route:   route,
+		Proposal: &pb.Fragment{
+			Journal: "a/journal",
+		},
+		Acknowledge: true,
+	})
+	peer.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK} // Acknowledge.
+
+	// Expect a non-ack'd command to roll the Spool to the SNAPPY codec (configured in the fixture).
+	c.Check(<-peer.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
+		},
+	})
+}
+
+func (s *AppendSuite) TestProxySuccess(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
+
+		// Expect initial request is proxied to the peer.
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "remote/journal"}), gc.IsNil)
+		c.Check(<-f.peer.appendReqCh, gc.DeepEquals, &pb.AppendRequest{Journal: "remote/journal"})
+
+		// Expect client content and EOF are proxied.
+		c.Check(stream.Send(&pb.AppendRequest{Content: []byte("foobar")}), gc.IsNil)
+		c.Check(<-f.peer.appendReqCh, gc.DeepEquals, &pb.AppendRequest{Content: []byte("foobar")})
+
+		c.Check(stream.CloseSend(), gc.IsNil)
+		c.Check(<-f.peer.appendReqCh, gc.IsNil)
+
+		// Expect peer's response is proxied back to the client.
+		f.peer.appendRespCh <- &pb.AppendResponse{Commit: &pb.Fragment{Begin: 1234, End: 5678}}
+
+		resp, err := stream.CloseAndRecv()
+		c.Check(err, gc.IsNil)
+
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{Commit: &pb.Fragment{Begin: 1234, End: 5678}})
+	})
+}
+
+func (s *AppendSuite) TestProxyError(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
+
+		// Expect initial request is proxied to the peer.
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "remote/journal"}), gc.IsNil)
+		c.Check(<-f.peer.appendReqCh, gc.DeepEquals, &pb.AppendRequest{Journal: "remote/journal"})
+
+		f.peer.errCh <- errors.New("some kind of error")
+		_, err = stream.CloseAndRecv()
+		c.Check(err, gc.ErrorMatches, `rpc error: code = Unknown desc = some kind of error`)
+	})
 }
 
 func (s *AppendSuite) TestAppenderCases(c *gc.C) {

@@ -89,12 +89,6 @@ func (r *replicaImpl) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer) e
 			return nil
 		}
 
-		// Don't send metadata other than Offset in chunks 2..N of the Fragment.
-		*resp = pb.ReadResponse{
-			Status: pb.Status_OK,
-			Offset: resp.Offset,
-		}
-
 		if file != nil {
 			reader = ioutil.NopCloser(io.NewSectionReader(
 				file, resp.Offset-resp.Fragment.Begin, resp.Fragment.End-resp.Offset))
@@ -103,6 +97,12 @@ func (r *replicaImpl) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer) e
 			//return err
 			// }
 			panic("not yet implemented")
+		}
+
+		// Don't send metadata other than Offset in chunks 2..N of the Fragment.
+		*resp = pb.ReadResponse{
+			Status: pb.Status_OK,
+			Offset: resp.Offset,
 		}
 
 		// Loop over chunks read from |reader|, sending each to the client.

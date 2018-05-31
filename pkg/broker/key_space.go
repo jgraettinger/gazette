@@ -17,56 +17,6 @@ func NewKeySpace(prefix string) *keyspace.KeySpace {
 	return v3_allocator.NewAllocatorKeySpace(prefix, decoder{})
 }
 
-/*
-func (e *EtcdContext) UpsertJournalSpec(ctx context.Context, kv keyspace.KeyValue, spec *pb.JournalSpec) error {
-	var key = v3_allocator.ItemKey(e.KeySpace, spec.Name.String())
-
-	if err := spec.Validate(); err != nil {
-		return err
-	} else if kv.Raw.Key != nil && key != string(kv.Raw.Key) {
-		return fmt.Errorf("expected kv.Raw.Key to match ItemKey (%s vs %s)", string(kv.Raw.Key), key)
-	}
-
-	var resp, err = e.Client.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision)).
-		Then(clientv3.OpPut(key, spec.MarshalString())).
-		Commit()
-
-	if err != nil {
-		return err
-	} else if !resp.Succeeded {
-		return fmt.Errorf("upsert transaction failed")
-	} else {
-		return nil
-	}
-}
-*/
-
-/*
-func (e *EtcdContext) UpdateAssignmentRoute(ctx context.Context, kv keyspace.KeyValue, spec *pb.Route) error {
-	var key = string(kv.Raw.Key)
-
-	if key == "" {
-		panic("invalid KeyValue")
-	} else if err := spec.Validate(); err != nil {
-		return err
-	}
-
-	var resp, err = e.Client.Txn(ctx).
-		If(clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision)).
-		Then(clientv3.OpPut(key, spec.MarshalString(), clientv3.WithIgnoreLease())).
-		Commit()
-
-	if err != nil {
-		return err
-	} else if !resp.Succeeded {
-		return fmt.Errorf("update transaction failed")
-	} else {
-		return nil
-	}
-}
-*/
-
 // decoder is an instance of v3_allocator.AllocatorDecoder.
 type decoder struct{}
 
@@ -118,3 +68,53 @@ func txnSucceeds(r *clientv3.TxnResponse, err error) error {
 		return nil
 	}
 }
+
+/*
+func (e *EtcdContext) UpsertJournalSpec(ctx context.Context, kv keyspace.KeyValue, spec *pb.JournalSpec) error {
+	var key = v3_allocator.ItemKey(e.KeySpace, spec.Name.String())
+
+	if err := spec.Validate(); err != nil {
+		return err
+	} else if kv.Raw.Key != nil && key != string(kv.Raw.Key) {
+		return fmt.Errorf("expected kv.Raw.Key to match ItemKey (%s vs %s)", string(kv.Raw.Key), key)
+	}
+
+	var resp, err = e.Client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision)).
+		Then(clientv3.OpPut(key, spec.MarshalString())).
+		Commit()
+
+	if err != nil {
+		return err
+	} else if !resp.Succeeded {
+		return fmt.Errorf("upsert transaction failed")
+	} else {
+		return nil
+	}
+}
+*/
+
+/*
+func (e *EtcdContext) UpdateAssignmentRoute(ctx context.Context, kv keyspace.KeyValue, spec *pb.Route) error {
+	var key = string(kv.Raw.Key)
+
+	if key == "" {
+		panic("invalid KeyValue")
+	} else if err := spec.Validate(); err != nil {
+		return err
+	}
+
+	var resp, err = e.Client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision)).
+		Then(clientv3.OpPut(key, spec.MarshalString(), clientv3.WithIgnoreLease())).
+		Commit()
+
+	if err != nil {
+		return err
+	} else if !resp.Succeeded {
+		return fmt.Errorf("update transaction failed")
+	} else {
+		return nil
+	}
+}
+*/

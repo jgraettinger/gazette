@@ -368,46 +368,6 @@ func (s *testServer) mustDial() *grpc.ClientConn {
 	return conn
 }
 
-type mockServer struct {
-	*testServer
-
-	readCh      chan readReqServer
-	appendCh    chan pb.Broker_AppendServer
-	replicateCh chan pb.Broker_ReplicateServer
-	errCh       chan error
-}
-
-type readReqServer struct {
-	req    *pb.ReadRequest
-	stream pb.Broker_ReadServer
-}
-
-func newMockServer(c *gc.C, ctx context.Context) *mockServer {
-	var s = &mockServer{
-		readCh:      make(chan readReqServer),
-		appendCh:    make(chan pb.Broker_AppendServer),
-		replicateCh: make(chan pb.Broker_ReplicateServer),
-		errCh:       make(chan error),
-	}
-	s.testServer = newTestServer(c, ctx, s)
-	return s
-}
-
-func (s *mockServer) Read(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
-	s.readCh <- readReqServer{req, srv}
-	return <-s.errCh
-}
-
-func (s *mockServer) Append(srv pb.Broker_AppendServer) error {
-	s.appendCh <- srv
-	return <-s.errCh
-}
-
-func (s *mockServer) Replicate(srv pb.Broker_ReplicateServer) error {
-	s.replicateCh <- srv
-	return <-s.errCh
-}
-
 type mockPeer struct {
 	*testServer
 
