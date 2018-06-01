@@ -201,6 +201,8 @@ message ReadRequest {
   // If metadata_only is true, the broker will respond with Journal and
   // Fragment metadata but not content.
   bool metadata_only = 5;
+  // If set, minimum EtcdCursor under which the request should be processed.
+  EtcdCursor etcd = 6;
 }
 
 message ReadResponse {
@@ -219,6 +221,8 @@ message ReadResponse {
   string fragment_url = 6;
   // Content of the read.
   bytes content = 7;
+  // Etcd cursor of the broker which generated the response.
+  EtcdCursor etcd = 8;
 }
 
 // There are two types of AppendRequest:
@@ -258,6 +262,9 @@ message ReplicateRequest {
   bytes content = 5;
   // Delta offset of |content| relative to current Fragment |end|.
   int64 content_delta = 6;
+
+  etcdserverpb.ResponseHeader etcd = 7;
+
 }
 
 message ReplicateResponse {
@@ -288,6 +295,25 @@ message Route {
   // Endpoints of each Route Broker. If not empty, |endpoints| has the same
   // length and order as |brokers|, and captures the endpoint of each one.
   repeated string endpoints = 4 [(gogoproto.casttype) = "Endpoint"];
+}
+
+// EtcdCursor represents the effective Etcd ClusterId and Revision under which
+// a Gazette broker is operating in its processing of requests and responses.
+// Its inclusion allows brokers to reason about relative "happened before"
+// Revision ordering of apparent routing conflicts in proxied or replicated
+// requests, as well as enabling sanity checks over equality of Etcd ClusterId
+// (and not, for example, allowing for split-brain scenarios where different
+// brokers are working off of different Etcd clusters). EtcdHeader
+// is isomorphic to Etcd's etcdserverpb.ResponseHeader.
+message EtcdCursor {
+  // cluster_id is the ID of the cluster.
+  uint64 cluster_id = 1;
+  // member_id is the ID of the member.
+  uint64 member_id = 2;
+  // revision is the Etcd key-value store revision when the request was applied.
+  int64 revision = 3;
+  // raft_term is the raft term when the request was applied.
+  uint64 raft_term = 4;
 }
 
 service Broker {

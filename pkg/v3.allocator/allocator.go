@@ -25,136 +25,109 @@ import (
 // Allocator is responsible for assigning a collection of Items, represented
 // under an Etcd Allocator KeySpace, across a number of Members, also
 // captured within that KeySpace.
-type Allocator struct {
-	KeySpace      *keyspace.KeySpace
-	LocalKey      string // Unique MemberKey of this Allocator instance.
-	StateCallback        // Callback invoked with each updated State.
-
-	// testHook is an optional testing hook, invoked after each convergence round.
-	testHook func(round int, isIdle bool)
+type Allocator interface {
+	KeySpace() *keyspace.KeySpace
+	LocalKey() string    // Unique MemberKey of this Allocator instance.
+	OnAllocState(*State) // Callback invoked with each updated State.
 }
 
-// StateCallback is periodically invoked by Allocator to inform
-// the client of the current State, including current Item Assignments
-// of the local instance. Note that State member fields must not be
-// retained or referenced outside of this callback.
-type StateCallback func(*State)
+type testHook interface {
+	// testHook is an optional testing hook, invoked after each convergence round.
+	testHook(round int, isIdle bool)
+}
 
-// Serve loads and watches the Allocator KeySpace, and if this Allocator
-// instance is the current leader, performs scheduling rounds to ensure
-// the allocation of all Items to Members. Serve exits on an unrecoverable
+// Allocate observes the Allocator KeySpace, and if this Allocator instance is
+// the current leader, performs reactive scheduling rounds to maintain the
+// allocation of all Items to Members. Allocate exits on an unrecoverable
 // error, or if:
 //   * The local Member has an ItemLimit of Zero, AND
 //   * No Assignments to the current Member remain.
 //
-// Eg, Serve should be gracefully stopped by updating Allocator.LocalKey's
-// ItemLimit to zero (perhaps as part of a SIGTERM signal handler) and then
-// waiting for Serve to exit, which it will once all of this instance's
-// Assignments have been re-assigned to other Members.
-func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
-	// Load initial state of KeySpace.
-	if err := a.KeySpace.Load(ctx, client, 0); err != nil {
-		return err
-	}
+// Eg, Allocate should be gracefully stopped by updating the ItemLimit of the
+// Member identified by Allocator.LocalKey() to zero (perhaps as part of a
+// SIGTERM signal handler) and then waiting for Allocate to return, which it
+// will once all instance Assignments have been re-assigned to other Members.
+func Allocate(ctx context.Context, a Allocator, client *clientv3.Client) error {
+	var ks, localKey = a.KeySpace(), a.LocalKey()
 
-	var failErr error
-	var signalCh = make(chan struct{})
+	ks.Mu.RLock()
+	defer ks.Mu.RUnlock()
 
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithCancel(ctx)
+	// flowNetwork is local to a single pass of the scheduler, but we retain a
+	// single instance and re-use it each iteration to reduce allocation.
+	var fn = new(flowNetwork)
+	// The leader runs push/relabel to re-compute a |desired| network only when
+	// the State |NetworkHash| changes. Otherwise, it incrementally converges
+	// towards the previous solution, which is still a valid maximum assignment.
+	// This caching is both more efficient, and also mitigates the impact of
+	// small instabilities in the prioritized push/relabel solution.
+	var desired []Assignment
+	var lastNetworkHash uint64
 
-	// Begin a goroutine which will run on each signaled KeySpace update. It will
-	// minimally call back with local Assignments. If this Member is the current
-	// leader, it will also perform a scheduling iteration.
-	go func() {
-		a.KeySpace.Mu.RLock()
+	for round := 0; true; {
+		var as, err = NewState(ks, localKey)
+		if err != nil {
+			return err // Non-recoverable.
+		} else if as.shouldExit() {
+			return nil
+		}
 
-		defer cancel()
-		defer a.KeySpace.Mu.RUnlock()
+		a.OnAllocState(as)
+		as.debugLog() // TODO(johnny): Remove when the Allocator is further along in integration testing.
 
-		// flowNetwork is local to a single pass of the scheduler, but we retain a
-		// single instance and re-use it each iteration to reduce allocation.
-		var fn = new(flowNetwork)
 		// Response of the last transaction we applied. We'll ensure we've minimally
 		// watched through its revision before driving further action.
 		var txnResponse *clientv3.TxnResponse
-		// The leader runs push/relabel to re-compute a |desired| network only when
-		// the State |NetworkHash| changes. Otherwise, it incrementally converges
-		// towards the previous solution, which is still a valid maximum assignment.
-		// This caching is both more efficient, and also mitigates the impact of
-		// small instabilities in the prioritized push/relabel solution.
-		var desired []Assignment
-		var lastNetworkHash uint64
 
-		for round := 0; true; {
-			var as, err = NewState(a.KeySpace, a.LocalKey)
+		if as.isLeader() {
+
+			// Do we need to re-solve for a maximum assignment?
+			if as.NetworkHash != lastNetworkHash {
+				lastNetworkHash = as.NetworkHash
+
+				// Build a prioritized flowNetwork and solve for maximum flow.
+				fn.init(as)
+				push_relabel.FindMaxFlow(&fn.source, &fn.sink)
+
+				// Extract desired max-flow Assignments for each Item.
+				desired = desired[:0]
+				for item := range as.Items {
+					desired = extractItemFlow(as, fn, item, desired)
+				}
+			}
+
+			// Use batched transactions to amortize the network cost of Etcd updates,
+			// and re-verify our Member key with each flush to ensure we're still leader.
+			var txn = newBatchedTxn(ctx, client,
+				modRevisionUnchanged(as.Members[as.LocalMemberInd]))
+
+			// Converge the current state towards |desired|.
+			if err = converge(txn, as, desired); err == nil {
+				txnResponse, err = txn.Commit()
+			}
+
 			if err != nil {
-				failErr = err // Treat as a non-recoverable error.
-				break
-			} else if as.shouldExit() {
-				break
-			}
-
-			var revision = a.KeySpace.Header.Revision
-			a.StateCallback(as)
-
-			// TODO(johnny): Remove when the Allocator is further along in integration testing.
-			as.debugLog()
-
-			if as.isLeader() && (txnResponse == nil || revision >= txnResponse.Header.Revision) {
-
-				// Do we need to re-solve for a maximum assignment?
-				if as.NetworkHash != lastNetworkHash {
-					lastNetworkHash = as.NetworkHash
-
-					// Build a prioritized flowNetwork and solve for maximum flow.
-					fn.init(as)
-					push_relabel.FindMaxFlow(&fn.source, &fn.sink)
-
-					// Extract desired max-flow Assignments for each Item.
-					desired = desired[:0]
-					for item := range as.Items {
-						desired = extractItemFlow(as, fn, item, desired)
-					}
+				log.WithFields(log.Fields{"err": err, "round": round, "rev": ks.Header.Revision}).
+					Warn("converge iteration failed (will retry)")
+			} else {
+				if th, ok := a.(testHook); ok {
+					th.testHook(round, ks.Header.Revision == txnResponse.Header.Revision)
 				}
-
-				// Use batched transactions to amortize the network cost of Etcd updates,
-				// and re-verify our Member key with each flush to ensure we're still leader.
-				var txn = newBatchedTxn(ctx, client,
-					modRevisionUnchanged(as.Members[as.LocalMemberInd]))
-
-				// Converge the current state towards |desired|.
-				if err = converge(txn, as, desired); err == nil {
-					txnResponse, err = txn.Commit()
-				}
-
-				if err != nil {
-					log.WithFields(log.Fields{"err": err, "round": round, "rev": revision}).
-						Warn("converge iteration failed (will retry)")
-				} else {
-					if a.testHook != nil {
-						a.testHook(round, revision == txnResponse.Header.Revision)
-					}
-					round++
-				}
-			}
-
-			// Await the next KeySpace change.
-			a.KeySpace.Mu.RUnlock()
-			var _, ok = <-signalCh
-			a.KeySpace.Mu.RLock()
-
-			if !ok {
-				break
+				round++
 			}
 		}
-	}()
 
-	// Blocking watching KeySpace until |cancel| is called, while the above goroutine runs.
-	if err := a.KeySpace.Watch(ctx, client, signalCh); err != context.Canceled {
-		failErr = err
+		// Await the next KeySpace change. If we completed a transaction,
+		// ensure we read through its revision before iterating again.
+		var next = ks.Header.Revision + 1
+
+		if txnResponse != nil && txnResponse.Header.Revision > next {
+			next = txnResponse.Header.Revision
+		}
+		if err = ks.WaitForRevision(ctx, next); err != nil {
+			return err
+		}
 	}
-	return failErr
 }
 
 // converge identifies and applies incremental changes which bring the current

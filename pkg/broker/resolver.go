@@ -1,7 +1,6 @@
 package broker
 
 import (
-	"context"
 	"sync"
 
 	"github.com/LiveRamp/gazette/pkg/keyspace"
@@ -18,9 +17,14 @@ type resolver struct {
 
 	newReplica func(pb.Journal) replica
 	replicas   map[pb.Journal]replica // Guarded by |mu|.
-	updateCh   chan struct{}          // Guarded by |mu|.
 	mu         sync.RWMutex
+
+	*keyspace.RevCond
+	broadcast func(revision int64)
 }
+
+func (r *resolver) KeySpace() *keyspace.KeySpace { return r.ks }
+func (r *resolver) LocalKey() string             { return v3_allocator.MemberKey(r.ks, r.id.Zone, r.id.Suffix) }
 
 // resolution is the result of resolving a journal to a Route and
 // specific BrokerSpec_ID, which (if local) will have a replica instance.
@@ -37,7 +41,6 @@ func newResolver(ks *keyspace.KeySpace, id pb.BrokerSpec_ID, newReplica func(pb.
 		id:         id,
 		newReplica: newReplica,
 		replicas:   nil,
-		updateCh:   make(chan struct{}),
 	}
 }
 
@@ -108,34 +111,9 @@ func (rtr *resolver) resolve(journal pb.Journal, requirePrimary bool, mayProxy b
 	return
 }
 
-// waitForRevision blocks until the context is canceled, or the resolver's
-// routing table reflects an etcd revision >= |revision|.
-func (rtr *resolver) waitForRevision(ctx context.Context, rev int64) error {
-	for {
-		rtr.ks.Mu.RLock()
-		var curRev = rtr.ks.Header.Revision
-		rtr.ks.Mu.RUnlock()
-
-		if curRev >= rev {
-			return nil
-		}
-
-		rtr.mu.RLock()
-		var ch = rtr.updateCh
-		rtr.mu.RUnlock()
-
-		select {
-		case <-ch:
-			continue // KeySpace updated. Check |rev| again.
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
 // onAllocatorStateChange is an implementation of v3_allocator.StateCallback.
 // It expects that KeySpace is already read-locked when called.
-func (rtr *resolver) onAllocatorStateChange(state *v3_allocator.State) {
+func (rtr *resolver) OnAllocState(state *v3_allocator.State) {
 	rtr.mu.RLock()
 	var prev = rtr.replicas
 	rtr.mu.RUnlock()
@@ -161,8 +139,7 @@ func (rtr *resolver) onAllocatorStateChange(state *v3_allocator.State) {
 	// and to signal any RPCs waiting on an etcd update.
 	rtr.mu.Lock()
 	rtr.replicas = next
-	close(rtr.updateCh)
-	rtr.updateCh = make(chan struct{})
+	rtr.broadcast(state.KS.Header.Revision)
 	rtr.mu.Unlock()
 
 	// Cancel any prior replicas not included in |items|.

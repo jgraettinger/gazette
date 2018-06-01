@@ -23,7 +23,7 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 
 	for done := false; !done && err == nil; {
 		// Wait for revision |rev| before attempting the RPC.
-		if err = s.resolver.waitForRevision(stream.Context(), rev); err != nil {
+		if err = s.resolver.WaitForRevision(stream.Context(), rev); err != nil {
 			break
 		}
 

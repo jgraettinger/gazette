@@ -1,51 +1,23 @@
-// Major pieces:
-//
-//  Fragment - adapts protocol.Fragment with BackingFile
-//  FragmentSet
-//  FragmentIndex
-//  FragmentSource - interface with Watch() function for callbacks
-
 package broker
 
 import (
-	"context"
-	"time"
-
-	log "github.com/sirupsen/logrus"
-
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
-	"github.com/coreos/etcd/clientv3"
 )
 
 type Service struct {
 	dialer   dialer
-	etcd     *clientv3.Client
-	ks       *keyspace.KeySpace
-	lease    clientv3.LeaseID
 	resolver *resolver
-	spec     pb.BrokerSpec
-	specKey  string
-	stopCh   chan struct{}
 }
 
-func NewService(spec pb.BrokerSpec, ks *keyspace.KeySpace, etcd *clientv3.Client, lease clientv3.LeaseID) (*Service, error) {
-	if err := spec.Validate(); err != nil {
-		return nil, err
-	}
+func NewService(ks *keyspace.KeySpace, id pb.BrokerSpec_ID) (*Service, error) {
 	return &Service{
 		dialer:   newDialer(ks),
-		etcd:     etcd,
-		ks:       ks,
-		lease:    lease,
-		resolver: newResolver(ks, spec.Id, func(pb.Journal) replica { return newReplicaImpl() }),
-		spec:     spec,
-		specKey:  v3_allocator.MemberKey(ks, spec.Id.Zone, spec.Id.Suffix),
-		stopCh:   make(chan struct{}),
+		resolver: newResolver(ks, id, func(pb.Journal) replica { return newReplicaImpl() }),
 	}, nil
 }
 
+/*
 func (s *Service) Run(ctx context.Context) error {
 	for {
 		if err := s.createSpec(); err == nil {
@@ -98,3 +70,5 @@ func (s *Service) createSpec() error {
 			Then(clientv3.OpPut(s.specKey, s.spec.MarshalString(), clientv3.WithLease(s.lease))).
 			Commit())
 }
+
+*/

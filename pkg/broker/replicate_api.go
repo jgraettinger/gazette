@@ -16,7 +16,7 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 		return err
 	} else if err = req.Validate(); err != nil {
 		return err
-	} else if err = s.resolver.waitForRevision(stream.Context(), req.Route.Revision); err != nil {
+	} else if err = s.resolver.WaitForRevision(stream.Context(), req.Route.Revision); err != nil {
 		return err
 	}
 

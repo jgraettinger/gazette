@@ -14,7 +14,7 @@ import (
 func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 	if err := req.Validate(); err != nil {
 		return err
-	} else if err = s.resolver.waitForRevision(stream.Context(), 1); err != nil {
+	} else if err = s.resolver.WaitForRevision(stream.Context(), 1); err != nil {
 		return err
 	}
 

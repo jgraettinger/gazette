@@ -33,9 +33,12 @@ type KeySpace struct {
 	KeyValues
 	// Mu guards Header and KeyValues. It must be read-locked before either is accessed.
 	Mu sync.RWMutex
+	// RevCond over the KeySpace.
+	*RevCond
 
-	decode KeyValueDecoder
-	next   KeyValues
+	broadcast func(revision int64)
+	decode    KeyValueDecoder // Client-provided KeySpace decoder.
+	next      KeyValues       // Reusable buffer for next, amortized KeyValues update.
 }
 
 // NewKeySpace returns a KeySpace with the configured key |prefix| and |decoder|.
@@ -46,7 +49,13 @@ func NewKeySpace(prefix string, decoder KeyValueDecoder) *KeySpace {
 	if path.Clean(prefix) != prefix {
 		panic("expected prefix to be a cleaned path")
 	}
-	return &KeySpace{Root: prefix, decode: decoder}
+	var ks = &KeySpace{
+		Root: prefix,
+
+		decode: decoder,
+	}
+	ks.RevCond, ks.broadcast = NewRevCond(&ks.Mu)
+	return ks
 }
 
 // Load loads a snapshot of the prefixed KeySpace at revision |rev|,
@@ -82,22 +91,13 @@ func (ks *KeySpace) Load(ctx context.Context, client *clientv3.Client, rev int64
 			}
 		}
 	}
+	ks.broadcast(ks.Header.Revision)
 	return nil
 }
 
-// Watch a loaded KeySpace and apply updates as they are received. If
-// non-nil, Watch will deliver signals to |signalCh| such that |signalCh| is
-// selectable iff one or more updates have been applied since the last signal
-// delivery. |signalCh| is closed when Watch exits, and it's recommended but
-// not required that |signalCh| be unbuffered.
-func (ks *KeySpace) Watch(ctx context.Context, client clientv3.Watcher, signalCh chan<- struct{}) error {
+// Watch a loaded KeySpace and apply updates as they are received.
+func (ks *KeySpace) Watch(ctx context.Context, client clientv3.Watcher) error {
 	var watchCh clientv3.WatchChan
-
-	// Note that nil channels never select. Leverage this to toggle |signalCh| below.
-	var maybeSignalCh chan<- struct{}
-	if signalCh != nil {
-		defer close(signalCh)
-	}
 
 	ks.Mu.RLock()
 	// Begin a new long-lived, auto-retried Watch. Note this is very similar to
@@ -137,16 +137,12 @@ func (ks *KeySpace) Watch(ctx context.Context, client clientv3.Watcher, signalCh
 				return err
 			}
 			responses = responses[:0]
-			maybeSignalCh = signalCh
-		case maybeSignalCh <- struct{}{}:
-			maybeSignalCh = nil
 		}
 	}
 }
 
-// apply applies Etcd WatchResponses to the KeySpace. It returns only
-// unrecoverable Watch errors; inconsistencies in the updates themselves
-// are logged.
+// apply Etcd WatchResponses to the KeySpace. It returns only unrecoverable
+// Watch errors; inconsistencies in the updates themselves are logged.
 func (ks *KeySpace) apply(responses []clientv3.WatchResponse) error {
 	for _, r := range responses {
 		if err := patchHeader(&ks.Header, r.Header, false); err != nil {
@@ -194,6 +190,7 @@ func (ks *KeySpace) apply(responses []clientv3.WatchResponse) error {
 
 	ks.Mu.Lock()
 	ks.KeyValues, ks.next = next, ks.KeyValues[:0]
+	ks.broadcast(ks.Header.Revision)
 	ks.Mu.Unlock()
 
 	return nil
