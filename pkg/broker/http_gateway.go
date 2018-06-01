@@ -22,12 +22,13 @@ type HTTPGateway struct {
 	decoder  *schema.Decoder
 }
 
-func NewHTTPGateway(resolver resolver) *HTTPGateway {
+func NewHTTPGateway(resolver resolver, dialer dialer) *HTTPGateway {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
 
 	return &HTTPGateway{
 		resolver: resolver,
+		dialer:   dialer,
 		decoder:  decoder,
 	}
 }
@@ -253,7 +254,7 @@ func (h *HTTPGateway) writeReadResponse(w http.ResponseWriter, r *http.Request, 
 		w.WriteHeader(http.StatusPartialContent) // 206.
 	case pb.Status_JOURNAL_NOT_FOUND:
 		http.Error(w, resp.Status.String(), http.StatusNotFound) // 404.
-	case pb.Status_NO_JOURNAL_BROKERS:
+	case pb.Status_INSUFFICIENT_JOURNAL_BROKERS:
 		http.Error(w, resp.Status.String(), http.StatusServiceUnavailable) // 503.
 	case pb.Status_OFFSET_NOT_YET_AVAILABLE:
 		http.Error(w, resp.Status.String(), http.StatusRequestedRangeNotSatisfiable) // 416.

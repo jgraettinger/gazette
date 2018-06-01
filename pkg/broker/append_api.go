@@ -77,6 +77,15 @@ func proxyAppend(req *pb.AppendRequest, to pb.BrokerSpec_ID, stream pb.Broker_Ap
 }
 
 func (r *replicaImpl) serveAppend(req *pb.AppendRequest, stream pb.Broker_AppendServer, dialer dialer) (int64, error) {
+	if len(r.route.Brokers) < int(r.spec().Replication) {
+		// We cannot proceed if the required replication factor of the journal
+		// isn't met by the current Route.
+		return 0, stream.SendAndClose(&pb.AppendResponse{
+			Status: pb.Status_INSUFFICIENT_JOURNAL_BROKERS,
+			Route:  &r.route,
+		})
+	}
+
 	var pln, rev, err = r.acquirePipeline(stream.Context(), dialer)
 	if pln == nil {
 		return rev, err

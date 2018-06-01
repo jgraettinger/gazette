@@ -75,7 +75,7 @@ func (rtr *resolver) resolve(journal pb.Journal, requirePrimary bool, mayProxy b
 	}
 
 	if len(res.route.Brokers) == 0 {
-		status = pb.Status_NO_JOURNAL_BROKERS
+		status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
 		return
 	} else if requirePrimary && res.route.Primary == -1 {
 		status = pb.Status_NO_JOURNAL_PRIMARY_BROKER

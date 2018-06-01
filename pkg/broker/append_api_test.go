@@ -180,8 +180,28 @@ func (s *AppendSuite) TestNoBrokers(c *gc.C) {
 		resp, err := stream.CloseAndRecv()
 		c.Check(err, gc.IsNil)
 		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
-			Status: pb.Status_NO_JOURNAL_BROKERS,
+			Status: pb.Status_INSUFFICIENT_JOURNAL_BROKERS,
 			Route:  &pb.Route{Primary: -1},
+		})
+	})
+}
+
+func (s *AppendSuite) TestNotEnoughReplicationPeers(c *gc.C) {
+	runBrokerTestCase(c, func(f brokerFixture) {
+		var stream, err = f.client.Append(f.ctx)
+		c.Assert(err, gc.IsNil)
+
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "not/enough/peers"}), gc.IsNil)
+
+		resp, err := stream.CloseAndRecv()
+		c.Check(err, gc.IsNil)
+		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
+			Status: pb.Status_INSUFFICIENT_JOURNAL_BROKERS,
+			Route: &pb.Route{
+				Primary:   0,
+				Brokers:   []pb.BrokerSpec_ID{{Zone: "local", Suffix: "broker"}},
+				Endpoints: []pb.Endpoint{"http://[100::]"},
+			},
 		})
 	})
 }
@@ -191,12 +211,12 @@ func (s *AppendSuite) TestNotFound(c *gc.C) {
 		var stream, err = f.client.Append(f.ctx)
 		c.Assert(err, gc.IsNil)
 
-		c.Check(stream.Send(&pb.AppendRequest{Journal: "no/brokers"}), gc.IsNil)
+		c.Check(stream.Send(&pb.AppendRequest{Journal: "doesn/not/exist"}), gc.IsNil)
 
 		resp, err := stream.CloseAndRecv()
 		c.Check(err, gc.IsNil)
 		c.Check(resp, gc.DeepEquals, &pb.AppendResponse{
-			Status: pb.Status_NO_JOURNAL_BROKERS,
+			Status: pb.Status_JOURNAL_NOT_FOUND,
 			Route:  &pb.Route{Primary: -1},
 		})
 	})

@@ -44,11 +44,12 @@ func newEtcdFixture(c *gc.C, peerAddr string) (*clientv3.Client, *keyspace.KeySp
 	c.Assert(err, gc.IsNil)
 
 	var journals = map[pb.Journal][]pb.BrokerSpec_ID{
-		"a/journal":      {localID, peerID},
-		"remote/journal": {peerID},
-		"peer/journal":   {peerID, localID},
-		"no/brokers":     {},
-		"no/primary":     {{}, localID, peerID},
+		"a/journal":        {localID, peerID},
+		"remote/journal":   {peerID},
+		"peer/journal":     {peerID, localID},
+		"not/enough/peers": {localID},
+		"no/brokers":       {},
+		"no/primary":       {{}, localID, peerID},
 	}
 	for journal, brokers := range journals {
 
