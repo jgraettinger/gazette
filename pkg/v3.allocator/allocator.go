@@ -111,6 +111,11 @@ func (a *Allocator) Serve(ctx context.Context, client *clientv3.Client) error {
 					fn.init(as)
 					push_relabel.FindMaxFlow(&fn.source, &fn.sink)
 
+					if excessCapacity := fn.excessItemCapacity(); excessCapacity > 0 {
+						log.WithField("unattainable_replicas", excessCapacity).
+							Warn("not enough members to reach desired replication for all items")
+					}
+
 					// Extract desired max-flow Assignments for each Item.
 					desired = desired[:0]
 					for item := range as.Items {
