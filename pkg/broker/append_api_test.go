@@ -1,10 +1,10 @@
 package broker
 
 import (
+	"errors"
 	"io"
 
 	gc "github.com/go-check/check"
-	"github.com/pkg/errors"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"

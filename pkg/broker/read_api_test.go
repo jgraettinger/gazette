@@ -4,8 +4,9 @@ import (
 	"errors"
 	"io"
 
-	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	gc "github.com/go-check/check"
+
+	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type ReadSuite struct{}
