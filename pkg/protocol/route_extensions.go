@@ -107,13 +107,21 @@ func (m Route) MarshalString() string {
 	return string(d)
 }
 
-// Replica returns a random index of |Brokers| suitable for read operations,
-// preferring a broker in |zone|. It panics if the Route has no Brokers.
-func (m Route) RandomReplica(zone string) int {
+// SelectReplica returns an index of |Brokers|, preferring:
+//  * |id| if present in |Brokers|, falling back to
+//  * A randomly selected broker sharing |id.Zone|, falling back to
+//  * A randomly selected broker.
+//  It panics if the Route has no Brokers.
+func (m Route) SelectReplica(id BrokerSpec_ID) int {
+	for i, b := range m.Brokers {
+		if b == id {
+			return i
+		}
+	}
 	var p = rand.Perm(len(m.Brokers))
 
 	for _, i := range p {
-		if m.Brokers[i].Zone == zone {
+		if m.Brokers[i].Zone == id.Zone {
 			return i
 		}
 	}

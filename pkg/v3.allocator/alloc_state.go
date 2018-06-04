@@ -1,7 +1,6 @@
 package v3_allocator
 
 import (
-	"fmt"
 	"hash/crc64"
 	"math"
 	"strconv"
@@ -14,15 +13,15 @@ import (
 
 // State is an extracted representation of the allocator KeySpace.
 type State struct {
-	KS *keyspace.KeySpace
+	KS       *keyspace.KeySpace
+	LocalKey string // Unique key of this allocator instance.
 
 	// Sub-slices of the KeySpace representing allocator entities.
 	Members     keyspace.KeyValues
 	Items       keyspace.KeyValues
 	Assignments keyspace.KeyValues
 
-	LocalKey       string      // Unique key of this allocator instance.
-	LocalMemberInd int         // Index of |LocalKey| within |Members|.
+	LocalMemberInd int         // Index of |LocalKey| within |Members|, or -1 if not found.
 	LocalItems     []LocalItem // Assignments of this instance.
 
 	Zones       []string // Sorted and unique Zones of |Members|.
@@ -36,17 +35,31 @@ type State struct {
 	MemberPrimaryCount []int
 }
 
-// NewState extracts a State representation from the KeySpace,
-// pivoted around the Member instance identified by |localKey|.
-func NewState(ks *keyspace.KeySpace, localKey string) (*State, error) {
+// NewObservedState returns a *State instance which extracts and updates itself
+// from the provided KeySpace, and pivoted around the Member instance
+// identified by |localKey|. State should be treated as read-only, and a read
+// lock of the parent KeySpace must be obtained before each use.
+func NewObservedState(ks *keyspace.KeySpace, localKey string) *State {
 	var s = &State{
-		KS: ks,
-
-		Members:     ks.Prefixed(ks.Root + MembersPrefix),
-		Items:       ks.Prefixed(ks.Root + ItemsPrefix),
-		Assignments: ks.Prefixed(ks.Root + AssignmentsPrefix),
-
+		KS:       ks,
 		LocalKey: localKey,
+	}
+	ks.Mu.Lock()
+	ks.Observers = append(ks.Observers, s.observe)
+	ks.Mu.Unlock()
+	return s
+}
+
+// observe extracts a current State representation from the KeySpace,
+// pivoted around the Member instance identified by |LocalKey|.
+func (s *State) observe() bool {
+	*s = State{
+		KS:       s.KS,
+		LocalKey: s.LocalKey,
+
+		Members:     s.KS.Prefixed(s.KS.Root + MembersPrefix),
+		Items:       s.KS.Prefixed(s.KS.Root + ItemsPrefix),
+		Assignments: s.KS.Prefixed(s.KS.Root + AssignmentsPrefix),
 	}
 	s.MemberTotalCount = make([]int, len(s.Members))
 	s.MemberPrimaryCount = make([]int, len(s.Members))
@@ -73,7 +86,7 @@ func NewState(ks *keyspace.KeySpace, localKey string) (*State, error) {
 
 	// Fetch |localMember| identified by |LocalKey|.
 	if ind, found := s.Members.Search(s.LocalKey); !found {
-		return nil, fmt.Errorf("member key not found: %s", s.LocalKey)
+		s.LocalMemberInd = -1
 	} else {
 		s.LocalMemberInd = ind
 	}
@@ -99,9 +112,9 @@ func NewState(ks *keyspace.KeySpace, localKey string) (*State, error) {
 
 		for r := cur.rightBegin; r != cur.rightEnd; r++ {
 			var a = assignmentAt(s.Assignments, r)
-			var key = MemberKey(ks, a.MemberZone, a.MemberSuffix)
+			var key = MemberKey(s.KS, a.MemberZone, a.MemberSuffix)
 
-			if key == localKey {
+			if key == s.LocalKey {
 				s.LocalItems = append(s.LocalItems, LocalItem{
 					Item:        s.Items[cur.left],
 					Assignments: s.Assignments[cur.rightBegin:cur.rightEnd],
@@ -116,7 +129,7 @@ func NewState(ks *keyspace.KeySpace, localKey string) (*State, error) {
 			}
 		}
 	}
-	return s, nil
+	return true
 }
 
 // shouldExit returns true iff the termination condition is met: our local

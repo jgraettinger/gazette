@@ -1,151 +1,140 @@
 package broker
 
 import (
-	"sync"
+	"context"
 
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-// resolver enacts the routing decisions of an etcd allocator into a updated,
-// local table of journals and their initialized replica instances. It powers
-// resolution of journals to local replicas or remote peers.
 type resolver struct {
-	ks *keyspace.KeySpace
-	id pb.BrokerSpec_ID
-
-	newReplica func(pb.Journal) replica
-	replicas   map[pb.Journal]replica // Guarded by |mu|.
-	mu         sync.RWMutex
-
-	*keyspace.RevCond
-	broadcast func(revision int64)
+	ks       *keyspace.KeySpace
+	cond     *keyspace.RevCond
+	state    *v3_allocator.State
+	replicas map[pb.Journal]*replica
 }
 
-func (r *resolver) KeySpace() *keyspace.KeySpace { return r.ks }
-func (r *resolver) LocalKey() string             { return v3_allocator.MemberKey(r.ks, r.id.Zone, r.id.Suffix) }
-
-// resolution is the result of resolving a journal to a Route and
-// specific BrokerSpec_ID, which (if local) will have a replica instance.
-type resolution struct {
-	route   *pb.Route
-	broker  pb.BrokerSpec_ID
-	replica replica
-}
-
-// newResolver builds and returns an empty, initialized resolver.
-func newResolver(ks *keyspace.KeySpace, id pb.BrokerSpec_ID, newReplica func(pb.Journal) replica) *resolver {
-	return &resolver{
-		ks:         ks,
-		id:         id,
-		newReplica: newReplica,
-		replicas:   nil,
+func newResolver(ks *keyspace.KeySpace, cond *keyspace.RevCond, state *v3_allocator.State) *resolver {
+	var r = &resolver{
+		ks:       ks,
+		cond:     cond,
+		state:    state,
+		replicas: make(map[pb.Journal]*replica),
 	}
+	ks.Mu.Lock()
+	ks.Observers = append(ks.Observers, r.observe)
+	ks.Mu.Unlock()
+
+	return r
 }
 
-// resolve a journal to a target broker resolution, which may be local
-// or (if |mayProxy|) a proxy-able peer. If a resolution is not possible, a
-// Status != Status_OK is returned indicating why resolution failed.
-func (rtr *resolver) resolve(journal pb.Journal, requirePrimary bool, mayProxy bool) (res resolution, status pb.Status) {
-	defer rtr.mu.RUnlock()
-	rtr.mu.RLock()
+type resolveArgs struct {
+	ctx context.Context
+	// Journal to be dispatched.
+	journal pb.Journal
+	// Whether we may proxy to another broker.
+	mayProxy bool
+	// Whether we require the primary broker of the journal.
+	requirePrimary bool
+	// Whether we require that the journal be fully assigned, or will otherwise
+	// tolerate fewer broker assignments than the desired journal replication.
+	requireFullAssignment bool
+	// Minimum Etcd Revision to have read through, before generating a DispatchResponse.
+	minEtcdRevision int64
+}
 
-	var ok bool
+type resolution struct {
+	// Header defines the selected broker ID, effective Etcd Revision,
+	// and Journal Route of the resolution.
+	pb.Header
+	// JournalSpec of the Journal at the current Etcd Revision.
+	journalSpec *pb.JournalSpec
+	// remote is set to the Endpoint at which the BrokerID may be reached,
+	// iff the selected BrokerID is not the local BrokerID.
+	replica *replica
+}
 
-	if res.replica, ok = rtr.replicas[journal]; ok {
-		// Journal is locally replicated.
-		res.route = res.replica.getRoute()
-		res.broker = rtr.id
-	} else {
+func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
+	defer r.ks.Mu.RLock()
+	r.ks.Mu.RUnlock()
 
-		rtr.ks.Mu.RLock()
-		_, ok = v3_allocator.LookupItem(rtr.ks, journal.String())
-
-		var assignments = rtr.ks.KeyValues.Prefixed(
-			v3_allocator.ItemAssignmentsPrefix(rtr.ks, journal.String()))
-
-		res.route = new(pb.Route)
-		res.route.Init(assignments)
-		res.route.AttachEndpoints(rtr.ks)
-
-		rtr.ks.Mu.RUnlock()
-
-		if !ok {
-			status = pb.Status_JOURNAL_NOT_FOUND
+	if args.minEtcdRevision > r.ks.Header.Revision {
+		if err = r.cond.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
 			return
 		}
 	}
+	// Extract Etcd Revision.
+	res.Etcd = pb.FromEtcdResponseHeader(r.ks.Header)
 
-	if len(res.route.Brokers) == 0 {
-		status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
-		return
-	} else if requirePrimary && res.route.Primary == -1 {
-		status = pb.Status_NO_JOURNAL_PRIMARY_BROKER
-		return
+	// Extract JournalSpec.
+	if item, ok := v3_allocator.LookupItem(r.ks, args.journal.String()); ok {
+		res.journalSpec = item.ItemValue.(*pb.JournalSpec)
+	}
+	// Extract Route.
+	var assignments = r.ks.KeyValues.Prefixed(
+		v3_allocator.ItemAssignmentsPrefix(r.ks, args.journal.String()))
+	res.Route.Init(assignments)
+	res.Route.AttachEndpoints(r.ks)
+
+	var localID pb.BrokerSpec_ID
+	if r.state.LocalMemberInd != -1 {
+		localID = r.state.Members[r.state.LocalMemberInd].
+			Decoded.(v3_allocator.Member).MemberValue.(*pb.BrokerSpec).Id
 	}
 
-	// If the local replica can satisfy the request, we're done.
-	// Otherwise, we must proxy to continue.
-	if res.replica != nil &&
-		(!requirePrimary || res.route.Brokers[res.route.Primary] == rtr.id) {
-		return
+	// Select a best, responsible BrokerID.
+	if args.requirePrimary && res.Route.Primary != -1 {
+		res.BrokerId = res.Route.Brokers[res.Route.Primary]
+	} else if !args.requirePrimary && len(res.Route.Brokers) != 0 {
+		res.BrokerId = res.Route.Brokers[res.Route.SelectReplica(localID)]
 	}
-	res.replica = nil
-	res.broker = pb.BrokerSpec_ID{}
+	if res.BrokerId == localID {
+		res.replica = r.replicas[args.journal]
+	}
 
-	if !mayProxy {
-		if requirePrimary {
-			status = pb.Status_NOT_JOURNAL_PRIMARY_BROKER
+	// Select a response Status code.
+	if res.journalSpec == nil {
+		res.Status = pb.Status_JOURNAL_NOT_FOUND
+	} else if res.BrokerId == (pb.BrokerSpec_ID{}) {
+		if args.requirePrimary {
+			res.Status = pb.Status_NO_JOURNAL_PRIMARY_BROKER
 		} else {
-			status = pb.Status_NOT_JOURNAL_BROKER
+			res.Status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
 		}
-		return
+	} else if !args.mayProxy && res.BrokerId != localID {
+		if args.requirePrimary {
+			res.Status = pb.Status_NOT_JOURNAL_PRIMARY_BROKER
+		} else {
+			res.Status = pb.Status_NOT_JOURNAL_BROKER
+		}
+	} else if args.requireFullAssignment && len(res.Route.Brokers) < int(res.journalSpec.Replication) {
+		res.Status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
+	} else {
+		res.Status = pb.Status_OK
 	}
 
-	if requirePrimary {
-		res.broker = res.route.Brokers[res.route.Primary]
-	} else {
-		res.broker = res.route.Brokers[res.route.RandomReplica(rtr.id.Zone)]
-	}
 	return
 }
 
-// onAllocatorStateChange is an implementation of v3_allocator.StateCallback.
-// It expects that KeySpace is already read-locked when called.
-func (rtr *resolver) OnAllocState(state *v3_allocator.State) {
-	rtr.mu.RLock()
-	var prev = rtr.replicas
-	rtr.mu.RUnlock()
+func (r *resolver) observe() bool {
+	var next = make(map[pb.Journal]*replica, len(r.state.LocalItems))
 
-	var next = make(map[pb.Journal]replica, len(state.LocalItems))
-	var route pb.Route
+	for _, li := range r.state.LocalItems {
+		var name = pb.Journal(li.Item.Decoded.(v3_allocator.Item).ID)
 
-	// Walk |items| and create or transition replicas as required to match.
-	for _, la := range state.LocalItems {
-		var name = pb.Journal(la.Item.Decoded.(v3_allocator.Item).ID)
-
-		var assignment = la.Assignments[la.Index]
-		route.Init(la.Assignments)
-
-		var r, ok = prev[name]
-		if !ok {
-			r = rtr.newReplica(name)
-		}
-		next[name] = r.transition(rtr.ks, la.Item, assignment, route)
-	}
-
-	// Obtain write-lock to atomically swap out the |replicas| map,
-	// and to signal any RPCs waiting on an etcd update.
-	rtr.mu.Lock()
-	rtr.replicas = next
-	rtr.broadcast(state.KS.Header.Revision)
-	rtr.mu.Unlock()
-
-	// Cancel any prior replicas not included in |items|.
-	for name, r := range prev {
-		if _, ok := next[name]; !ok {
-			r.cancel()
+		if replica, ok := r.replicas[name]; ok {
+			next[name] = replica
+			delete(r.replicas, name)
+		} else {
+			next[name] = newReplica(name)
 		}
 	}
+	var prev = r.replicas
+	r.replicas = next
+
+	for _, replica := range prev {
+		replica.cancel()
+	}
+	return true
 }

@@ -20,26 +20,44 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 	}
 
 	var rev int64 = 1
+	if req.Header != nil {
+		rev = req.Header.Etcd.Revision
+	}
 
-	for done := false; !done && err == nil; {
-		// Wait for revision |rev| before attempting the RPC.
-		if err = s.resolver.WaitForRevision(stream.Context(), rev); err != nil {
+	for {
+
+		var resolution resolution
+		resolution, err = s.resolver.resolve(resolveArgs{
+			ctx:                   stream.Context(),
+			journal:               req.Journal,
+			mayProxy:              true,
+			requirePrimary:        true,
+			requireFullAssignment: true,
+			minEtcdRevision:       rev,
+		})
+
+		if err != nil {
+			break
+		} else if resolution.Status != pb.Status_OK {
+			err = stream.SendAndClose(&pb.AppendResponse{Header: &resolution.Header})
 			break
 		}
 
-		var res, status = s.resolver.resolve(req.Journal, true, true)
-		if status != pb.Status_OK {
-			err = stream.SendAndClose(&pb.AppendResponse{Status: status, Route: res.route})
-			break
-		} else if res.replica == nil {
-			err = proxyAppend(req, res.broker, stream, s.dialer)
+		if resolution.remote {
+			err = proxyAppend(req, stream, resolution, s.dialer)
 			break
 		}
 
-		// Iff |err| == nil && |rev| != 0, a peer told us of a future & non-
-		// equivalent Route revision. Attempt the RPC again at that revision.
-		if rev, err = res.replica.serveAppend(req, stream, s.dialer); err == nil && rev == 0 {
-			done = true
+		var r = s.replicas.obtain(req.Journal)
+
+		var pln *pipeline
+		if pln, rev, err = r.acquirePipeline(stream.Context(), resolution, s.dialer); err != nil {
+			break
+		} else if rev != 0 {
+			// A peer told us of a future & non-equivalent Route revision. Attempt the RPC again at |rev|.
+		} else {
+			err = r.serveAppend(pln, stream, dispatch.JournalSpec)
+			break
 		}
 	}
 
@@ -76,24 +94,11 @@ func proxyAppend(req *pb.AppendRequest, to pb.BrokerSpec_ID, stream pb.Broker_Ap
 	}
 }
 
-func (r *replicaImpl) serveAppend(req *pb.AppendRequest, stream pb.Broker_AppendServer, dialer dialer) (int64, error) {
-	if len(r.route.Brokers) < int(r.spec().Replication) {
-		// We cannot proceed if the required replication factor of the journal
-		// isn't met by the current Route.
-		return 0, stream.SendAndClose(&pb.AppendResponse{
-			Status: pb.Status_INSUFFICIENT_JOURNAL_BROKERS,
-			Route:  &r.route,
-		})
-	}
+func (r *replica) serveAppend(pln *pipeline, stream pb.Broker_AppendServer, spec *pb.JournalSpec) error {
+	var req = new(pb.AppendRequest)
 
-	var pln, rev, err = r.acquirePipeline(stream.Context(), dialer)
-	if pln == nil {
-		return rev, err
-	}
-
-	// We now have sole ownership of the *send* side of the pipeline.
-
-	var appender = beginAppending(pln, r.spec().Fragment)
+	// We start with sole ownership of the _send_ side of the pipeline.
+	var appender = beginAppending(pln, spec.Fragment)
 	for appender.onRecv(req, stream.RecvMsg(req)) {
 	}
 	var waitFor, closeAfter = pln.readBarrier()
@@ -105,7 +110,7 @@ func (r *replicaImpl) serveAppend(req *pb.AppendRequest, stream pb.Broker_Append
 		pln.closeSend(r.spoolCh)
 		r.pipelineCh <- nil
 
-		log.WithFields(log.Fields{"err": err, "journal": r.spec().Name}).
+		log.WithFields(log.Fields{"err": plnSendErr, "journal": spec.Name}).
 			Warn("pipeline send failed")
 	}
 
@@ -124,20 +129,19 @@ func (r *replicaImpl) serveAppend(req *pb.AppendRequest, stream pb.Broker_Append
 	}
 
 	if pln.recvErr() != nil {
-		log.WithFields(log.Fields{"err": pln.recvErr(), "journal": r.spec().Name}).
+		log.WithFields(log.Fields{"err": pln.recvErr(), "journal": spec.Name}).
 			Warn("pipeline receive failed")
 	}
 
 	if appender.reqErr != nil {
-		return 0, appender.reqErr
+		return appender.reqErr
 	} else if plnSendErr != nil {
-		return 0, plnSendErr
+		return plnSendErr
 	} else if pln.recvErr() != nil {
-		return 0, pln.recvErr()
+		return pln.recvErr()
 	} else {
-		return 0, stream.SendAndClose(&pb.AppendResponse{
-			Status: pb.Status_OK,
-			Route:  &pln.route,
+		return stream.SendAndClose(&pb.AppendResponse{
+			Header: pln.Header,
 			Commit: appender.reqFragment,
 		})
 	}

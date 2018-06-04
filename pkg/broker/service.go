@@ -8,6 +8,7 @@ import (
 type Service struct {
 	dialer   dialer
 	resolver *resolver
+	replicas *replicaSet
 }
 
 func NewService(ks *keyspace.KeySpace, id pb.BrokerSpec_ID) (*Service, error) {

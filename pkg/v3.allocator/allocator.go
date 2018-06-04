@@ -22,24 +22,26 @@ import (
 	"github.com/LiveRamp/gazette/pkg/v3.allocator/push_relabel"
 )
 
-// Allocator is responsible for assigning a collection of Items, represented
-// under an Etcd Allocator KeySpace, across a number of Members, also
-// captured within that KeySpace.
-type Allocator interface {
-	KeySpace() *keyspace.KeySpace
-	LocalKey() string    // Unique MemberKey of this Allocator instance.
-	OnAllocState(*State) // Callback invoked with each updated State.
-}
+type AllocateArgs struct {
+	Context context.Context
+	// Etcd client Allocate will use to effect changes to the distributed allocation.
+	Etcd *clientv3.Client
+	// KeySpace Allocate will watch for Etcd revision updates.
+	KeySpace *keyspace.KeySpace
+	// RevCond for waiting on Etcd Revisions of the KeySpace.
+	RevCond *keyspace.RevCond
+	// Allocator state extracting from the KeySpace.
+	State *State
 
-type testHook interface {
 	// testHook is an optional testing hook, invoked after each convergence round.
-	testHook(round int, isIdle bool)
+	testHook func(round int, isIdle bool)
 }
 
 // Allocate observes the Allocator KeySpace, and if this Allocator instance is
 // the current leader, performs reactive scheduling rounds to maintain the
 // allocation of all Items to Members. Allocate exits on an unrecoverable
 // error, or if:
+//
 //   * The local Member has an ItemLimit of Zero, AND
 //   * No Assignments to the current Member remain.
 //
@@ -47,11 +49,7 @@ type testHook interface {
 // Member identified by Allocator.LocalKey() to zero (perhaps as part of a
 // SIGTERM signal handler) and then waiting for Allocate to return, which it
 // will once all instance Assignments have been re-assigned to other Members.
-func Allocate(ctx context.Context, a Allocator, client *clientv3.Client) error {
-	var ks, localKey = a.KeySpace(), a.LocalKey()
-
-	ks.Mu.RLock()
-	defer ks.Mu.RUnlock()
+func Allocate(args AllocateArgs) error {
 
 	// flowNetwork is local to a single pass of the scheduler, but we retain a
 	// single instance and re-use it each iteration to reduce allocation.
@@ -64,54 +62,58 @@ func Allocate(ctx context.Context, a Allocator, client *clientv3.Client) error {
 	var desired []Assignment
 	var lastNetworkHash uint64
 
+	defer args.KeySpace.Mu.RUnlock()
+	args.KeySpace.Mu.RLock()
+
 	for round := 0; true; {
-		var as, err = NewState(ks, localKey)
-		if err != nil {
-			return err // Non-recoverable.
-		} else if as.shouldExit() {
+
+		var state = args.State
+
+		if state.LocalMemberInd == -1 {
+			return fmt.Errorf("member key not found in Etcd")
+		} else if state.shouldExit() {
 			return nil
 		}
-
-		a.OnAllocState(as)
-		as.debugLog() // TODO(johnny): Remove when the Allocator is further along in integration testing.
+		state.debugLog() // TODO(johnny): Remove when the Allocator is further along in integration testing.
 
 		// Response of the last transaction we applied. We'll ensure we've minimally
 		// watched through its revision before driving further action.
 		var txnResponse *clientv3.TxnResponse
 
-		if as.isLeader() {
+		if state.isLeader() {
 
 			// Do we need to re-solve for a maximum assignment?
-			if as.NetworkHash != lastNetworkHash {
-				lastNetworkHash = as.NetworkHash
+			if state.NetworkHash != lastNetworkHash {
+				lastNetworkHash = state.NetworkHash
 
 				// Build a prioritized flowNetwork and solve for maximum flow.
-				fn.init(as)
+				fn.init(state)
 				push_relabel.FindMaxFlow(&fn.source, &fn.sink)
 
 				// Extract desired max-flow Assignments for each Item.
 				desired = desired[:0]
-				for item := range as.Items {
-					desired = extractItemFlow(as, fn, item, desired)
+				for item := range state.Items {
+					desired = extractItemFlow(state, fn, item, desired)
 				}
 			}
 
 			// Use batched transactions to amortize the network cost of Etcd updates,
 			// and re-verify our Member key with each flush to ensure we're still leader.
-			var txn = newBatchedTxn(ctx, client,
-				modRevisionUnchanged(as.Members[as.LocalMemberInd]))
+			var txn = newBatchedTxn(args.Context, args.Etcd,
+				modRevisionUnchanged(state.Members[state.LocalMemberInd]))
 
 			// Converge the current state towards |desired|.
-			if err = converge(txn, as, desired); err == nil {
+			var err error
+			if err = converge(txn, state, desired); err == nil {
 				txnResponse, err = txn.Commit()
 			}
 
 			if err != nil {
-				log.WithFields(log.Fields{"err": err, "round": round, "rev": ks.Header.Revision}).
+				log.WithFields(log.Fields{"err": err, "round": round, "rev": args.KeySpace.Header.Revision}).
 					Warn("converge iteration failed (will retry)")
 			} else {
-				if th, ok := a.(testHook); ok {
-					th.testHook(round, ks.Header.Revision == txnResponse.Header.Revision)
+				if args.testHook != nil {
+					args.testHook(round, args.KeySpace.Header.Revision == txnResponse.Header.Revision)
 				}
 				round++
 			}
@@ -119,12 +121,12 @@ func Allocate(ctx context.Context, a Allocator, client *clientv3.Client) error {
 
 		// Await the next KeySpace change. If we completed a transaction,
 		// ensure we read through its revision before iterating again.
-		var next = ks.Header.Revision + 1
+		var next = args.KeySpace.Header.Revision + 1
 
 		if txnResponse != nil && txnResponse.Header.Revision > next {
 			next = txnResponse.Header.Revision
 		}
-		if err = ks.WaitForRevision(ctx, next); err != nil {
+		if err := args.RevCond.WaitForRevision(args.Context, next); err != nil {
 			return err
 		}
 	}

@@ -31,14 +31,20 @@ type KeySpace struct {
 	Header etcdserverpb.ResponseHeader
 	// KeyValues is a complete and decoded mirror of the (prefixed) Etcd key/value space.
 	KeyValues
-	// Mu guards Header and KeyValues. It must be read-locked before either is accessed.
+	// Observers called upon each mutation of the KeySpace. Observer calls occur
+	// in-order, after the KeySpace itself has been updated, and while a write-
+	// lock over the KeySpace is still held (which Observers must not release).
+	// Observers is intended to simplify atomicity of stateful representations
+	// deriving themselves from the KeySpace: any mutations performed by Observers
+	// will appear synchronously with changes to the KeySpace itself, from the
+	// perspective of a client appropriately utilizing a read-lock. If an Observer
+	// returns falls, it is removed from Observers and not invoked again.
+	Observers []func() bool
+	// Mu guards Header, KeyValues, and Observers. It must be locked before any are accessed.
 	Mu sync.RWMutex
-	// RevCond over the KeySpace.
-	*RevCond
 
-	broadcast func(revision int64)
-	decode    KeyValueDecoder // Client-provided KeySpace decoder.
-	next      KeyValues       // Reusable buffer for next, amortized KeyValues update.
+	decode KeyValueDecoder // Client-provided KeySpace decoder.
+	next   KeyValues       // Reusable buffer for next, amortized KeyValues update.
 }
 
 // NewKeySpace returns a KeySpace with the configured key |prefix| and |decoder|.
@@ -50,11 +56,9 @@ func NewKeySpace(prefix string, decoder KeyValueDecoder) *KeySpace {
 		panic("expected prefix to be a cleaned path")
 	}
 	var ks = &KeySpace{
-		Root: prefix,
-
+		Root:   prefix,
 		decode: decoder,
 	}
-	ks.RevCond, ks.broadcast = NewRevCond(&ks.Mu)
 	return ks
 }
 
@@ -91,7 +95,8 @@ func (ks *KeySpace) Load(ctx context.Context, client *clientv3.Client, rev int64
 			}
 		}
 	}
-	ks.broadcast(ks.Header.Revision)
+
+	ks.callObservers()
 	return nil
 }
 
@@ -190,10 +195,20 @@ func (ks *KeySpace) apply(responses []clientv3.WatchResponse) error {
 
 	ks.Mu.Lock()
 	ks.KeyValues, ks.next = next, ks.KeyValues[:0]
-	ks.broadcast(ks.Header.Revision)
+	ks.callObservers()
 	ks.Mu.Unlock()
 
 	return nil
+}
+
+func (ks *KeySpace) callObservers() {
+	var j int
+	for _, obv := range ks.Observers {
+		if ok := obv(); ok {
+			ks.Observers[j], j = obv, j+1
+		}
+	}
+	ks.Observers = ks.Observers[:j]
 }
 
 // patchHeader updates |h| with an Etcd ResponseHeader. It returns an error if the headers are inconsistent.

@@ -183,65 +183,56 @@ message SHA1Sum {
 }
 
 message ReadRequest {
+  Header header = 1;
   // Journal to be read.
-  string journal = 1 [(gogoproto.casttype) = "Journal"];
+  string journal = 2 [(gogoproto.casttype) = "Journal"];
   // Desired offset to begin reading from. Value -1 has special handling, where
   // the read is performed from the current write head. All other positive
   // values specify a desired exact byte offset to read from. If the offset is
   // not available (eg, because it represents a portion of Journal which has
   // been permantently deleted), the broker will return the next available
   // offset. Callers should therefore always inspect the ReadResponse offset.
-  int64 offset = 2;
+  int64 offset = 3;
   // Whether the operation should block until content becomes available.
   // OFFSET_NOT_YET_AVAILABLE is returned if a non-blocking read has no ready content.
-  bool block = 3;
+  bool block = 4;
   // If do_not_proxy is true, the broker will not proxy the read to another
   // broker, or open and proxy a remote Fragment on the client's behalf.
-  bool do_not_proxy = 4;
+  bool do_not_proxy = 5;
   // If metadata_only is true, the broker will respond with Journal and
   // Fragment metadata but not content.
-  bool metadata_only = 5;
-  // If set, minimum EtcdCursor under which the request should be processed.
-  EtcdCursor etcd = 6;
+  bool metadata_only = 6;
 }
 
 message ReadResponse {
-  Status status = 1;
+  Header header = 1;
   // The effective offset of the read. See ReadRequest offset.
   int64 offset = 2;
   // The offset to next be written, by the next append transaction served by
   // broker. In other words, the last offset through which content is
   // available to be read from the Journal.
   int64 write_head = 3;
-  // The route of responsible brokers for the current Journal.
-  Route route = 4;
   // Fragment to which the offset was mapped.
-  Fragment fragment = 5;
+  Fragment fragment = 4;
   // If Fragment is remote, a URL from which it may be directly read.
-  string fragment_url = 6;
-  // Content of the read.
-  bytes content = 7;
-  // Etcd cursor of the broker which generated the response.
-  EtcdCursor etcd = 8;
+  string fragment_url = 5;
+  // Content chunks of the read.
+  bytes content = 6;
 }
 
-// There are two types of AppendRequest:
-//  * Initial request - Journal is set (only).
-//  * Content chunk - Content is set (only).
 message AppendRequest {
+  Header header = 1;
   // Journal to be appended to.
-  string journal = 1 [(gogoproto.casttype) = "Journal"];
-  // Content to be appended.
-  bytes content = 5;
+  string journal = 2 [(gogoproto.casttype) = "Journal"];
+  // Content chunks to be appended.
+  bytes content = 3;
 }
 
 message AppendResponse {
-  Status status = 1;
-  // The route of responsible brokers for the current Journal.
-  Route route = 2;
-  // On Status OK, the Fragment which places the committed Append
-  // content within the Journal.
-  Fragment commit = 3;
+  Header header = 1;
+  // If status is OK, then |commit| is the Fragment which places the
+  // committed Append content within the Journal.
+  Fragment commit = 2;
 }
 
 // Three types of ReplicateRequest:
@@ -249,71 +240,73 @@ message AppendResponse {
 //  * Streamed commit - Proposal and (optionally) Acknowledge are set.
 //  * Streamed content - Content and ContentDelta are set.
 message ReplicateRequest {
+  Header header = 1;
   // Journal to be replicated to.
-  string journal = 1 [(gogoproto.casttype) = "Journal"];
-  // Route of the transaction, also known and verified by all replicas.
-  Route route = 2;
-  // Proposed Fragment to commit. Independently verified by each Journal replica.
+  string journal = 2 [(gogoproto.casttype) = "Journal"];
+  // Proposed Fragment to commit. Also verified by each replica.
   Fragment proposal = 3;
-  // If |commit| is set, if |acknowledge| than the replica will send an
-  // acknowledgement ReplicateResponse.
-  bool acknowledge = 4;
   // Content to be replicated.
-  bytes content = 5;
+  bytes content = 4;
   // Delta offset of |content| relative to current Fragment |end|.
-  int64 content_delta = 6;
-
-  etcdserverpb.ResponseHeader etcd = 7;
-
+  int64 content_delta = 5;
+  // Acknowledge requests that the peer send an acknowledging ReplicateResponse
+  // on successful application of the ReplicateRequest.
+  bool acknowledge = 6;
 }
 
 message ReplicateResponse {
-  Status status = 1;
-  // If status is WRONG_ROUTE_TOKEN, then |route| is the replica's Route
-  // which was found to be inconsistent with the request Route.
-  Route route = 2;
+  Header header = 1;
   // If status is FRAGMENT_MISMATCH, then |fragment| is the replica's
-  // Fragment at the current journal head, which was found to be inconsistent
-  // with the request |commit| Fragment.
-  Fragment fragment = 3;
+  // Fragment at the current Journal head, which was found to be inconsistent
+  // with the request |proposal| Fragment.
+  Fragment fragment = 2;
 }
 
 // Route captures the current topology of a Journal and the brokers serving it.
 message Route {
   option (gogoproto.goproto_unrecognized) = false;
 
-  // Etcd revision at which this Route was produced. |revision| enables the
-  // comparison of non-equivalent Routes, to determine which is more recent.
-  int64 revision = 1;
   // Brokers of the Route, ordered on ascending BrokerSpec (zone, name).
   // Note that only a Route-relevant subset of the spec is populated
   // (specifically name, zone, & endpoint).
-  repeated BrokerSpec.ID brokers = 2 [(gogoproto.nullable) = false];
+  repeated BrokerSpec.ID brokers = 1 [(gogoproto.nullable) = false];
   // Index of the BrokerSpec serving as primary within |brokers|,
   // or -1 of no broker is currently primary.
-  int32 primary = 3;
+  int32 primary = 2;
   // Endpoints of each Route Broker. If not empty, |endpoints| has the same
   // length and order as |brokers|, and captures the endpoint of each one.
-  repeated string endpoints = 4 [(gogoproto.casttype) = "Endpoint"];
+  repeated string endpoints = 3 [(gogoproto.casttype) = "Endpoint"];
 }
 
-// EtcdCursor represents the effective Etcd ClusterId and Revision under which
-// a Gazette broker is operating in its processing of requests and responses.
-// Its inclusion allows brokers to reason about relative "happened before"
-// Revision ordering of apparent routing conflicts in proxied or replicated
-// requests, as well as enabling sanity checks over equality of Etcd ClusterId
-// (and not, for example, allowing for split-brain scenarios where different
-// brokers are working off of different Etcd clusters). EtcdHeader
-// is isomorphic to Etcd's etcdserverpb.ResponseHeader.
-message EtcdCursor {
-  // cluster_id is the ID of the cluster.
-  uint64 cluster_id = 1;
-  // member_id is the ID of the member.
-  uint64 member_id = 2;
-  // revision is the Etcd key-value store revision when the request was applied.
-  int64 revision = 3;
-  // raft_term is the raft term when the request was applied.
-  uint64 raft_term = 4;
+// Header captures metadata such as the broker responsible for processing
+// a request or response, and its effective Etcd state.
+message Header {
+  Status status = 1;
+  // ID of the broker responsible for request processing.
+  BrokerSpec.ID broker_id = 2 [(gogoproto.nullable) = false];
+  // ProxyId, if set, is the broker ID which recieved and proxied the request
+  // to the responsible broker.
+  BrokerSpec.ID proxy_id = 3;
+  // Route of the journal.
+  Route route = 4 [(gogoproto.nullable) = false];
+  // Etcd represents the effective Etcd MVCC state under which a Gazette broker
+  // is operating in its processing of requests and responses. Its inclusion
+  // allows brokers to reason about relative "happened before" Revision ordering
+  // of apparent routing conflicts in proxied or replicated requests, as well
+  // as enabling sanity checks over equality of Etcd ClusterId (and precluding,
+  // for example, split-brain scenarios where different brokers are backed by
+  // different Etcd clusters). Etcd is kept in sync with etcdserverpb.ResponseHeader.
+  message Etcd {
+    // cluster_id is the ID of the cluster.
+    uint64 cluster_id = 1;
+    // member_id is the ID of the member.
+    uint64 member_id = 2;
+    // revision is the Etcd key-value store revision when the request was applied.
+    int64 revision = 3;
+    // raft_term is the raft term when the request was applied.
+    uint64 raft_term = 4;
+  }
+  Etcd etcd = 5 [(gogoproto.nullable) = false];
 }
 
 service Broker {

@@ -17,7 +17,7 @@ import (
 
 // dialer returns a ClientConn for a peer identified by its BrokerSpec_ID.
 type dialer interface {
-	dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error)
+	dial(ctx context.Context, ep pb.Endpoint) (*grpc.ClientConn, error)
 }
 
 type dialerImpl struct {

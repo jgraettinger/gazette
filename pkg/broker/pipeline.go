@@ -13,7 +13,7 @@ import (
 
 // pipeline is an in-flight write replication pipeline of a journal.
 type pipeline struct {
-	route    pb.Route
+	*pb.Header
 	spool    fragment.Spool
 	streams  []pb.Broker_ReplicateClient
 	sendErrs []error
@@ -28,32 +28,34 @@ type pipeline struct {
 }
 
 // newPipeline returns a new pipeline.
-func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, dialer dialer) *pipeline {
-	if route.Primary == -1 {
+func newPipeline(ctx context.Context, header *pb.Header, spool fragment.Spool, dialer dialer) *pipeline {
+	if header.Route.Primary == -1 {
 		panic("newPipeline requires Route with Primary != -1")
 	}
 
 	// Enable compression while the Spool is serving as primary within a pipeline.
 	spool.Primary = true
 
+	var R = len(header.Route.Brokers)
+
 	var pln = &pipeline{
-		route:         route,
+		Header:        header,
 		spool:         spool,
-		streams:       make([]pb.Broker_ReplicateClient, len(route.Brokers)),
-		sendErrs:      make([]error, len(route.Brokers)),
+		streams:       make([]pb.Broker_ReplicateClient, R),
+		sendErrs:      make([]error, R),
 		readBarrierCh: make(chan struct{}),
-		recvResp:      make([]pb.ReplicateResponse, len(route.Brokers)),
-		recvErrs:      make([]error, len(route.Brokers)),
+		recvResp:      make([]pb.ReplicateResponse, R),
+		recvErrs:      make([]error, R),
 	}
 	close(pln.readBarrierCh)
 
-	for i, b := range route.Brokers {
-		if i == int(route.Primary) {
+	for i := range header.Route.Brokers {
+		if i == int(header.Route.Primary) {
 			continue
 		}
 		var conn *grpc.ClientConn
 
-		if conn, pln.sendErrs[i] = dialer.dial(ctx, b); pln.sendErrs[i] == nil {
+		if conn, pln.sendErrs[i] = dialer.dial(ctx, header.Route.Endpoints[i]); pln.sendErrs[i] == nil {
 			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}
@@ -62,15 +64,15 @@ func newPipeline(ctx context.Context, route pb.Route, spool fragment.Spool, dial
 
 // start synchronizes all pipeline peers by scattering proposals and gathering
 // peer responses. On disagreement, start will iteratively update the proposal
-// if it's possible to do so and reach agreement. If peers disagree on etcd
+// if it's possible to do so and reach agreement. If peers disagree on Etcd
 // revision, start() will close the pipeline and set |readThroughRev|.
 func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
 	var proposal = pln.spool.Fragment.Fragment
 
 	for {
 		pln.scatter(&pb.ReplicateRequest{
+			Header:      pln.Header,
 			Journal:     pln.spool.Journal,
-			Route:       &pln.route,
 			Proposal:    &proposal,
 			Acknowledge: true,
 		})
@@ -113,14 +115,17 @@ func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
 func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 	for i, s := range pln.streams {
 		if s != nil && pln.sendErrs[i] == nil {
+			if r.Header != nil {
+				r.Header.BrokerId = pln.Route.Brokers[i]
+			}
 			pln.sendErrs[i] = s.Send(r)
 		}
 	}
-	if i := pln.route.Primary; pln.sendErrs[i] == nil {
+	if i := pln.Route.Primary; pln.sendErrs[i] == nil {
 		var resp pb.ReplicateResponse
 		resp, pln.sendErrs[i] = pln.spool.Apply(r)
 
-		if resp.Status != pb.Status_OK {
+		if resp.GetHeader().GetStatus() != pb.Status_OK {
 			// Must never happen, since proposals are derived from local Spool Fragment.
 			panic(resp.String())
 		}
@@ -147,7 +152,7 @@ func (pln *pipeline) closeSend(spoolCh chan<- fragment.Spool) {
 func (pln *pipeline) sendErr() error {
 	for i, err := range pln.sendErrs {
 		if err != nil {
-			return fmt.Errorf("send to %s: %s", &pln.route.Brokers[i], err)
+			return fmt.Errorf("send to %s: %s", &pln.Route.Brokers[i], err)
 		}
 	}
 	return nil
@@ -169,7 +174,7 @@ func (pln *pipeline) gatherOK() {
 	for i, s := range pln.streams {
 		if s == nil || pln.recvErrs[i] != nil {
 			// Pass.
-		} else if pln.recvResp[i].Status != pb.Status_OK {
+		} else if pln.recvResp[i].GetHeader().GetStatus() != pb.Status_OK {
 			pln.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", &pln.recvResp[i])
 		}
 	}
@@ -186,18 +191,18 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 			continue
 		}
 
-		switch resp := pln.recvResp[i]; resp.Status {
+		switch resp := pln.recvResp[i]; resp.GetHeader().GetStatus() {
 		case pb.Status_OK:
 			// Pass.
 		case pb.Status_WRONG_ROUTE:
-			if !resp.Route.Equivalent(&pln.route) && resp.Route.Revision > pln.route.Revision {
+			if !resp.Header.Route.Equivalent(&pln.Route) && resp.Header.Etcd.Revision > pln.Etcd.Revision {
 				// Peer has a non-equivalent Route at a later etcd revision.
-				if resp.Route.Revision > readThroughRev {
-					readThroughRev = resp.Route.Revision
+				if resp.Header.Etcd.Revision > readThroughRev {
+					readThroughRev = resp.Header.Etcd.Revision
 				}
 			} else {
 				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE revision: %s (remote) vs %s (local)",
-					resp.Route, &pln.route)
+					resp.Header, pln.Header)
 			}
 
 		case pb.Status_FRAGMENT_MISMATCH:
@@ -243,7 +248,7 @@ func (pln *pipeline) gatherEOF() {
 func (pln *pipeline) recvErr() error {
 	for i, err := range pln.recvErrs {
 		if err != nil {
-			return fmt.Errorf("recv from %s: %s", &pln.route.Brokers[i], err)
+			return fmt.Errorf("recv from %s: %s", &pln.Route.Brokers[i], err)
 		}
 	}
 	return nil

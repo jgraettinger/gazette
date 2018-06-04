@@ -2,35 +2,35 @@ package keyspace
 
 import (
 	"context"
-	"sync"
 )
 
-// RevCond implements a synchronizing condition variable over Etcd revisions.
-// Its intended use is in composition with types which manage state derived
-// from (and updated by) Etcd, which guard that state with a sync.RWMutex,
-// and which also wish to provide a condition variable to their clients.
+// RevCond implements a synchronizing condition variable on the current Etcd
+// Revision of a wrapped KeySpace.
 type RevCond struct {
-	revision int64
-	mu       *sync.RWMutex
-	ch       chan struct{} // Signals waiting goroutines of a |revision| update.
+	ks *KeySpace
+	ch chan struct{} // Signals waiting goroutines of an update.
 }
 
-// NewRevCond returns a new RevCond with sync.RWMutex |mu|, and a closure
-// for broadcasting updated Etcd revisions.
-func NewRevCond(mu *sync.RWMutex) (*RevCond, func(revision int64)) {
+// NewRevCond returns a new RevCond wrapping the KeySpace.
+func NewRevCond(ks *KeySpace) *RevCond {
 	var rc = &RevCond{
-		mu: mu,
+		ks: ks,
 		ch: make(chan struct{}),
 	}
-	return rc, rc.broadcast
+
+	ks.Mu.Lock()
+	ks.Observers = append(ks.Observers, rc.observe)
+	ks.Mu.Unlock()
+
+	return rc
 }
 
-// WaitForRevision blocks until the RevCond revision is at least |revision|,
-// or until the context is done. A read-lock of the RevCond RWMutex must be
+// WaitForRevision blocks until the KeySpace Revision is at least |revision|,
+// or until the context is done. A read lock of the KeySpace RWMutex must be
 // held at invocation, and will be re-acquired before WaitForRevision returns.
 func (rc *RevCond) WaitForRevision(ctx context.Context, revision int64) error {
 	for {
-		if rc.revision >= revision {
+		if rc.ks.Header.Revision >= revision {
 			return nil
 		} else if err := ctx.Err(); err != nil {
 			return err
@@ -38,23 +38,18 @@ func (rc *RevCond) WaitForRevision(ctx context.Context, revision int64) error {
 
 		var ch = rc.ch
 
-		rc.mu.RUnlock()
+		rc.ks.Mu.RUnlock()
 		select {
 		case <-ch:
 		case <-ctx.Done():
 		}
-		rc.mu.RLock()
+		rc.ks.Mu.RLock()
 	}
 }
 
-// broadcast an updated |revision|. A write-lock of the RevCond RWMutex must be
-// held at invocation. broadcast panics if |revision| is less than a previously
-// broadcast revision.
-func (rc *RevCond) broadcast(revision int64) {
-	if revision < rc.revision {
-		panic("invalid revision")
-	}
-	rc.revision = revision
+// Wake goroutines blocked on rc.ch.
+func (rc *RevCond) observe() bool {
 	close(rc.ch)
 	rc.ch = make(chan struct{})
+	return true
 }
