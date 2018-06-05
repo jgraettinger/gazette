@@ -19,7 +19,7 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 		chunkSize = 5
 
 		var resolution, _ = f.resolver.resolve("a/journal", false, false)
-		var spool, err = resolution.replica.(*replicaImpl).acquireSpool(f.ctx, false)
+		var spool, err = resolution.replica.acquireSpool(f.ctx, false)
 		c.Check(err, gc.IsNil)
 
 		stream, err := f.client.Read(f.ctx, &pb.ReadRequest{
@@ -85,7 +85,7 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 	runBrokerTestCase(c, func(f brokerFixture) {
 		var resolution, _ = f.resolver.resolve("a/journal", false, false)
-		var spool, err = resolution.replica.(*replicaImpl).acquireSpool(f.ctx, false)
+		var spool, err = resolution.replica.acquireSpool(f.ctx, false)
 		c.Check(err, gc.IsNil)
 
 		spool.Apply(&pb.ReplicateRequest{Content: []byte("foobarbaz")})

@@ -43,8 +43,9 @@ type KeySpace struct {
 	// Mu guards Header, KeyValues, and Observers. It must be locked before any are accessed.
 	Mu sync.RWMutex
 
-	decode KeyValueDecoder // Client-provided KeySpace decoder.
-	next   KeyValues       // Reusable buffer for next, amortized KeyValues update.
+	updateCh chan struct{}   // Signals waiting goroutines of an update.
+	decode   KeyValueDecoder // Client-provided KeySpace decoder.
+	next     KeyValues       // Reusable buffer for next, amortized KeyValues update.
 }
 
 // NewKeySpace returns a KeySpace with the configured key |prefix| and |decoder|.
@@ -96,7 +97,7 @@ func (ks *KeySpace) Load(ctx context.Context, client *clientv3.Client, rev int64
 		}
 	}
 
-	ks.callObservers()
+	ks.onUpdate()
 	return nil
 }
 
@@ -143,6 +144,28 @@ func (ks *KeySpace) Watch(ctx context.Context, client clientv3.Watcher) error {
 			}
 			responses = responses[:0]
 		}
+	}
+}
+
+// WaitForRevision blocks until the KeySpace Revision is at least |revision|,
+// or until the context is done. A read lock of the KeySpace Mutex must be
+// held at invocation, and will be re-acquired before WaitForRevision returns.
+func (ks *KeySpace) WaitForRevision(ctx context.Context, revision int64) error {
+	for {
+		if ks.Header.Revision >= revision {
+			return nil
+		} else if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		var ch = ks.updateCh
+
+		ks.Mu.RUnlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+		}
+		ks.Mu.RLock()
 	}
 }
 
@@ -195,13 +218,13 @@ func (ks *KeySpace) apply(responses []clientv3.WatchResponse) error {
 
 	ks.Mu.Lock()
 	ks.KeyValues, ks.next = next, ks.KeyValues[:0]
-	ks.callObservers()
+	ks.onUpdate()
 	ks.Mu.Unlock()
 
 	return nil
 }
 
-func (ks *KeySpace) callObservers() {
+func (ks *KeySpace) onUpdate() {
 	var j int
 	for _, obv := range ks.Observers {
 		if ok := obv(); ok {
@@ -209,6 +232,9 @@ func (ks *KeySpace) callObservers() {
 		}
 	}
 	ks.Observers = ks.Observers[:j]
+
+	close(ks.updateCh)
+	ks.updateCh = make(chan struct{})
 }
 
 // patchHeader updates |h| with an Etcd ResponseHeader. It returns an error if the headers are inconsistent.

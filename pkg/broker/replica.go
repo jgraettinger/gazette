@@ -3,7 +3,6 @@ package broker
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	log "github.com/sirupsen/logrus"
 
@@ -24,23 +23,6 @@ type replica struct {
 	pipelineCh chan *pipeline
 }
 
-type replicaSet struct {
-	replicas map[pb.Journal]*replica
-	mu       sync.Mutex
-}
-
-func (s *replicaSet) obtain(journal pb.Journal) *replica {
-	defer s.mu.Unlock()
-	s.mu.Lock()
-
-	var r, ok = s.replicas[journal]
-	if !ok {
-		r = newReplica(journal)
-		s.replicas[journal] = r
-	}
-	return r
-}
-
 func newReplica(journal pb.Journal) *replica {
 	var ctx, cancel = context.WithCancel(context.Background())
 
@@ -59,20 +41,20 @@ func newReplica(journal pb.Journal) *replica {
 
 	r.pipelineCh <- nil
 
-	/*
-		go r.index.WatchStores(func() (spec *pb.JournalSpec, ok bool) {
-			ks.Mu.RLock()
-			defer ks.Mu.RUnlock()
-
-			if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
-				return item.ItemValue.(*pb.JournalSpec), true
-			}
-			return nil, false
-		})
-	*/
-
 	return r
 }
+
+/*
+	go r.index.WatchStores(func() (spec *pb.JournalSpec, ok bool) {
+		ks.Mu.RLock()
+		defer ks.Mu.RUnlock()
+
+		if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
+			return item.ItemValue.(*pb.JournalSpec), true
+		}
+		return nil, false
+	})
+*/
 
 func (r *replica) acquireSpool(ctx context.Context, waitForRemoteLoad bool) (spool fragment.Spool, err error) {
 	if waitForRemoteLoad {

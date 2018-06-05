@@ -1,13 +1,13 @@
 package broker
 
 import (
+	"context"
 	"crypto/sha1"
 	"hash"
 	"io"
 
-	log "github.com/sirupsen/logrus"
-
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
+	log "github.com/sirupsen/logrus"
 )
 
 // Append dispatches the BrokerServer.Append API.
@@ -19,13 +19,9 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 		return err
 	}
 
-	var rev int64 = 1
-	if req.Header != nil {
-		rev = req.Header.Etcd.Revision
-	}
+	var rev = maxInt64(1, req.Header.GetEtcd().Revision)
 
 	for {
-
 		var resolution resolution
 		resolution, err = s.resolver.resolve(resolveArgs{
 			ctx:                   stream.Context(),
@@ -38,25 +34,24 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 
 		if err != nil {
 			break
-		} else if resolution.Status != pb.Status_OK {
-			err = stream.SendAndClose(&pb.AppendResponse{Header: &resolution.Header})
+		} else if resolution.status != pb.Status_OK {
+			err = stream.SendAndClose(&pb.AppendResponse{
+				Status: resolution.status,
+				Header: &resolution.Header,
+			})
+			break
+		} else if resolution.replica == nil {
+			err = proxyAppend(req, stream, &resolution.Header, s.dialer)
 			break
 		}
-
-		if resolution.remote {
-			err = proxyAppend(req, stream, resolution, s.dialer)
-			break
-		}
-
-		var r = s.replicas.obtain(req.Journal)
 
 		var pln *pipeline
-		if pln, rev, err = r.acquirePipeline(stream.Context(), resolution, s.dialer); err != nil {
+		if pln, rev, err = resolution.replica.acquirePipeline(stream.Context(), resolution, s.dialer); err != nil {
 			break
 		} else if rev != 0 {
 			// A peer told us of a future & non-equivalent Route revision. Attempt the RPC again at |rev|.
 		} else {
-			err = r.serveAppend(pln, stream, dispatch.JournalSpec)
+			err = resolution.replica.serveAppend(pln, stream, resolution.journalSpec)
 			break
 		}
 	}
@@ -69,8 +64,8 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 }
 
 // proxyAppend forwards an AppendRequest to a resolved peer broker.
-func proxyAppend(req *pb.AppendRequest, to pb.BrokerSpec_ID, stream pb.Broker_AppendServer, dialer dialer) error {
-	var conn, err = dialer.dial(stream.Context(), to)
+func proxyAppend(req *pb.AppendRequest, stream pb.Broker_AppendServer, hdr *pb.Header, dialer dialer) error {
+	var conn, err = dialer.dial(context.Background(), hdr.BrokerId)
 	if err != nil {
 		return err
 	}
@@ -78,6 +73,8 @@ func proxyAppend(req *pb.AppendRequest, to pb.BrokerSpec_ID, stream pb.Broker_Ap
 	if err != nil {
 		return err
 	}
+	req.Header = hdr
+
 	for {
 		if err = client.SendMsg(req); err != nil {
 			return err
@@ -118,7 +115,7 @@ func (r *replica) serveAppend(pln *pipeline, stream pb.Broker_AppendServer, spec
 	// their responses. Block until they do so, such that our responses are the
 	// next to receive. Similarly, defer a close to signal to RPCs pipelined
 	// after this one, that they may in turn read their responses. When this
-	// completes, we have sole ownership of the *receive* side of |pln|.
+	// completes, we have sole ownership of the _receive_ side of |pln|.
 	<-waitFor
 	defer func() { close(closeAfter) }()
 

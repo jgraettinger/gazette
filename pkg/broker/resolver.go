@@ -2,29 +2,25 @@ package broker
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 type resolver struct {
-	ks       *keyspace.KeySpace
-	cond     *keyspace.RevCond
 	state    *v3_allocator.State
 	replicas map[pb.Journal]*replica
 }
 
-func newResolver(ks *keyspace.KeySpace, cond *keyspace.RevCond, state *v3_allocator.State) *resolver {
+func newResolver(state *v3_allocator.State) *resolver {
 	var r = &resolver{
-		ks:       ks,
-		cond:     cond,
 		state:    state,
 		replicas: make(map[pb.Journal]*replica),
 	}
-	ks.Mu.Lock()
-	ks.Observers = append(ks.Observers, r.observe)
-	ks.Mu.Unlock()
+	state.KS.Mu.Lock()
+	state.KS.Observers = append(state.KS.Observers, r.observe)
+	state.KS.Mu.Unlock()
 
 	return r
 }
@@ -45,6 +41,7 @@ type resolveArgs struct {
 }
 
 type resolution struct {
+	status pb.Status
 	// Header defines the selected broker ID, effective Etcd Revision,
 	// and Journal Route of the resolution.
 	pb.Header
@@ -56,62 +53,64 @@ type resolution struct {
 }
 
 func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
-	defer r.ks.Mu.RLock()
-	r.ks.Mu.RUnlock()
+	var ks = r.state.KS
 
-	if args.minEtcdRevision > r.ks.Header.Revision {
-		if err = r.cond.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
+	if args.minEtcdRevision > ks.Header.Revision {
+		if err = ks.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
 			return
 		}
 	}
-	// Extract Etcd Revision.
-	res.Etcd = pb.FromEtcdResponseHeader(r.ks.Header)
+	res.Etcd = pb.FromEtcdResponseHeader(ks.Header)
 
 	// Extract JournalSpec.
-	if item, ok := v3_allocator.LookupItem(r.ks, args.journal.String()); ok {
+	if item, ok := v3_allocator.LookupItem(ks, args.journal.String()); ok {
 		res.journalSpec = item.ItemValue.(*pb.JournalSpec)
 	}
 	// Extract Route.
-	var assignments = r.ks.KeyValues.Prefixed(
-		v3_allocator.ItemAssignmentsPrefix(r.ks, args.journal.String()))
+	var assignments = ks.KeyValues.Prefixed(
+		v3_allocator.ItemAssignmentsPrefix(ks, args.journal.String()))
 	res.Route.Init(assignments)
-	res.Route.AttachEndpoints(r.ks)
+	res.Route.AttachEndpoints(ks)
 
-	var localID pb.BrokerSpec_ID
-	if r.state.LocalMemberInd != -1 {
-		localID = r.state.Members[r.state.LocalMemberInd].
-			Decoded.(v3_allocator.Member).MemberValue.(*pb.BrokerSpec).Id
+	if r.state.LocalMemberInd == -1 {
+		err = fmt.Errorf("local member key not found")
+		return
 	}
+	var local = r.state.Members[r.state.LocalMemberInd].
+		Decoded.(v3_allocator.Member).MemberValue.(*pb.BrokerSpec)
 
 	// Select a best, responsible BrokerID.
 	if args.requirePrimary && res.Route.Primary != -1 {
 		res.BrokerId = res.Route.Brokers[res.Route.Primary]
 	} else if !args.requirePrimary && len(res.Route.Brokers) != 0 {
-		res.BrokerId = res.Route.Brokers[res.Route.SelectReplica(localID)]
+		res.BrokerId = res.Route.Brokers[res.Route.SelectReplica(local.GetId())]
 	}
-	if res.BrokerId == localID {
+
+	if res.BrokerId == local.Id {
 		res.replica = r.replicas[args.journal]
+	} else {
+		res.Header.ProxyId = &local.Id
 	}
 
 	// Select a response Status code.
 	if res.journalSpec == nil {
-		res.Status = pb.Status_JOURNAL_NOT_FOUND
+		res.status = pb.Status_JOURNAL_NOT_FOUND
 	} else if res.BrokerId == (pb.BrokerSpec_ID{}) {
 		if args.requirePrimary {
-			res.Status = pb.Status_NO_JOURNAL_PRIMARY_BROKER
+			res.status = pb.Status_NO_JOURNAL_PRIMARY_BROKER
 		} else {
-			res.Status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
+			res.status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
 		}
-	} else if !args.mayProxy && res.BrokerId != localID {
+	} else if !args.mayProxy && res.BrokerId != local.Id {
 		if args.requirePrimary {
-			res.Status = pb.Status_NOT_JOURNAL_PRIMARY_BROKER
+			res.status = pb.Status_NOT_JOURNAL_PRIMARY_BROKER
 		} else {
-			res.Status = pb.Status_NOT_JOURNAL_BROKER
+			res.status = pb.Status_NOT_JOURNAL_BROKER
 		}
 	} else if args.requireFullAssignment && len(res.Route.Brokers) < int(res.journalSpec.Replication) {
-		res.Status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
+		res.status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
 	} else {
-		res.Status = pb.Status_OK
+		res.status = pb.Status_OK
 	}
 
 	return

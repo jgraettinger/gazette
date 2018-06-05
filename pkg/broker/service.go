@@ -3,17 +3,17 @@ package broker
 import (
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
+	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 type Service struct {
 	dialer   dialer
 	resolver *resolver
-	replicas *replicaSet
 }
 
-func NewService(ks *keyspace.KeySpace, id pb.BrokerSpec_ID) (*Service, error) {
+func NewService(state *v3_allocator.State) (*Service, error) {
 	return &Service{
-		dialer:   newDialer(ks),
+		dialer:   newDialer(ks, 1024),
 		resolver: newResolver(ks, id, func(pb.Journal) replica { return newReplicaImpl() }),
 	}, nil
 }

@@ -16,27 +16,40 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 		return err
 	} else if err = req.Validate(); err != nil {
 		return err
-	} else if err = s.resolver.WaitForRevision(stream.Context(), req.Route.Revision); err != nil {
+	}
+
+	resolution, err := s.resolver.resolve(resolveArgs{
+		ctx:                   stream.Context(),
+		journal:               req.Journal,
+		mayProxy:              false,
+		requirePrimary:        false,
+		requireFullAssignment: true,
+		minEtcdRevision:       maxInt64(1, req.Header.GetEtcd().Revision),
+	})
+	if err != nil {
 		return err
 	}
 
-	var res, status = s.resolver.resolve(req.Journal, false, false)
-	if status != pb.Status_OK {
-		return stream.Send(&pb.ReplicateResponse{Status: status, Route: res.route})
+	// Require that the request Route is equivalent to the Route we resolved to.
+	if resolution.status == pb.Status_OK &&
+		!resolution.Header.Route.Equivalent(&req.Header.Route) {
+		resolution.status = pb.Status_WRONG_ROUTE
+	}
+	if resolution.status != pb.Status_OK {
+		return stream.Send(&pb.ReplicateResponse{
+			Status: resolution.status,
+			Header: &resolution.Header,
+		})
 	}
 
-	if !res.route.Equivalent(req.Route) {
-		return stream.Send(&pb.ReplicateResponse{Status: pb.Status_WRONG_ROUTE, Route: res.route})
-	}
-
-	if err := res.replica.serveReplicate(req, stream); err != nil {
+	if err := resolution.replica.serveReplicate(req, stream); err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Replicate")
 		return err
 	}
 	return nil
 }
 
-func (r *replicaImpl) serveReplicate(req *pb.ReplicateRequest, stream pb.Broker_ReplicateServer) error {
+func (r *replica) serveReplicate(req *pb.ReplicateRequest, stream pb.Broker_ReplicateServer) error {
 	var spool, err = r.acquireSpool(stream.Context(), false)
 	if err != nil {
 		return err

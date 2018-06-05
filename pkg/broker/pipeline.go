@@ -49,13 +49,13 @@ func newPipeline(ctx context.Context, header *pb.Header, spool fragment.Spool, d
 	}
 	close(pln.readBarrierCh)
 
-	for i := range header.Route.Brokers {
+	for i, b := range header.Route.Brokers {
 		if i == int(header.Route.Primary) {
 			continue
 		}
 		var conn *grpc.ClientConn
 
-		if conn, pln.sendErrs[i] = dialer.dial(ctx, header.Route.Endpoints[i]); pln.sendErrs[i] == nil {
+		if conn, pln.sendErrs[i] = dialer.dial(ctx, b); pln.sendErrs[i] == nil {
 			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}
@@ -125,7 +125,7 @@ func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 		var resp pb.ReplicateResponse
 		resp, pln.sendErrs[i] = pln.spool.Apply(r)
 
-		if resp.GetHeader().GetStatus() != pb.Status_OK {
+		if resp.Status != pb.Status_OK {
 			// Must never happen, since proposals are derived from local Spool Fragment.
 			panic(resp.String())
 		}
@@ -174,7 +174,7 @@ func (pln *pipeline) gatherOK() {
 	for i, s := range pln.streams {
 		if s == nil || pln.recvErrs[i] != nil {
 			// Pass.
-		} else if pln.recvResp[i].GetHeader().GetStatus() != pb.Status_OK {
+		} else if pln.recvResp[i].Status != pb.Status_OK {
 			pln.recvErrs[i] = fmt.Errorf("unexpected !OK response: %s", &pln.recvResp[i])
 		}
 	}
@@ -191,7 +191,7 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 			continue
 		}
 
-		switch resp := pln.recvResp[i]; resp.GetHeader().GetStatus() {
+		switch resp := pln.recvResp[i]; resp.Status {
 		case pb.Status_OK:
 			// Pass.
 		case pb.Status_WRONG_ROUTE:

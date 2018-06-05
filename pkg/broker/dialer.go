@@ -17,7 +17,7 @@ import (
 
 // dialer returns a ClientConn for a peer identified by its BrokerSpec_ID.
 type dialer interface {
-	dial(ctx context.Context, ep pb.Endpoint) (*grpc.ClientConn, error)
+	dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error)
 }
 
 type dialerImpl struct {
@@ -27,15 +27,17 @@ type dialerImpl struct {
 
 // newDialer builds and returns a dialer which maps broker IDs to their
 // BrokerSpec endpoints through the provided KeySpace.
-func newDialer(ks *keyspace.KeySpace) dialer {
-	var cache, err = lru.New(1024)
-	if err != nil {
-		log.WithField("err", err).Panic("failed to create cache")
-	}
+func newDialer(ks *keyspace.KeySpace, size int) (dialer, error) {
+	var cache, err = lru.NewWithEvict(size, func(key, value interface{}) {
+		if err := value.(*grpc.ClientConn).Close(); err != nil {
+			log.WithFields(log.Fields{"broker": key, "err": err}).
+				Warn("failed to Close evicted grpc.ClientConn")
+		}
+	})
 	return &dialerImpl{
 		ks:    ks,
 		cache: cache,
-	}
+	}, err
 }
 
 func (d *dialerImpl) dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {

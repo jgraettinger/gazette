@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"io"
 	"io/ioutil"
 	"sync"
@@ -14,18 +15,28 @@ import (
 func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 	if err := req.Validate(); err != nil {
 		return err
-	} else if err = s.resolver.WaitForRevision(stream.Context(), 1); err != nil {
+	}
+
+	var resolution, err = s.resolver.resolve(resolveArgs{
+		ctx:                   stream.Context(),
+		journal:               req.Journal,
+		mayProxy:              !req.DoNotProxy,
+		requirePrimary:        false,
+		requireFullAssignment: false,
+		minEtcdRevision:       maxInt64(1, req.Header.GetEtcd().Revision),
+	})
+	if err != nil {
 		return err
+	} else if resolution.status != pb.Status_OK {
+		return stream.Send(&pb.ReadResponse{
+			Status: resolution.status,
+			Header: &resolution.Header,
+		})
+	} else if resolution.replica == nil {
+		return proxyRead(req, stream, &resolution.Header, s.dialer)
 	}
 
-	var res, status = s.resolver.resolve(req.Journal, false, !req.DoNotProxy)
-	if status != pb.Status_OK {
-		return stream.Send(&pb.ReadResponse{Status: status, Route: res.route})
-	} else if res.replica == nil {
-		return proxyRead(req, res.broker, stream, s.dialer)
-	}
-
-	if err := res.replica.serveRead(req, stream); err != nil {
+	if err := resolution.replica.serveRead(req, stream, &resolution.Header); err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Read")
 		return err
 	}
@@ -33,11 +44,13 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 }
 
 // proxyRead forwards a ReadRequest to a resolved peer broker.
-func proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, stream pb.Broker_ReadServer, dialer dialer) error {
-	var conn, err = dialer.dial(stream.Context(), to)
+func proxyRead(req *pb.ReadRequest, stream pb.Broker_ReadServer, hdr *pb.Header, dialer dialer) error {
+	var conn, err = dialer.dial(context.Background(), hdr.BrokerId)
 	if err != nil {
 		return err
 	}
+	req.Header = hdr
+
 	client, err := pb.NewBrokerClient(conn).Read(stream.Context(), req)
 	if err != nil {
 		return err
@@ -59,7 +72,7 @@ func proxyRead(req *pb.ReadRequest, to pb.BrokerSpec_ID, stream pb.Broker_ReadSe
 }
 
 // read evaluates a client's Read RPC.
-func (r *replicaImpl) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
+func (r *replica) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer, hdr *pb.Header) error {
 	var buffer = chunkBufferPool.Get().([]byte)
 	defer chunkBufferPool.Put(buffer)
 
@@ -71,13 +84,10 @@ func (r *replicaImpl) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer) e
 			return err
 		}
 
-		// Send the Route with the first response message (only). Read requests may
-		// be long-lived: so long, in fact, that the Route could change multiple
-		// times over the course of evaluating it.
+		// Send the Header with the first response message (only).
 		if i == 0 {
-			resp.Route = &r.route
+			resp.Header = hdr
 		}
-
 		if err = srv.Send(resp); err != nil {
 			return err
 		}
@@ -137,3 +147,10 @@ var (
 	chunkSize       = 1 << 17 // 128K.
 	chunkBufferPool = sync.Pool{New: func() interface{} { return make([]byte, chunkSize) }}
 )
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}

@@ -205,19 +205,20 @@ message ReadRequest {
 }
 
 message ReadResponse {
-  Header header = 1;
+  Status status = 1;
+  Header header = 2;
   // The effective offset of the read. See ReadRequest offset.
-  int64 offset = 2;
+  int64 offset = 3;
   // The offset to next be written, by the next append transaction served by
   // broker. In other words, the last offset through which content is
   // available to be read from the Journal.
-  int64 write_head = 3;
+  int64 write_head = 4;
   // Fragment to which the offset was mapped.
-  Fragment fragment = 4;
+  Fragment fragment = 5;
   // If Fragment is remote, a URL from which it may be directly read.
-  string fragment_url = 5;
+  string fragment_url = 6;
   // Content chunks of the read.
-  bytes content = 6;
+  bytes content = 7;
 }
 
 message AppendRequest {
@@ -229,10 +230,11 @@ message AppendRequest {
 }
 
 message AppendResponse {
-  Header header = 1;
+  Status status = 1;
+  Header header = 2;
   // If status is OK, then |commit| is the Fragment which places the
   // committed Append content within the Journal.
-  Fragment commit = 2;
+  Fragment commit = 3;
 }
 
 // Three types of ReplicateRequest:
@@ -255,11 +257,12 @@ message ReplicateRequest {
 }
 
 message ReplicateResponse {
-  Header header = 1;
+  Status status = 1;
+  Header header = 2;
   // If status is FRAGMENT_MISMATCH, then |fragment| is the replica's
   // Fragment at the current Journal head, which was found to be inconsistent
   // with the request |proposal| Fragment.
-  Fragment fragment = 2;
+  Fragment fragment = 3;
 }
 
 // Route captures the current topology of a Journal and the brokers serving it.
@@ -281,7 +284,6 @@ message Route {
 // Header captures metadata such as the broker responsible for processing
 // a request or response, and its effective Etcd state.
 message Header {
-  Status status = 1;
   // ID of the broker responsible for request processing.
   BrokerSpec.ID broker_id = 2 [(gogoproto.nullable) = false];
   // ProxyId, if set, is the broker ID which recieved and proxied the request
