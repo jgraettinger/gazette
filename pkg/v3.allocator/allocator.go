@@ -26,11 +26,7 @@ type AllocateArgs struct {
 	Context context.Context
 	// Etcd client Allocate will use to effect changes to the distributed allocation.
 	Etcd *clientv3.Client
-	// KeySpace Allocate will watch for Etcd revision updates.
-	KeySpace *keyspace.KeySpace
-	// RevCond for waiting on Etcd Revisions of the KeySpace.
-	RevCond *keyspace.RevCond
-	// Allocator state extracting from the KeySpace.
+	// Allocator state, which is derived from a Watched KeySpace.
 	State *State
 
 	// testHook is an optional testing hook, invoked after each convergence round.
@@ -50,7 +46,6 @@ type AllocateArgs struct {
 // SIGTERM signal handler) and then waiting for Allocate to return, which it
 // will once all instance Assignments have been re-assigned to other Members.
 func Allocate(args AllocateArgs) error {
-
 	// flowNetwork is local to a single pass of the scheduler, but we retain a
 	// single instance and re-use it each iteration to reduce allocation.
 	var fn = new(flowNetwork)
@@ -62,19 +57,22 @@ func Allocate(args AllocateArgs) error {
 	var desired []Assignment
 	var lastNetworkHash uint64
 
-	defer args.KeySpace.Mu.RUnlock()
-	args.KeySpace.Mu.RLock()
+	var state = args.State
+	var ks = args.State.KS
+	var ctx = args.Context
+	var round int
 
-	for round := 0; true; {
+	defer ks.Mu.RUnlock()
+	ks.Mu.RLock()
 
-		var state = args.State
+	for {
+		state.debugLog() // TODO(johnny): Remove when the Allocator is further along in integration testing.
 
 		if state.LocalMemberInd == -1 {
 			return fmt.Errorf("member key not found in Etcd")
 		} else if state.shouldExit() {
 			return nil
 		}
-		state.debugLog() // TODO(johnny): Remove when the Allocator is further along in integration testing.
 
 		// Response of the last transaction we applied. We'll ensure we've minimally
 		// watched through its revision before driving further action.
@@ -99,7 +97,7 @@ func Allocate(args AllocateArgs) error {
 
 			// Use batched transactions to amortize the network cost of Etcd updates,
 			// and re-verify our Member key with each flush to ensure we're still leader.
-			var txn = newBatchedTxn(args.Context, args.Etcd,
+			var txn = newBatchedTxn(ctx, args.Etcd,
 				modRevisionUnchanged(state.Members[state.LocalMemberInd]))
 
 			// Converge the current state towards |desired|.
@@ -109,11 +107,11 @@ func Allocate(args AllocateArgs) error {
 			}
 
 			if err != nil {
-				log.WithFields(log.Fields{"err": err, "round": round, "rev": args.KeySpace.Header.Revision}).
+				log.WithFields(log.Fields{"err": err, "round": round, "rev": ks.Header.Revision}).
 					Warn("converge iteration failed (will retry)")
 			} else {
 				if args.testHook != nil {
-					args.testHook(round, args.KeySpace.Header.Revision == txnResponse.Header.Revision)
+					args.testHook(round, ks.Header.Revision == txnResponse.Header.Revision)
 				}
 				round++
 			}
@@ -121,12 +119,12 @@ func Allocate(args AllocateArgs) error {
 
 		// Await the next KeySpace change. If we completed a transaction,
 		// ensure we read through its revision before iterating again.
-		var next = args.KeySpace.Header.Revision + 1
+		var next = ks.Header.Revision + 1
 
 		if txnResponse != nil && txnResponse.Header.Revision > next {
 			next = txnResponse.Header.Revision
 		}
-		if err := args.RevCond.WaitForRevision(args.Context, next); err != nil {
+		if err := ks.WaitForRevision(ctx, next); err != nil {
 			return err
 		}
 	}

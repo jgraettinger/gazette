@@ -2,7 +2,6 @@ package v3_allocator
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -124,69 +123,6 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 		default:
 			return nil, fmt.Errorf("unexpected key prefix")
 		}
-	}
-}
-
-type KeySpace struct {
-	*keyspace.KeySpace
-	LocalKey string
-
-	state    *State
-	stateErr error
-	stateRev int64
-}
-
-func (ks *KeySpace) State() (*State, error) {
-
-	if ks.stateRev == ks.Header.Revision {
-		return ks.state, ks.stateErr
-	}
-
-	ks.Mu.RUnlock()
-	ks.Mu.Lock()
-
-	ks.Mu.Unlock()
-	ks.Mu.RLock()
-
-}
-
-// WaitForRevision blocks until the KeySpace revision is at least |revision|,
-// or until the context is done. A read-lock of the KeySpace.Mu must be held at
-// invocation, and will be re-acquired before WaitForRevision returns.
-func (ks *KeySpace) WaitForRevision(ctx context.Context, revision int64) error {
-	if err := ks.KeySpace.WaitForRevision(ctx, revision); err != nil {
-		return err
-	}
-
-	if ks.stateRev == ks.Header.Revision {
-		return nil
-	}
-
-	ks.Mu.RUnlock()
-	ks.Mu.Lock()
-
-	if ks.stateRev != ks.Header.Revision {
-
-	}
-
-	ks.Mu.Unlock()
-	ks.Mu.RLock()
-
-	for {
-		if ks.Header.Revision >= revision {
-			return nil
-		} else if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		var ch = ks.updateCh
-
-		ks.Mu.RUnlock()
-		select {
-		case <-ch:
-		case <-ctx.Done():
-		}
-		ks.Mu.RLock()
 	}
 }
 

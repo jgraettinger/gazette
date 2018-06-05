@@ -37,15 +37,14 @@ type KeySpace struct {
 	// Observers is intended to simplify atomicity of stateful representations
 	// deriving themselves from the KeySpace: any mutations performed by Observers
 	// will appear synchronously with changes to the KeySpace itself, from the
-	// perspective of a client appropriately utilizing a read-lock. If an Observer
-	// returns falls, it is removed from Observers and not invoked again.
-	Observers []func() bool
+	// perspective of a client appropriately utilizing a read-lock.
+	Observers []func()
 	// Mu guards Header, KeyValues, and Observers. It must be locked before any are accessed.
 	Mu sync.RWMutex
 
-	updateCh chan struct{}   // Signals waiting goroutines of an update.
 	decode   KeyValueDecoder // Client-provided KeySpace decoder.
 	next     KeyValues       // Reusable buffer for next, amortized KeyValues update.
+	updateCh chan struct{}   // Signals waiting goroutines of an update.
 }
 
 // NewKeySpace returns a KeySpace with the configured key |prefix| and |decoder|.
@@ -57,8 +56,9 @@ func NewKeySpace(prefix string, decoder KeyValueDecoder) *KeySpace {
 		panic("expected prefix to be a cleaned path")
 	}
 	var ks = &KeySpace{
-		Root:   prefix,
-		decode: decoder,
+		Root:     prefix,
+		decode:   decoder,
+		updateCh: make(chan struct{}),
 	}
 	return ks
 }
@@ -139,7 +139,7 @@ func (ks *KeySpace) Watch(ctx context.Context, client clientv3.Watcher) error {
 			}
 			responses = append(responses, resp)
 		case <-applyTimer.C:
-			if err := ks.apply(responses); err != nil {
+			if err := ks.Apply(responses...); err != nil {
 				return err
 			}
 			responses = responses[:0]
@@ -169,11 +169,16 @@ func (ks *KeySpace) WaitForRevision(ctx context.Context, revision int64) error {
 	}
 }
 
-// apply Etcd WatchResponses to the KeySpace. It returns only unrecoverable
-// Watch errors; inconsistencies in the updates themselves are logged.
-func (ks *KeySpace) apply(responses []clientv3.WatchResponse) error {
+// Apply one or more Etcd WatchResponses to the KeySpace. Apply returns only
+// unrecoverable Application errors; inconsistencies in the updates themselves
+// are instead logged. Apply is exported principally in support of testing
+// fixtures; most clients should instead use Watch. Clients must ensure
+// concurrent calls to Apply are not made.
+func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
+	var hdr etcdserverpb.ResponseHeader
+
 	for _, r := range responses {
-		if err := patchHeader(&ks.Header, r.Header, false); err != nil {
+		if err := patchHeader(&hdr, r.Header, false); err != nil {
 			return err
 		}
 		// Order events of each WatchResponse on key order (they already share ModRevision).
@@ -216,23 +221,22 @@ func (ks *KeySpace) apply(responses []clientv3.WatchResponse) error {
 	}
 	next = append(next, current...) // Append any left-over elements in |current|.
 
+	// Critical section: patch updated header, and swap out rebuilt KeyValues.
 	ks.Mu.Lock()
-	ks.KeyValues, ks.next = next, ks.KeyValues[:0]
-	ks.onUpdate()
+	var err = patchHeader(&ks.Header, hdr, false)
+	if err == nil {
+		ks.KeyValues, ks.next = next, ks.KeyValues[:0]
+		ks.onUpdate()
+	}
 	ks.Mu.Unlock()
 
-	return nil
+	return err
 }
 
 func (ks *KeySpace) onUpdate() {
-	var j int
 	for _, obv := range ks.Observers {
-		if ok := obv(); ok {
-			ks.Observers[j], j = obv, j+1
-		}
+		obv()
 	}
-	ks.Observers = ks.Observers[:j]
-
 	close(ks.updateCh)
 	ks.updateCh = make(chan struct{})
 }

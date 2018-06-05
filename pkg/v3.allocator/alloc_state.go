@@ -52,7 +52,7 @@ func NewObservedState(ks *keyspace.KeySpace, localKey string) *State {
 
 // observe extracts a current State representation from the KeySpace,
 // pivoted around the Member instance identified by |LocalKey|.
-func (s *State) observe() bool {
+func (s *State) observe() {
 	*s = State{
 		KS:       s.KS,
 		LocalKey: s.LocalKey,
@@ -129,7 +129,6 @@ func (s *State) observe() bool {
 			}
 		}
 	}
-	return true
 }
 
 // shouldExit returns true iff the termination condition is met: our local

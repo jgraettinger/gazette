@@ -3,6 +3,7 @@ package keyspace
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/coreos/etcd/clientv3"
 	epb "github.com/coreos/etcd/etcdserver/etcdserverpb"
@@ -29,10 +30,15 @@ func (s *KeySpaceSuite) TestLoadAndWatch(c *gc.C) {
 	}
 
 	var ks = NewKeySpace("/", testDecoder)
+
+	// Install an Observer and fix |obvCh| to be signaled on each call.
+	var expectObserverCallCh = make(chan struct{}, 1)
+	ks.Observers = append(ks.Observers, func() { expectObserverCallCh <- struct{}{} })
+
 	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
 	verifyDecodedKeyValues(c, ks.KeyValues, map[string]int{"/one": 1, "/three": 3})
+	<-expectObserverCallCh
 
-	var signalCh = make(chan struct{})
 	go func() {
 		for _, op := range []clientv3.Op{
 			clientv3.OpPut("/two", "2"),
@@ -44,17 +50,12 @@ func (s *KeySpaceSuite) TestLoadAndWatch(c *gc.C) {
 			var _, err = client.Do(ctx, op)
 			c.Check(err, gc.IsNil)
 
-			var _, ok = <-signalCh // Expect a signal is delivered.
-			c.Check(ok, gc.Equals, true)
+			<-expectObserverCallCh
 		}
 		cancel()
 	}()
 
-	c.Check(ks.Watch(ctx, client, signalCh), gc.Equals, context.Canceled)
-
-	// Expect |signalCh| was closed.
-	var _, ok = <-signalCh
-	c.Check(ok, gc.Equals, false)
+	c.Check(ks.Watch(ctx, client), gc.Equals, context.Canceled)
 
 	verifyDecodedKeyValues(c, ks.KeyValues,
 		map[string]int{"/two": 2, "/three": 4, "/foo": 5})
@@ -99,7 +100,7 @@ func (s *KeySpaceSuite) TestHeaderPatching(c *gc.C) {
 }
 
 func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
-	var ks = KeySpace{decode: testDecoder}
+	var ks = NewKeySpace("/", testDecoder)
 
 	var resp = []clientv3.WatchResponse{{
 		Header: epb.ResponseHeader{ClusterId: 9999, Revision: 10},
@@ -109,7 +110,7 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 		},
 	}}
 
-	c.Check(ks.apply(resp), gc.IsNil)
+	c.Check(ks.Apply(resp...), gc.IsNil)
 	verifyDecodedKeyValues(c, ks.KeyValues,
 		map[string]int{"/some/key": 99, "/other/key": 100})
 
@@ -121,7 +122,7 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 			delEvent("/not/here", 11),
 		},
 	}}
-	c.Check(ks.apply(resp), gc.IsNil)
+	c.Check(ks.Apply(resp...), gc.IsNil)
 	verifyDecodedKeyValues(c, ks.KeyValues,
 		map[string]int{"/some/key": 101, "/other/key": 100})
 
@@ -132,7 +133,7 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 			delEvent("/not/here", 11),
 		},
 	}}
-	c.Check(ks.apply(resp), gc.ErrorMatches, `etcd ClusterID mismatch .*`)
+	c.Check(ks.Apply(resp...), gc.ErrorMatches, `etcd ClusterID mismatch .*`)
 
 	// Multiple WatchResponses may be applied at once. Keys may be in any order,
 	// and mutated multiple times within the batch apply.
@@ -168,7 +169,7 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 			},
 		},
 	}
-	c.Check(ks.apply(resp), gc.IsNil)
+	c.Check(ks.Apply(resp...), gc.IsNil)
 	verifyDecodedKeyValues(c, ks.KeyValues,
 		map[string]int{
 			"/some/key":  101,
@@ -179,6 +180,51 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 			"/cccc": 4444,
 			"/eeee": 7777,
 		})
+}
+
+func (s *KeySpaceSuite) TestWaiForRevision(c *gc.C) {
+	var ks = NewKeySpace("/", testDecoder)
+
+	var ctx, cancel = context.WithCancel(context.Background())
+
+	go func() {
+
+		c.Check(ks.Apply(clientv3.WatchResponse{
+			Header: epb.ResponseHeader{ClusterId: 123, Revision: 10},
+			Events: []*clientv3.Event{
+				putEvent("/key/10", "", 10, 10, 1),
+			},
+		}), gc.IsNil)
+
+		c.Check(ks.Apply(clientv3.WatchResponse{
+			Header: epb.ResponseHeader{ClusterId: 123, Revision: 99},
+			Events: []*clientv3.Event{
+				putEvent("/key/99", "", 99, 99, 1),
+			},
+		}), gc.IsNil)
+
+		time.Sleep(time.Millisecond)
+
+		c.Check(ks.Apply(clientv3.WatchResponse{
+			Header: epb.ResponseHeader{ClusterId: 123, Revision: 100},
+			Events: []*clientv3.Event{
+				putEvent("/key/100", "", 100, 100, 1),
+			},
+		}), gc.IsNil)
+	}()
+
+	ks.Mu.RLock()
+	defer ks.Mu.RUnlock()
+
+	c.Check(ks.WaitForRevision(ctx, 100), gc.IsNil)
+	c.Check(ks.Header.Revision, gc.Equals, int64(100))
+
+	cancel()
+
+	// Revision already met: succeeds immediately.
+	c.Check(ks.WaitForRevision(ctx, 99), gc.IsNil)
+	// Future revision: doesn't block as context is cancelled.
+	c.Check(ks.WaitForRevision(ctx, 101), gc.Equals, context.Canceled)
 }
 
 var (

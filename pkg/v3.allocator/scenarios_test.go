@@ -607,22 +607,27 @@ func serveUntilIdle(c *gc.C, ctx context.Context, client *clientv3.Client, ks *k
 		clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortAscend))
 	c.Assert(err, gc.IsNil)
 
+	var state = NewObservedState(ks, string(resp.Kvs[0].Key))
+
 	var result int
 	ctx, cancel := context.WithCancel(ctx)
 
+	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
+	go ks.Watch(ctx, client)
+
 	// Create and serve an Allocator which will |cancel| when it becomes idle.
-	var alloc = Allocator{
-		KeySpace:      ks,
-		LocalKey:      string(resp.Kvs[0].Key),
-		StateCallback: func(*State) {}, // No-op.
+	c.Check(Allocate(AllocateArgs{
+		Context: ctx,
+		Etcd:    client,
+		State:   state,
 		testHook: func(round int, idle bool) {
 			if idle {
 				result = round // Preserve and return the round on which the Allocator became idle.
 				cancel()
 			}
 		},
-	}
-	c.Assert(alloc.Serve(ctx, client), gc.IsNil)
+	}), gc.Equals, context.Canceled)
+
 	return result
 }
 

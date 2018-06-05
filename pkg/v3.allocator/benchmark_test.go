@@ -25,9 +25,21 @@ func BenchmarkAll(b *testing.B) {
 	})
 }
 
+// TestBenchmarkHealth runs benchmarks with a small N to ensure they don't bit rot.
+func TestBenchmarkHealth(t *testing.T) {
+	var etcdCluster = integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
+	defer etcdCluster.Terminate(t)
+
+	var fakeB testing.B
+	var client = etcdCluster.RandClient()
+
+	benchmarkSimulatedDeploy(&fakeB, client)
+}
+
 func benchmarkSimulatedDeploy(b *testing.B, client *clientv3.Client) {
 	var ctx, _ = context.WithCancel(context.Background())
 	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
+	var state = NewObservedState(ks, MemberKey(ks, "zone-b", "leader"))
 
 	var _, err = client.Delete(ctx, "", clientv3.WithPrefix())
 	assert.NoError(b, err)
@@ -57,14 +69,8 @@ func benchmarkSimulatedDeploy(b *testing.B, client *clientv3.Client) {
 		}
 	}
 
-	var alloc = Allocator{
-		KeySpace:      ks,
-		LocalKey:      MemberKey(ks, "zone-b", "leader"),
-		StateCallback: func(*State) {}, // No-op.
-	}
-
 	// Insert a Member key which will act as the leader, and will not be rolled.
-	assert.NoError(b, insert(ctx, client, alloc.LocalKey, `{"R": 1}`))
+	assert.NoError(b, insert(ctx, client, state.LocalKey, `{"R": 1}`))
 
 	// Announce half of Members...
 	fill(0, NMembersHalf, true, func(i int) (string, string) {
@@ -75,35 +81,35 @@ func benchmarkSimulatedDeploy(b *testing.B, client *clientv3.Client) {
 		return ItemKey(ks, fmt.Sprintf("i%05d", i)), `{"R": 3}`
 	})
 
-	var state = struct {
+	var testState = struct {
 		nextBlock  int  // Next block of Members to cycle down & up.
 		consistent bool // Whether we've marked Assignments as consistent.
 	}{}
 
-	alloc.testHook = func(round int, idle bool) {
+	var testHook = func(round int, idle bool) {
 		log.WithFields(log.Fields{
 			"round":            round,
 			"idle":             idle,
-			"state.nextBlock":  state.nextBlock,
-			"state.consistent": state.consistent,
+			"state.nextBlock":  testState.nextBlock,
+			"state.consistent": testState.consistent,
 		}).Info("ScheduleCallback")
 
 		if !idle {
 			return
-		} else if !state.consistent {
+		} else if !testState.consistent {
 			// Mark any new Assignments as "consistent", which will typically
 			// unblock further convergence operations.
 			assert.NoError(b, markAllConsistent(ctx, client, ks))
-			state.consistent = true
+			testState.consistent = true
 			return
 		}
 
-		var begin, end = NMembers10 * state.nextBlock, NMembers10 * (state.nextBlock + 1)
+		var begin, end = NMembers10 * testState.nextBlock, NMembers10 * (testState.nextBlock + 1)
 		if begin == NMembersHalf {
 			// We've cycled all Members. Gracefully exit by setting our ItemLimit to zero,
 			// and waiting for Serve to complete.
-			update(ctx, client, alloc.LocalKey, `{"R": 0}`)
-			state.consistent = false
+			update(ctx, client, state.LocalKey, `{"R": 0}`)
+			testState.consistent = false
 			return
 		}
 
@@ -115,11 +121,19 @@ func benchmarkSimulatedDeploy(b *testing.B, client *clientv3.Client) {
 			return benchMemberKey(ks, i), `{"R": 0}`
 		})
 
-		state.nextBlock++
-		state.consistent = false
+		testState.nextBlock++
+		testState.consistent = false
 	}
 
-	assert.NoError(b, alloc.Serve(ctx, client))
+	assert.NoError(b, ks.Load(ctx, client, 0))
+	go ks.Watch(ctx, client)
+
+	assert.NoError(b, Allocate(AllocateArgs{
+		Context:  ctx,
+		Etcd:     client,
+		State:    state,
+		testHook: testHook,
+	}))
 }
 
 func benchMemberKey(ks *keyspace.KeySpace, i int) string {
