@@ -1,5 +1,6 @@
 package broker
 
+/*
 import (
 	"errors"
 	"io"
@@ -231,3 +232,4 @@ func expectReadResponse(c *gc.C, stream pb.Broker_ReadClient, expect *pb.ReadRes
 }
 
 var _ = gc.Suite(&ReadSuite{})
+*/

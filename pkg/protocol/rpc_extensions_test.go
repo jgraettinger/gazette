@@ -11,12 +11,14 @@ type RPCSuite struct{}
 
 func (s *RPCSuite) TestReadRequestValidation(c *gc.C) {
 	var req = ReadRequest{
+		Header:  badHeaderFixture(),
 		Journal: "/bad",
 		Offset:  -2,
 	}
+	c.Check(req.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
+	req.Header.Etcd.ClusterId = 12
 	c.Check(req.Validate(), gc.ErrorMatches, `Journal: cannot begin with '/' \(/bad\)`)
 	req.Journal = "good"
-
 	c.Check(req.Validate(), gc.ErrorMatches, `invalid Offset \(-2; expected -1 <= Offset <= MaxInt64\)`)
 	req.Offset = -1
 
@@ -31,17 +33,17 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 
 	var resp = ReadResponse{
 		Status:      9101,
+		Header:      badHeaderFixture(),
 		Offset:      1234,
 		WriteHead:   5678,
-		Route:       &Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}},
 		Fragment:    &frag,
 		FragmentUrl: ":/bad/url",
 	}
 	c.Check(resp.Validate(), gc.ErrorMatches, `Status: invalid status .*`)
 	resp.Status = Status_OK
 
-	c.Check(resp.Validate(), gc.ErrorMatches, `Route: invalid Primary .*`)
-	resp.Route.Primary = 0
+	c.Check(resp.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
+	resp.Header.Etcd.ClusterId = 12
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `Fragment.Journal: cannot begin with '/' \(/bad/name\)`)
 	frag.Journal = "a/journal"
@@ -82,14 +84,14 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Status with Content \(WRONG_ROUTE\)`)
 	resp.Status = Status_OK
 
+	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Header with Content \(broker_id:.*`)
+	resp.Header = nil
+
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Offset with Content \(5678\)`)
 	resp.Offset = 0
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected WriteHead with Content \(1234\)`)
 	resp.WriteHead = 0
-
-	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Route with Content \(brokers:.*`)
-	resp.Route = nil
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Fragment with Content \(journal:.*`)
 	resp.Fragment = nil
@@ -102,10 +104,13 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 
 func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
 	var req = AppendRequest{
+		Header:  badHeaderFixture(),
 		Journal: "/bad",
 		Content: []byte("foo"),
 	}
 
+	c.Check(req.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
+	req.Header.Etcd.ClusterId = 12
 	c.Check(req.Validate(), gc.ErrorMatches, `Journal: cannot begin with '/' \(/bad\)`)
 	req.Journal = "good"
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Content`)
@@ -115,6 +120,9 @@ func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
 
 	req.Journal = ""
 	req.Content = []byte("foo")
+
+	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Header`)
+	req.Header = nil
 
 	c.Check(req.Validate(), gc.IsNil)
 }
@@ -126,10 +134,10 @@ func (s *RPCSuite) TestAppendResponseValidationCases(c *gc.C) {
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `Status: invalid status .*`)
 	resp.Status = Status_OK
-	c.Check(resp.Validate(), gc.ErrorMatches, `expected Route`)
-	resp.Route = &Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}}
-	c.Check(resp.Validate(), gc.ErrorMatches, `Route: invalid Primary .*`)
-	resp.Route.Primary = 0
+	c.Check(resp.Validate(), gc.ErrorMatches, `expected Header`)
+	resp.Header = badHeaderFixture()
+	c.Check(resp.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
+	resp.Header.Etcd.ClusterId = 12
 	c.Check(resp.Validate(), gc.ErrorMatches, `expected Commit`)
 	resp.Commit = &Fragment{Journal: "/bad/name"}
 	c.Check(resp.Validate(), gc.ErrorMatches, `Commit.Journal: cannot begin with '/' \(/bad/name\)`)
@@ -141,7 +149,6 @@ func (s *RPCSuite) TestAppendResponseValidationCases(c *gc.C) {
 func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 	var req = ReplicateRequest{
 		Journal:      "/bad",
-		Route:        &Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}},
 		Proposal:     nil,
 		Content:      []byte("foo"),
 		ContentDelta: 100,
@@ -149,8 +156,10 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 
 	c.Check(req.Validate(), gc.ErrorMatches, `Journal: cannot begin with '/' \(/bad\)`)
 	req.Journal = "journal"
-	c.Check(req.Validate(), gc.ErrorMatches, `Route: invalid Primary .*`)
-	req.Route.Primary = 0
+	c.Check(req.Validate(), gc.ErrorMatches, `expected Header with Journal`)
+	req.Header = badHeaderFixture()
+	c.Check(req.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
+	req.Header.Etcd.ClusterId = 12
 	c.Check(req.Validate(), gc.ErrorMatches, `expected Proposal with Journal`)
 	req.Proposal = &Fragment{Journal: "/bad/name"}
 	c.Check(req.Validate(), gc.ErrorMatches, `Proposal.Journal: cannot begin with '/' \(/bad/name\)`)
@@ -169,8 +178,8 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 	// Clearing Journal makes this a mid-stream Request.
 	req.Journal = ""
 
-	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Route without Journal \(brokers:.*\)`)
-	req.Route = nil
+	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Header without Journal \(broker_id:.*\)`)
+	req.Header = nil
 
 	req.Proposal.Journal = "/other/bad/name"
 	req.Content = []byte("foo")
@@ -201,39 +210,51 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 
 func (s *RPCSuite) TestReplicateResponseValidationCases(c *gc.C) {
 	var frag = &Fragment{Journal: "/bad/name"}
-	var rt = Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}}
 
 	var resp = ReplicateResponse{
 		Status:   9101,
-		Route:    &rt,
+		Header:   badHeaderFixture(),
 		Fragment: frag,
 	}
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `Status: invalid status .*`)
 	resp.Status = Status_OK
 
-	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Route \(brokers:.*\)`)
-	resp.Route = nil
+	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Header \(broker_id:.*\)`)
+	resp.Header = nil
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Fragment \(journal:.*\)`)
 	resp.Fragment = nil
-
 	c.Check(resp.Validate(), gc.IsNil) // Success.
 
 	resp.Status = Status_WRONG_ROUTE
-	resp.Route = &rt
-
-	c.Check(resp.Validate(), gc.ErrorMatches, `Route: invalid Primary .*`)
-	rt.Primary = 0
+	c.Check(resp.Validate(), gc.ErrorMatches, `expected Header`)
+	resp.Header = badHeaderFixture()
+	c.Check(resp.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
+	resp.Header.Etcd.ClusterId = 12
 	c.Check(resp.Validate(), gc.IsNil) // Success.
 
 	resp.Status = Status_FRAGMENT_MISMATCH
-	resp.Route = nil
+	resp.Header = nil
 	resp.Fragment = frag
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `Fragment.Journal: cannot begin with '/' \(/bad/name\)`)
 	frag.Journal = "journal"
 
 	c.Check(resp.Validate(), gc.IsNil) // Success.
+}
+
+func badHeaderFixture() *Header {
+	return &Header{
+		BrokerId: BrokerSpec_ID{"zone", "name"},
+		ProxyId:  &BrokerSpec_ID{"zone", "peer"},
+		Route:    Route{Primary: 0, Brokers: []BrokerSpec_ID{{"zone", "name"}}},
+		Etcd: Header_Etcd{
+			ClusterId: 0, // ClusterId is invalid, but easily fixed up.
+			MemberId:  34,
+			Revision:  56,
+			RaftTerm:  78,
+		},
+	}
 }
 
 var _ = gc.Suite(&RPCSuite{})

@@ -4,6 +4,11 @@ import "net/url"
 
 // Validate returns an error if the ReadRequest is not well-formed.
 func (m *ReadRequest) Validate() error {
+	if m.Header != nil {
+		if err := m.Header.Validate(); err != nil {
+			return ExtendContext(err, "Header")
+		}
+	}
 	if err := m.Journal.Validate(); err != nil {
 		return ExtendContext(err, "Journal")
 	} else if m.Offset < -1 {
@@ -25,12 +30,12 @@ func (m *ReadResponse) Validate() error {
 		// Require that no other fields are set.
 		if m.Status != Status_OK {
 			return NewValidationError("unexpected Status with Content (%v)", m.Status)
+		} else if m.Header != nil {
+			return NewValidationError("unexpected Header with Content (%s)", m.Header)
 		} else if m.Offset != 0 {
 			return NewValidationError("unexpected Offset with Content (%d)", m.Offset)
 		} else if m.WriteHead != 0 {
 			return NewValidationError("unexpected WriteHead with Content (%d)", m.WriteHead)
-		} else if m.Route != nil {
-			return NewValidationError("unexpected Route with Content (%s)", m.Route)
 		} else if m.Fragment != nil {
 			return NewValidationError("unexpected Fragment with Content (%s)", m.Fragment)
 		} else if m.FragmentUrl != "" {
@@ -39,9 +44,9 @@ func (m *ReadResponse) Validate() error {
 		return nil
 	}
 
-	if m.Route != nil {
-		if err := m.Route.Validate(); err != nil {
-			return ExtendContext(err, "Route")
+	if m.Header != nil {
+		if err := m.Header.Validate(); err != nil {
+			return ExtendContext(err, "Header")
 		}
 	}
 	if m.WriteHead < 0 {
@@ -77,6 +82,11 @@ func (m *ReadResponse) Validate() error {
 // Validate returns an error if the AppendRequest is not well-formed.
 func (m *AppendRequest) Validate() error {
 	if m.Journal != "" {
+		if m.Header != nil {
+			if err := m.Header.Validate(); err != nil {
+				return ExtendContext(err, "Header")
+			}
+		}
 		if err := m.Journal.Validate(); err != nil {
 			return ExtendContext(err, "Journal")
 		} else if len(m.Content) != 0 {
@@ -84,6 +94,8 @@ func (m *AppendRequest) Validate() error {
 		}
 	} else if len(m.Content) == 0 {
 		return NewValidationError("expected Content")
+	} else if m.Header != nil {
+		return NewValidationError("unexpected Header")
 	}
 	return nil
 }
@@ -92,10 +104,10 @@ func (m *AppendRequest) Validate() error {
 func (m *AppendResponse) Validate() error {
 	if err := m.Status.Validate(); err != nil {
 		return ExtendContext(err, "Status")
-	} else if m.Route == nil {
-		return NewValidationError("expected Route")
-	} else if err = m.Route.Validate(); err != nil {
-		return ExtendContext(err, "Route")
+	} else if m.Header == nil {
+		return NewValidationError("expected Header")
+	} else if err = m.Header.Validate(); err != nil {
+		return ExtendContext(err, "Header")
 	} else if m.Commit == nil {
 		return NewValidationError("expected Commit")
 	} else if err = m.Commit.Validate(); err != nil {
@@ -112,10 +124,10 @@ func (m *ReplicateRequest) Validate() error {
 
 		if err := m.Journal.Validate(); err != nil {
 			return ExtendContext(err, "Journal")
-		} else if m.Route == nil {
-			return NewValidationError("expected Route with Journal")
-		} else if err := m.Route.Validate(); err != nil {
-			return ExtendContext(err, "Route")
+		} else if m.Header == nil {
+			return NewValidationError("expected Header with Journal")
+		} else if err := m.Header.Validate(); err != nil {
+			return ExtendContext(err, "Header")
 		} else if m.Proposal == nil {
 			return NewValidationError("expected Proposal with Journal")
 		} else if err := m.Proposal.Validate(); err != nil {
@@ -132,8 +144,8 @@ func (m *ReplicateRequest) Validate() error {
 		return nil
 	}
 
-	if m.Route != nil {
-		return NewValidationError("unexpected Route without Journal (%s)", m.Route)
+	if m.Header != nil {
+		return NewValidationError("unexpected Header without Journal (%s)", m.Header)
 	}
 
 	if m.Proposal != nil {
@@ -167,13 +179,13 @@ func (m *ReplicateResponse) Validate() error {
 	}
 
 	if m.Status == Status_WRONG_ROUTE {
-		if m.Route == nil {
-			return NewValidationError("expected Route")
-		} else if err := m.Route.Validate(); err != nil {
-			return ExtendContext(err, "Route")
+		if m.Header == nil {
+			return NewValidationError("expected Header")
+		} else if err := m.Header.Validate(); err != nil {
+			return ExtendContext(err, "Header")
 		}
-	} else if m.Route != nil {
-		return NewValidationError("unexpected Route (%s)", m.Route)
+	} else if m.Header != nil {
+		return NewValidationError("unexpected Header (%s)", m.Header)
 	}
 
 	if m.Status == Status_FRAGMENT_MISMATCH {

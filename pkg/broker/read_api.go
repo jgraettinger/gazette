@@ -45,7 +45,7 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 
 // proxyRead forwards a ReadRequest to a resolved peer broker.
 func proxyRead(req *pb.ReadRequest, stream pb.Broker_ReadServer, hdr *pb.Header, dialer dialer) error {
-	var conn, err = dialer.dial(context.Background(), hdr.BrokerId)
+	var conn, err = dialer.dial(context.Background(), hdr.BrokerId, hdr.Route)
 	if err != nil {
 		return err
 	}

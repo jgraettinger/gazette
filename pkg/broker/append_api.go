@@ -65,7 +65,7 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 
 // proxyAppend forwards an AppendRequest to a resolved peer broker.
 func proxyAppend(req *pb.AppendRequest, stream pb.Broker_AppendServer, hdr *pb.Header, dialer dialer) error {
-	var conn, err = dialer.dial(context.Background(), hdr.BrokerId)
+	var conn, err = dialer.dial(context.Background(), hdr.BrokerId, hdr.Route)
 	if err != nil {
 		return err
 	}

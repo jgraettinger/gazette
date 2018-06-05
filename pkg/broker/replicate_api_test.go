@@ -1,5 +1,6 @@
 package broker
 
+/*
 import (
 	"io"
 
@@ -115,3 +116,4 @@ func expectReplResponse(c *gc.C, stream pb.Broker_ReplicateClient, expect *pb.Re
 }
 
 var _ = gc.Suite(&ReplicateSuite{})
+*/

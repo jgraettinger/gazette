@@ -1,5 +1,6 @@
 package broker
 
+/*
 import (
 	"context"
 	"crypto/sha1"
@@ -133,3 +134,4 @@ func sumOf(s string) pb.SHA1Sum {
 	var d = sha1.Sum([]byte(s))
 	return pb.SHA1SumFromDigest(d[:])
 }
+*/

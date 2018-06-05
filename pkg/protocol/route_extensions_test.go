@@ -158,9 +158,14 @@ func (s *RouteSuite) TestReplicaSelection(c *gc.C) {
 	}
 
 	rand.Seed(time.Now().UnixNano())
-	c.Check(rt.RandomReplica("zone-b"), gc.Equals, 2)
-	c.Check(rt.RandomReplica("zone-a") < 2, gc.Equals, true)
-	c.Check(rt.RandomReplica("zone-other") < 3, gc.Equals, true)
+
+	// If the exact preferred ID is available, expect it's returned.
+	c.Check(rt.SelectReplica(BrokerSpec_ID{"zone-a", "member-3"}), gc.Equals, 1)
+	// Otherwise, expect an ID from its Zone is returned.
+	c.Check(rt.SelectReplica(BrokerSpec_ID{"zone-b", "other-peer"}), gc.Equals, 2)
+	c.Check(rt.SelectReplica(BrokerSpec_ID{"zone-a", "other-peer"}) < 2, gc.Equals, true)
+	// Otherwise, selection is at random.
+	c.Check(rt.SelectReplica(BrokerSpec_ID{"other-zone", "peer"}) < 3, gc.Equals, true)
 }
 
 var _ = gc.Suite(&RouteSuite{})

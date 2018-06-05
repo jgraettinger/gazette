@@ -522,6 +522,7 @@ func (m *SHA1Sum) GetPart3() uint32 {
 }
 
 type ReadRequest struct {
+	// Header is attached by a proxying broker peer.
 	Header *Header `protobuf:"bytes,1,opt,name=header" json:"header,omitempty"`
 	// Journal to be read.
 	Journal Journal `protobuf:"bytes,2,opt,name=journal,proto3,casttype=Journal" json:"journal,omitempty"`
@@ -591,7 +592,9 @@ func (m *ReadRequest) GetMetadataOnly() bool {
 }
 
 type ReadResponse struct {
-	Status Status  `protobuf:"varint,1,opt,name=status,proto3,enum=protocol.Status" json:"status,omitempty"`
+	// Status of the Read RPC.
+	Status Status `protobuf:"varint,1,opt,name=status,proto3,enum=protocol.Status" json:"status,omitempty"`
+	// Header of the response. Accompanies the first ReadResponse in the response stream.
 	Header *Header `protobuf:"bytes,2,opt,name=header" json:"header,omitempty"`
 	// The effective offset of the read. See ReadRequest offset.
 	Offset int64 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
@@ -662,6 +665,7 @@ func (m *ReadResponse) GetContent() []byte {
 }
 
 type AppendRequest struct {
+	// Header is attached by a proxying broker peer to the first AppendRequest message.
 	Header *Header `protobuf:"bytes,1,opt,name=header" json:"header,omitempty"`
 	// Journal to be appended to.
 	Journal Journal `protobuf:"bytes,2,opt,name=journal,proto3,casttype=Journal" json:"journal,omitempty"`
@@ -696,7 +700,9 @@ func (m *AppendRequest) GetContent() []byte {
 }
 
 type AppendResponse struct {
-	Status Status  `protobuf:"varint,1,opt,name=status,proto3,enum=protocol.Status" json:"status,omitempty"`
+	// Status of the Append RPC.
+	Status Status `protobuf:"varint,1,opt,name=status,proto3,enum=protocol.Status" json:"status,omitempty"`
+	// Header of the response. Accompanies the first AppendResponse in the response stream.
 	Header *Header `protobuf:"bytes,2,opt,name=header" json:"header,omitempty"`
 	// If status is OK, then |commit| is the Fragment which places the
 	// committed Append content within the Journal.
@@ -734,6 +740,9 @@ func (m *AppendResponse) GetCommit() *Fragment {
 //  * Streamed commit - Proposal and (optionally) Acknowledge are set.
 //  * Streamed content - Content and ContentDelta are set.
 type ReplicateRequest struct {
+	// Header defines the primary broker, Route, and Etcd Revision under which
+	// this Replicate stream is being established. Each replication peer
+	// independently inspects and verifies the current Journal Route topology.
 	Header *Header `protobuf:"bytes,1,opt,name=header" json:"header,omitempty"`
 	// Journal to be replicated to.
 	Journal Journal `protobuf:"bytes,2,opt,name=journal,proto3,casttype=Journal" json:"journal,omitempty"`
@@ -796,7 +805,9 @@ func (m *ReplicateRequest) GetAcknowledge() bool {
 }
 
 type ReplicateResponse struct {
-	Status Status  `protobuf:"varint,1,opt,name=status,proto3,enum=protocol.Status" json:"status,omitempty"`
+	// Status of the Replicate RPC.
+	Status Status `protobuf:"varint,1,opt,name=status,proto3,enum=protocol.Status" json:"status,omitempty"`
+	// Header of the response. Accompanies the first ReplicateResponse in the response stream.
 	Header *Header `protobuf:"bytes,2,opt,name=header" json:"header,omitempty"`
 	// If status is FRAGMENT_MISMATCH, then |fragment| is the replica's
 	// Fragment at the current Journal head, which was found to be inconsistent
@@ -871,7 +882,7 @@ func (m *Route) GetEndpoints() []Endpoint {
 }
 
 // Header captures metadata such as the broker responsible for processing
-// a request or response, and its effective Etcd state.
+// an RPC, and its effective Etcd state.
 type Header struct {
 	// ID of the broker responsible for request processing.
 	BrokerId BrokerSpec_ID `protobuf:"bytes,2,opt,name=broker_id,json=brokerId" json:"broker_id"`

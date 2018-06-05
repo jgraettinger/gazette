@@ -19,7 +19,7 @@ func newResolver(state *v3_allocator.State) *resolver {
 		replicas: make(map[pb.Journal]*replica),
 	}
 	state.KS.Mu.Lock()
-	state.KS.Observers = append(state.KS.Observers, r.observe)
+	state.KS.Observers = append(state.KS.Observers, r.observeKeySpace)
 	state.KS.Mu.Unlock()
 
 	return r
@@ -116,7 +116,7 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	return
 }
 
-func (r *resolver) observe() bool {
+func (r *resolver) observeKeySpace() {
 	var next = make(map[pb.Journal]*replica, len(r.state.LocalItems))
 
 	for _, li := range r.state.LocalItems {
@@ -135,5 +135,5 @@ func (r *resolver) observe() bool {
 	for _, replica := range prev {
 		replica.cancel()
 	}
-	return true
+	return
 }

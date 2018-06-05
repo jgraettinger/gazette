@@ -55,7 +55,7 @@ func newPipeline(ctx context.Context, header *pb.Header, spool fragment.Spool, d
 		}
 		var conn *grpc.ClientConn
 
-		if conn, pln.sendErrs[i] = dialer.dial(ctx, b); pln.sendErrs[i] == nil {
+		if conn, pln.sendErrs[i] = dialer.dial(ctx, b, header.Route); pln.sendErrs[i] == nil {
 			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}

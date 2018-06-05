@@ -8,7 +8,6 @@ import (
 	"net"
 	"testing"
 
-	"github.com/coreos/etcd/integration"
 	gc "github.com/go-check/check"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -23,7 +22,7 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm)
+	var pln = newPipeline(rm.ctx, rm.header(0, 100), fragment.NewSpool("a/journal", rm), rm.dialer)
 
 	var req = &pb.ReplicateRequest{Content: []byte("foobar")}
 	pln.scatter(req)
@@ -66,7 +65,7 @@ func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm)
+	var pln = newPipeline(rm.ctx, rm.header(0, 100), fragment.NewSpool("a/journal", rm), rm.dialer)
 
 	var req = &pb.ReplicateRequest{Content: []byte("foo")}
 	pln.scatter(req)
@@ -112,7 +111,7 @@ func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 
 	// Restart a new pipeline. Immediately send an EOF, and test handling of
 	// an unexpected received message prior to peer EOF.
-	pln = newPipeline(rm.ctx, rm.route, <-spoolCh, rm)
+	pln = newPipeline(rm.ctx, rm.header(0, 100), <-spoolCh, rm.dialer)
 	pln.closeSend(spoolCh)
 
 	c.Check(<-rm.brokerA.replReqCh, gc.IsNil) // Read EOF.
@@ -132,11 +131,11 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.route, fragment.NewSpool("a/journal", rm), rm)
+	var pln = newPipeline(rm.ctx, rm.header(0, 100), fragment.NewSpool("a/journal", rm), rm.dialer)
 
 	var req = &pb.ReplicateRequest{
+		Header:      rm.header(0, 100),
 		Journal:     "a/journal",
-		Route:       &pln.route,
 		Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 123, End: 123},
 		Acknowledge: true,
 	}
@@ -147,7 +146,7 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 
 	rm.brokerA.replRespCh <- &pb.ReplicateResponse{
 		Status: pb.Status_WRONG_ROUTE,
-		Route:  &pb.Route{Revision: 4567},
+		Header: rm.header(0, 4567),
 	}
 	rm.brokerC.replRespCh <- &pb.ReplicateResponse{
 		Status:   pb.Status_FRAGMENT_MISMATCH,
@@ -182,7 +181,7 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 
 	rm.brokerA.replRespCh <- &pb.ReplicateResponse{
 		Status: pb.Status_WRONG_ROUTE,
-		Route:  &pb.Route{Revision: pln.route.Revision}, // Revision not greater than |pln|'s.
+		Header: rm.header(0, 99), // Revision not greater than |pln|'s.
 	}
 	rm.brokerC.replRespCh <- &pb.ReplicateResponse{
 		Status:   pb.Status_FRAGMENT_MISMATCH,
@@ -208,13 +207,13 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 	spool.Fragment.End = 123
 	spool.Fragment.Sum = pb.SHA1Sum{Part1: 999}
 
-	var pln = newPipeline(rm.ctx, rm.route, spool, rm)
+	var pln = newPipeline(rm.ctx, rm.header(0, 100), spool, rm.dialer)
 
 	go func() {
 		// Read sync request.
 		c.Check(<-rm.brokerA.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
 			Journal:     "a/journal",
-			Route:       &pln.route,
+			Header:      rm.header(0, 100),
 			Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 0, End: 123, Sum: pb.SHA1Sum{Part1: 999}},
 			Acknowledge: true,
 		})
@@ -233,7 +232,7 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 		// Next iteration. Expect proposal is updated to reflect largest offset.
 		c.Check(<-rm.brokerA.replReqCh, gc.DeepEquals, &pb.ReplicateRequest{
 			Journal:     "a/journal",
-			Route:       &pln.route,
+			Header:      rm.header(0, 100),
 			Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 892, End: 892},
 			Acknowledge: true,
 		})
@@ -248,7 +247,10 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 
 		// Peer C response with a larger etcd revision.
 		rm.brokerA.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
-		rm.brokerC.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_WRONG_ROUTE, Route: &pb.Route{Revision: 4567}}
+		rm.brokerC.replRespCh <- &pb.ReplicateResponse{
+			Status: pb.Status_WRONG_ROUTE,
+			Header: rm.header(2, 4567),
+		}
 
 		// Expect start() sends EOF.
 		c.Check(<-rm.brokerA.replReqCh, gc.IsNil)
@@ -276,7 +278,7 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 	c.Check(pln.readThroughRev, gc.Equals, int64(4567))
 
 	// New pipeline & round. Peer returns an error, and it's passed through.
-	pln = newPipeline(rm.ctx, rm.route, <-spoolCh, rm)
+	pln = newPipeline(rm.ctx, rm.header(0, 4567), <-spoolCh, rm.dialer)
 	c.Check(pln.start(spoolCh), gc.ErrorMatches, `recv from zone:"A" suffix:"1" : rpc error: .*`)
 }
 
@@ -284,8 +286,8 @@ type replicationMock struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	route            pb.Route
 	brokerA, brokerC *mockPeer
+	dialer           dialer
 
 	commits   []fragment.Fragment
 	completes []fragment.Spool
@@ -293,24 +295,46 @@ type replicationMock struct {
 
 func newReplicationMock(c *gc.C) *replicationMock {
 	var ctx, cancel = context.WithCancel(context.Background())
+	var brokerA, brokerC = newMockPeer(c, ctx), newMockPeer(c, ctx)
+	var dialer, err = newDialer(8)
+	c.Assert(err, gc.IsNil)
 
 	var m = &replicationMock{
-		ctx:    ctx,
-		cancel: cancel,
-		route: pb.Route{
+		ctx:     ctx,
+		cancel:  cancel,
+		brokerA: brokerA,
+		brokerC: brokerC,
+		dialer:  dialer,
+	}
+	return m
+}
+
+func (m *replicationMock) header(id int, rev int64) *pb.Header {
+	var hdr = &pb.Header{
+		ProxyId: &pb.BrokerSpec_ID{Zone: "B", Suffix: "2"},
+
+		Route: pb.Route{
 			Primary: 1,
 			Brokers: []pb.BrokerSpec_ID{
 				{Zone: "A", Suffix: "1"},
 				{Zone: "B", Suffix: "2"},
 				{Zone: "C", Suffix: "3"},
 			},
-			Revision: 1234,
+			Endpoints: []pb.Endpoint{
+				pb.Endpoint("http://" + m.brokerA.addr()),
+				pb.Endpoint("http://[100::]"),
+				pb.Endpoint("http://" + m.brokerC.addr()),
+			},
 		},
-
-		brokerA: newMockPeer(c, ctx),
-		brokerC: newMockPeer(c, ctx),
+		Etcd: pb.Header_Etcd{
+			ClusterId: 12,
+			MemberId:  34,
+			Revision:  rev,
+			RaftTerm:  78,
+		},
 	}
-	return m
+	hdr.BrokerId = hdr.Route.Brokers[id]
+	return hdr
 }
 
 func (m *replicationMock) dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
@@ -503,12 +527,13 @@ func (p *mockPeer) Append(srv pb.Broker_AppendServer) error {
 }
 
 var (
-	_           = gc.Suite(&PipelineSuite{})
-	etcdCluster *integration.ClusterV3
+	_ = gc.Suite(&PipelineSuite{})
+
+//	etcdCluster *integration.ClusterV3
 )
 
 func Test(t *testing.T) {
-	etcdCluster = integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
+	//etcdCluster = integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
 	gc.TestingT(t)
-	etcdCluster.Terminate(t)
+	//etcdCluster.Terminate(t)
 }

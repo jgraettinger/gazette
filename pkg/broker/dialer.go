@@ -10,52 +10,42 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
-	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-// dialer returns a ClientConn for a peer identified by its BrokerSpec_ID.
-type dialer interface {
-	dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error)
-}
-
-type dialerImpl struct {
-	ks    *keyspace.KeySpace
+type dialer struct {
 	cache *lru.Cache
 }
 
-// newDialer builds and returns a dialer which maps broker IDs to their
-// BrokerSpec endpoints through the provided KeySpace.
-func newDialer(ks *keyspace.KeySpace, size int) (dialer, error) {
+// newDialer builds and returns a dialer.
+func newDialer(size int) (dialer, error) {
 	var cache, err = lru.NewWithEvict(size, func(key, value interface{}) {
 		if err := value.(*grpc.ClientConn).Close(); err != nil {
 			log.WithFields(log.Fields{"broker": key, "err": err}).
 				Warn("failed to Close evicted grpc.ClientConn")
 		}
 	})
-	return &dialerImpl{
-		ks:    ks,
-		cache: cache,
-	}, err
+	return dialer{cache: cache}, err
 }
 
-func (d *dialerImpl) dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
+func (d dialer) dial(ctx context.Context, id pb.BrokerSpec_ID, route pb.Route) (*grpc.ClientConn, error) {
+	var ind int
+	for ind = 0; ind != len(route.Brokers) && route.Brokers[ind] != id; ind++ {
+	}
+
+	if ind == len(route.Brokers) {
+		return nil, fmt.Errorf("no such Broker in Route (id: %s, route: %s)", id.String(), route.String())
+	} else if len(route.Endpoints) != len(route.Brokers) {
+		return nil, fmt.Errorf("missing Route Endpoints (id: %s, route: %s)", id.String(), route.String())
+	}
+
+	// We perform the cache check explicitly _after_ examining Route, to prevent
+	// development errors which appear as transient bugs due to caching effects.
 	if v, ok := d.cache.Get(id); ok {
 		return v.(*grpc.ClientConn), nil
 	}
 
-	d.ks.Mu.RLock()
-	var member, ok = v3_allocator.LookupMember(d.ks, id.Zone, id.Suffix)
-	d.ks.Mu.RUnlock()
-
-	if !ok {
-		return nil, fmt.Errorf("no BrokerSpec found (id: %s)", &id)
-	}
-	var spec = member.MemberValue.(*pb.BrokerSpec)
-	var url = spec.Endpoint.URL()
-
-	var conn, err = grpc.DialContext(ctx, url.Host,
+	var conn, err = grpc.DialContext(ctx, route.Endpoints[ind].URL().Host,
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: time.Second * 30}),
 		grpc.WithInsecure(),
 	)

@@ -183,6 +183,7 @@ message SHA1Sum {
 }
 
 message ReadRequest {
+  // Header is attached by a proxying broker peer.
   Header header = 1;
   // Journal to be read.
   string journal = 2 [(gogoproto.casttype) = "Journal"];
@@ -205,7 +206,9 @@ message ReadRequest {
 }
 
 message ReadResponse {
+  // Status of the Read RPC.
   Status status = 1;
+  // Header of the response. Accompanies the first ReadResponse in the response stream.
   Header header = 2;
   // The effective offset of the read. See ReadRequest offset.
   int64 offset = 3;
@@ -222,6 +225,7 @@ message ReadResponse {
 }
 
 message AppendRequest {
+  // Header is attached by a proxying broker peer to the first AppendRequest message.
   Header header = 1;
   // Journal to be appended to.
   string journal = 2 [(gogoproto.casttype) = "Journal"];
@@ -230,7 +234,9 @@ message AppendRequest {
 }
 
 message AppendResponse {
+  // Status of the Append RPC.
   Status status = 1;
+  // Header of the response.
   Header header = 2;
   // If status is OK, then |commit| is the Fragment which places the
   // committed Append content within the Journal.
@@ -242,6 +248,9 @@ message AppendResponse {
 //  * Streamed commit - Proposal and (optionally) Acknowledge are set.
 //  * Streamed content - Content and ContentDelta are set.
 message ReplicateRequest {
+  // Header defines the primary broker, Route, and Etcd Revision under which
+  // this Replicate stream is being established. Each replication peer
+  // independently inspects and verifies the current Journal Route topology.
   Header header = 1;
   // Journal to be replicated to.
   string journal = 2 [(gogoproto.casttype) = "Journal"];
@@ -257,7 +266,9 @@ message ReplicateRequest {
 }
 
 message ReplicateResponse {
+  // Status of the Replicate RPC.
   Status status = 1;
+  // Header of the response.
   Header header = 2;
   // If status is FRAGMENT_MISMATCH, then |fragment| is the replica's
   // Fragment at the current Journal head, which was found to be inconsistent
@@ -282,7 +293,7 @@ message Route {
 }
 
 // Header captures metadata such as the broker responsible for processing
-// a request or response, and its effective Etcd state.
+// an RPC, and its effective Etcd state.
 message Header {
   // ID of the broker responsible for request processing.
   BrokerSpec.ID broker_id = 2 [(gogoproto.nullable) = false];

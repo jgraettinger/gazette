@@ -83,7 +83,7 @@ func (r *replica) acquireSpool(ctx context.Context, waitForRemoteLoad bool) (spo
 		var resp pb.ReplicateResponse
 		resp, err = spool.Apply(&pb.ReplicateRequest{Proposal: &proposal})
 
-		if err != nil || resp.GetHeader().GetStatus() != pb.Status_OK {
+		if err != nil || resp.Status != pb.Status_OK {
 			// Cannot happen, as we crafted |proposal| relative to the |spool.Fragment|.
 			panic(fmt.Sprintf("failed to roll to EndOffset: %s err %s", &resp, err))
 		}

@@ -17,9 +17,9 @@ import (
 )
 
 type HTTPGateway struct {
+	decoder  *schema.Decoder
 	resolver resolver
 	dialer   dialer
-	decoder  *schema.Decoder
 }
 
 func NewHTTPGateway(resolver resolver, dialer dialer) *HTTPGateway {
@@ -27,9 +27,9 @@ func NewHTTPGateway(resolver resolver, dialer dialer) *HTTPGateway {
 	decoder.IgnoreUnknownKeys(false)
 
 	return &HTTPGateway{
+		decoder:  decoder,
 		resolver: resolver,
 		dialer:   dialer,
-		decoder:  decoder,
 	}
 }
 
@@ -61,14 +61,26 @@ func (h *HTTPGateway) serveRead(w http.ResponseWriter, r *http.Request) {
 	var resolution resolution
 	var resp = new(pb.ReadResponse)
 
-	resolution, resp.Status = h.resolver.resolve(req.Journal, false, true)
+	resolution, err = h.resolver.resolve(resolveArgs{
+		ctx:                   r.Context(),
+		journal:               req.Journal,
+		mayProxy:              true,
+		requirePrimary:        false,
+		requireFullAssignment: false,
+	})
 
-	if resp.Status != pb.Status_OK {
-		h.writeReadResponse(w, r, resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if resolution.status != pb.Status_OK {
+		h.writeReadResponse(w, r, &pb.ReadResponse{
+			Status: resolution.status,
+			Header: &resolution.Header,
+		})
 		return
 	}
 
-	if conn, err = h.dialer.dial(r.Context(), resolution.broker); err == nil {
+	if conn, err = h.dialer.dial(r.Context(), resolution.BrokerId, resolution.Route); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Read(r.Context(), req); err == nil {
 			err = client.RecvMsg(resp)
 		}
@@ -88,12 +100,12 @@ func (h *HTTPGateway) serveRead(w http.ResponseWriter, r *http.Request) {
 		if err = client.RecvMsg(resp); err == io.EOF {
 			break // Done.
 		} else if err != nil {
-			log.WithField("err", err).Warn("httpapi: failed to proxy Read response")
+			log.WithField("err", err).Warn("http_gateway: failed to proxy Read response")
 			break // Done.
 		}
 
 		if _, err = w.Write(resp.Content); err != nil {
-			log.WithField("err", err).Warn("httpapi: failed to forward Read response")
+			log.WithField("err", err).Warn("http_gateway: failed to forward Read response")
 			break
 		}
 		if flusher, ok := w.(http.Flusher); ok {
@@ -119,14 +131,26 @@ func (h *HTTPGateway) serveWrite(w http.ResponseWriter, r *http.Request) {
 	var resolution resolution
 	var resp = new(pb.AppendResponse)
 
-	resolution, resp.Status = h.resolver.resolve(req.Journal, true, true)
+	resolution, err = h.resolver.resolve(resolveArgs{
+		ctx:                   r.Context(),
+		journal:               req.Journal,
+		mayProxy:              true,
+		requirePrimary:        true,
+		requireFullAssignment: true,
+	})
 
-	if resp.Status != pb.Status_OK {
-		h.writeAppendResponse(w, r, resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if resolution.status != pb.Status_OK {
+		h.writeAppendResponse(w, r, &pb.AppendResponse{
+			Status: resolution.status,
+			Header: &resolution.Header,
+		})
 		return
 	}
 
-	if conn, err = h.dialer.dial(r.Context(), resolution.broker); err == nil {
+	if conn, err = h.dialer.dial(r.Context(), resolution.BrokerId, resolution.Route); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Append(r.Context()); err == nil {
 			err = client.SendMsg(req)
 			*req = pb.AppendRequest{} // Clear metadata: hereafter, only Content is sent.
@@ -209,8 +233,8 @@ func (h *HTTPGateway) parseReadRequest(r *http.Request) (*pb.ReadRequest, error)
 }
 
 func (h *HTTPGateway) writeAppendResponse(w http.ResponseWriter, r *http.Request, resp *pb.AppendResponse) {
-	if resp.Route != nil {
-		w.Header().Set(RouteTokenHeader, proto.CompactTextString(resp.Route))
+	if resp.Header != nil {
+		w.Header().Set(RouteTokenHeader, proto.CompactTextString(&resp.Header.Route))
 	}
 	if resp.Commit != nil {
 		w.Header().Add(CommitBeginHeader, strconv.FormatInt(resp.Commit.Begin, 10))
@@ -232,8 +256,8 @@ func (h *HTTPGateway) writeAppendResponse(w http.ResponseWriter, r *http.Request
 }
 
 func (h *HTTPGateway) writeReadResponse(w http.ResponseWriter, r *http.Request, resp *pb.ReadResponse) {
-	if resp.Route != nil {
-		w.Header().Set(RouteTokenHeader, proto.CompactTextString(resp.Route))
+	if resp.Header != nil {
+		w.Header().Set(RouteTokenHeader, proto.CompactTextString(&resp.Header.Route))
 	}
 	if resp.Fragment != nil {
 		w.Header().Add(FragmentNameHeader, resp.Fragment.ContentName())
