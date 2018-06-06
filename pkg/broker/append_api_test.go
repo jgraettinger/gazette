@@ -1,18 +1,17 @@
 package broker
 
-/*
 import (
 	"errors"
 	"io"
 
 	gc "github.com/go-check/check"
 
-	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type AppendSuite struct{}
 
+/*
 func (s *AppendSuite) TestSingle(c *gc.C) {
 	runBrokerTestCase(c, func(f brokerFixture) {
 		var stream, err = f.client.Append(f.ctx)
@@ -287,14 +286,17 @@ func (s *AppendSuite) TestProxyError(c *gc.C) {
 		c.Check(err, gc.ErrorMatches, `rpc error: code = Unknown desc = some kind of error`)
 	})
 }
+*/
 
 func (s *AppendSuite) TestAppenderCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var spool = fragment.NewSpool("a/journal", rm)
+	// Tweak Spool fixture to have a non-zero size.
+	var spool = <-rm.spoolCh
 	spool.Fragment.End = 24
-	var pln = newPipeline(rm.ctx, rm.route, spool, rm)
+	rm.spoolCh <- spool
+	var pln = rm.newPipeline(rm.header(0, 100))
 
 	var spec = pb.JournalSpec_Fragment{
 		Length:           16, // Current spool is over target length.
@@ -385,4 +387,3 @@ func (s *AppendSuite) TestAppenderCases(c *gc.C) {
 }
 
 var _ = gc.Suite(&AppendSuite{})
-*/

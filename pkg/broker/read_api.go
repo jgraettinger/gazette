@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"sync"
 
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	log "github.com/sirupsen/logrus"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
@@ -17,30 +18,30 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 		return err
 	}
 
-	var resolution, err = s.resolver.resolve(resolveArgs{
+	var res, err = s.resolver.resolve(resolveArgs{
 		ctx:                   stream.Context(),
 		journal:               req.Journal,
 		mayProxy:              !req.DoNotProxy,
 		requirePrimary:        false,
 		requireFullAssignment: false,
-		minEtcdRevision:       maxInt64(1, req.Header.GetEtcd().Revision),
+		proxyHeader:           req.Header,
 	})
+
 	if err != nil {
 		return err
-	} else if resolution.status != pb.Status_OK {
+	} else if res.status != pb.Status_OK {
 		return stream.Send(&pb.ReadResponse{
-			Status: resolution.status,
-			Header: &resolution.Header,
+			Status: res.status,
+			Header: &res.Header,
 		})
-	} else if resolution.replica == nil {
-		return proxyRead(req, stream, &resolution.Header, s.dialer)
+	} else if res.replica == nil {
+		return proxyRead(req, stream, &res.Header, s.dialer)
 	}
 
-	if err := resolution.replica.serveRead(req, stream, &resolution.Header); err != nil {
+	if err = serveRead(req, stream, &res.Header, res.replica.index); err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Read")
-		return err
 	}
-	return nil
+	return err
 }
 
 // proxyRead forwards a ReadRequest to a resolved peer broker.
@@ -72,14 +73,14 @@ func proxyRead(req *pb.ReadRequest, stream pb.Broker_ReadServer, hdr *pb.Header,
 }
 
 // read evaluates a client's Read RPC.
-func (r *replica) serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer, hdr *pb.Header) error {
+func serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer, hdr *pb.Header, index *fragment.Index) error {
 	var buffer = chunkBufferPool.Get().([]byte)
 	defer chunkBufferPool.Put(buffer)
 
 	var reader io.ReadCloser
 
 	for i := 0; true; i++ {
-		var resp, file, err = r.index.Query(srv.Context(), req)
+		var resp, file, err = index.Query(srv.Context(), req)
 		if err != nil {
 			return err
 		}

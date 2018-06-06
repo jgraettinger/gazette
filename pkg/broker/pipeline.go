@@ -13,14 +13,14 @@ import (
 
 // pipeline is an in-flight write replication pipeline of a journal.
 type pipeline struct {
-	*pb.Header
-	spool    fragment.Spool
-	streams  []pb.Broker_ReplicateClient
-	sendErrs []error
-
-	readBarrierCh chan struct{}
-	recvResp      []pb.ReplicateResponse
-	recvErrs      []error
+	*pb.Header                                // Header of the pipeline.
+	spool         fragment.Spool              // Local, primary replication Spool.
+	returnCh      chan<- fragment.Spool       // |spool| return channel.
+	streams       []pb.Broker_ReplicateClient // Established streams to each replication peer.
+	sendErrs      []error                     // First error on send from each peer.
+	readBarrierCh chan struct{}               // Coordinates hand-off of receive-side of the pipeline.
+	recvResp      []pb.ReplicateResponse      // Most recent response gathered from each peer.
+	recvErrs      []error                     // First error on receive from each peer.
 
 	// readThroughRev, if set, indicates that a pipeline cannot be established
 	// until we have read through (and our Route reflects) this etcd revision.
@@ -28,19 +28,19 @@ type pipeline struct {
 }
 
 // newPipeline returns a new pipeline.
-func newPipeline(ctx context.Context, header *pb.Header, spool fragment.Spool, dialer dialer) *pipeline {
-	if header.Route.Primary == -1 {
-		panic("newPipeline requires Route with Primary != -1")
+func newPipeline(ctx context.Context, hdr *pb.Header, spool fragment.Spool, returnCh chan<- fragment.Spool, dialer dialer) *pipeline {
+	if hdr.Route.Primary == -1 {
+		panic("dial requires Route with Primary != -1")
 	}
-
 	// Enable compression while the Spool is serving as primary within a pipeline.
 	spool.Primary = true
 
-	var R = len(header.Route.Brokers)
+	var R = len(hdr.Route.Brokers)
 
 	var pln = &pipeline{
-		Header:        header,
+		Header:        hdr,
 		spool:         spool,
+		returnCh:      returnCh,
 		streams:       make([]pb.Broker_ReplicateClient, R),
 		sendErrs:      make([]error, R),
 		readBarrierCh: make(chan struct{}),
@@ -49,24 +49,24 @@ func newPipeline(ctx context.Context, header *pb.Header, spool fragment.Spool, d
 	}
 	close(pln.readBarrierCh)
 
-	for i, b := range header.Route.Brokers {
-		if i == int(header.Route.Primary) {
+	for i, b := range pln.Route.Brokers {
+		if i == int(pln.Route.Primary) {
 			continue
 		}
 		var conn *grpc.ClientConn
 
-		if conn, pln.sendErrs[i] = dialer.dial(ctx, b, header.Route); pln.sendErrs[i] == nil {
+		if conn, pln.sendErrs[i] = dialer.dial(ctx, b, pln.Route); pln.sendErrs[i] == nil {
 			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}
 	return pln
 }
 
-// start synchronizes all pipeline peers by scattering proposals and gathering
-// peer responses. On disagreement, start will iteratively update the proposal
+// synchronize all pipeline peers by scattering proposals and gathering peer
+// responses. On disagreement, synchronize will iteratively update the proposal
 // if it's possible to do so and reach agreement. If peers disagree on Etcd
-// revision, start() will close the pipeline and set |readThroughRev|.
-func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
+// revision, synchronize will close the pipeline and set |readThroughRev|.
+func (pln *pipeline) synchronize() error {
 	var proposal = pln.spool.Fragment.Fragment
 
 	for {
@@ -84,7 +84,7 @@ func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
 		}
 
 		if err != nil {
-			pln.closeSend(spoolCh)
+			pln.closeSend()
 			pln.gatherEOF()
 			return err
 		}
@@ -103,7 +103,7 @@ func (pln *pipeline) start(spoolCh chan<- fragment.Spool) error {
 			// pipeline, and set its |readThroughRev| as an indication to other RPCs
 			// of the revision which must first be read through before attempting
 			// another pipeline.
-			pln.closeSend(spoolCh)
+			pln.closeSend()
 			pln.gatherEOF()
 			pln.readThroughRev = readThroughRev
 		}
@@ -132,22 +132,6 @@ func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 	}
 }
 
-// closeSend closes the send-side of all replica connections.
-func (pln *pipeline) closeSend(spoolCh chan<- fragment.Spool) {
-	// Apply a Spool commit which rolls back any partial content.
-	pln.spool.Apply(&pb.ReplicateRequest{
-		Proposal: &pln.spool.Fragment.Fragment,
-	})
-	pln.spool.Primary = false
-	spoolCh <- pln.spool // Release ownership of Spool.
-
-	for i, s := range pln.streams {
-		if s != nil && pln.sendErrs[i] == nil {
-			pln.sendErrs[i] = s.CloseSend()
-		}
-	}
-}
-
 // sendErr returns the first encountered send-side error.
 func (pln *pipeline) sendErr() error {
 	for i, err := range pln.sendErrs {
@@ -156,6 +140,41 @@ func (pln *pipeline) sendErr() error {
 		}
 	}
 	return nil
+}
+
+// barrier installs a new barrier in the pipeline. Clients should:
+//   * Invoke readBarrier after issuing all sent writes, and release the
+//     pipeline for other clients.
+//   * Block until |waitFor| is selectable.
+//   * Read expected responses from the pipeline.
+//   * Close |closeAfter|.
+// By following this convention a pipeline can safely be passed among multiple
+// clients, each performing writes followed by reads, while allowing for those
+// writes and reads to happen concurrently.
+func (pln *pipeline) barrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
+	waitFor, pln.readBarrierCh = pln.readBarrierCh, make(chan struct{})
+	closeAfter = pln.readBarrierCh
+	return
+}
+
+// closeSend closes the send-side of all replica connections. If |release|,
+// this goroutine's lock on the pipeline is released, allowing a new pipeline
+// to be constructed. The caller must wait for |waitFor| before gathering EOF
+// responses from peers.
+func (pln *pipeline) closeSend() {
+	// Apply a Spool commit which rolls back any partial content.
+	pln.spool.Apply(&pb.ReplicateRequest{
+		Proposal: &pln.spool.Fragment.Fragment,
+	})
+
+	pln.spool.Primary = false
+	pln.returnCh <- pln.spool // Release ownership of Spool.
+
+	for i, s := range pln.streams {
+		if s != nil && pln.sendErrs[i] == nil {
+			pln.sendErrs[i] = s.CloseSend()
+		}
+	}
 }
 
 // gather synchronously receives a ReplicateResponse from all replicas.
@@ -201,7 +220,7 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 					readThroughRev = resp.Header.Etcd.Revision
 				}
 			} else {
-				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE revision: %s (remote) vs %s (local)",
+				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE: %s (remote) vs %s (local)",
 					resp.Header, pln.Header)
 			}
 
@@ -252,10 +271,4 @@ func (pln *pipeline) recvErr() error {
 		}
 	}
 	return nil
-}
-
-func (pln *pipeline) readBarrier() (waitFor <-chan struct{}, closeAfter chan<- struct{}) {
-	waitFor, pln.readBarrierCh = pln.readBarrierCh, make(chan struct{})
-	closeAfter = pln.readBarrierCh
-	return
 }

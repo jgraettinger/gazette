@@ -19,39 +19,40 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 		return err
 	}
 
-	var rev = maxInt64(1, req.Header.GetEtcd().Revision)
+	var rev int64
 
 	for {
-		var resolution resolution
-		resolution, err = s.resolver.resolve(resolveArgs{
+		var res resolution
+		res, err = s.resolver.resolve(resolveArgs{
 			ctx:                   stream.Context(),
 			journal:               req.Journal,
 			mayProxy:              true,
 			requirePrimary:        true,
 			requireFullAssignment: true,
 			minEtcdRevision:       rev,
+			proxyHeader:           req.Header,
 		})
 
 		if err != nil {
 			break
-		} else if resolution.status != pb.Status_OK {
+		} else if res.status != pb.Status_OK {
 			err = stream.SendAndClose(&pb.AppendResponse{
-				Status: resolution.status,
-				Header: &resolution.Header,
+				Status: res.status,
+				Header: &res.Header,
 			})
 			break
-		} else if resolution.replica == nil {
-			err = proxyAppend(req, stream, &resolution.Header, s.dialer)
+		} else if res.replica == nil {
+			err = proxyAppend(req, stream, &res.Header, s.dialer)
 			break
 		}
 
 		var pln *pipeline
-		if pln, rev, err = resolution.replica.acquirePipeline(stream.Context(), resolution, s.dialer); err != nil {
+		if pln, rev, err = acquirePipeline(stream.Context(), res.replica, &res.Header, s.dialer); err != nil {
 			break
 		} else if rev != 0 {
 			// A peer told us of a future & non-equivalent Route revision. Attempt the RPC again at |rev|.
 		} else {
-			err = resolution.replica.serveAppend(pln, stream, resolution.journalSpec)
+			err = serveAppend(stream, pln, res.journalSpec, res.replica.pipelineCh)
 			break
 		}
 	}
@@ -91,21 +92,22 @@ func proxyAppend(req *pb.AppendRequest, stream pb.Broker_AppendServer, hdr *pb.H
 	}
 }
 
-func (r *replica) serveAppend(pln *pipeline, stream pb.Broker_AppendServer, spec *pb.JournalSpec) error {
+func serveAppend(stream pb.Broker_AppendServer, pln *pipeline, spec *pb.JournalSpec, releaseCh chan<- *pipeline) error {
 	var req = new(pb.AppendRequest)
 
 	// We start with sole ownership of the _send_ side of the pipeline.
 	var appender = beginAppending(pln, spec.Fragment)
 	for appender.onRecv(req, stream.RecvMsg(req)) {
 	}
-	var waitFor, closeAfter = pln.readBarrier()
+
+	var waitFor, closeAfter = pln.barrier()
 	var plnSendErr = pln.sendErr()
 
 	if plnSendErr == nil {
-		r.pipelineCh <- pln // Release the send side of |pln|.
+		releaseCh <- pln // Release the send side of |pln|.
 	} else {
-		pln.closeSend(r.spoolCh)
-		r.pipelineCh <- nil
+		pln.closeSend()
+		releaseCh <- nil // Allow a new pipeline to be built.
 
 		log.WithFields(log.Fields{"err": plnSendErr, "journal": spec.Name}).
 			Warn("pipeline send failed")
@@ -119,9 +121,9 @@ func (r *replica) serveAppend(pln *pipeline, stream pb.Broker_AppendServer, spec
 	<-waitFor
 	defer func() { close(closeAfter) }()
 
-	pln.gatherOK()
-
-	if plnSendErr != nil {
+	// We expect an acknowledgement from each peer. If we encountered a send
+	// error, we also expect an EOF from remaining non-broken peers.
+	if pln.gatherOK(); plnSendErr != nil {
 		pln.gatherEOF()
 	}
 

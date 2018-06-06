@@ -38,6 +38,8 @@ type resolveArgs struct {
 	requireFullAssignment bool
 	// Minimum Etcd Revision to have read through, before generating a DispatchResponse.
 	minEtcdRevision int64
+	// Optional Header attached to the request from a proxying peer.
+	proxyHeader *pb.Header
 }
 
 type resolution struct {

@@ -44,19 +44,7 @@ func newReplica(journal pb.Journal) *replica {
 	return r
 }
 
-/*
-	go r.index.WatchStores(func() (spec *pb.JournalSpec, ok bool) {
-		ks.Mu.RLock()
-		defer ks.Mu.RUnlock()
-
-		if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
-			return item.ItemValue.(*pb.JournalSpec), true
-		}
-		return nil, false
-	})
-*/
-
-func (r *replica) acquireSpool(ctx context.Context, waitForRemoteLoad bool) (spool fragment.Spool, err error) {
+func acquireSpool(ctx context.Context, r *replica, waitForRemoteLoad bool) (spool fragment.Spool, err error) {
 	if waitForRemoteLoad {
 		if err = r.index.WaitForFirstRemoteLoad(ctx); err != nil {
 			return
@@ -92,9 +80,8 @@ func (r *replica) acquireSpool(ctx context.Context, waitForRemoteLoad bool) (spo
 	return
 }
 
-func (r *replica) acquirePipeline(ctx context.Context, resolution resolution, dialer dialer) (*pipeline, int64, error) {
+func acquirePipeline(ctx context.Context, r *replica, hdr *pb.Header, dialer dialer) (*pipeline, int64, error) {
 	var pln *pipeline
-	var err error
 
 	select {
 	case <-ctx.Done():
@@ -105,23 +92,22 @@ func (r *replica) acquirePipeline(ctx context.Context, resolution resolution, di
 		// Pass.
 	}
 
-	// If |pln| is a placeholder indicating the need to read through a revision
-	// which we have since read through, clear it.
-	if pln != nil && pln.readThroughRev != 0 && pln.readThroughRev <= resolution.Etcd.Revision {
+	// Is |pln| is a placeholder indicating the need to read through a revision, which we've since read through?
+	if pln != nil && pln.readThroughRev != 0 && pln.readThroughRev <= hdr.Etcd.Revision {
 		pln = nil
 	}
 
 	// If |pln| is a valid pipeline but is built on a non-equivalent & older Route,
-	// tear it down to begin a new one.
-	if pln != nil && !pln.Route.Equivalent(&resolution.Route) && pln.Etcd.Revision < resolution.Etcd.Revision {
-		if pln.closeSend(r.spoolCh); pln.sendErr() != nil {
-			log.WithField("err", pln.sendErr()).Warn("tearing down pipeline: failed to closeSend")
-		}
+	// tear it down asynchronously and immediately begin a new one.
+	if pln != nil && !pln.Route.Equivalent(&hdr.Route) && pln.Etcd.Revision < hdr.Etcd.Revision {
 
-		// Block for, and read peer EOFs in a goroutine. This lets us start building the
-		// new pipeline concurrently with the old one completing shutdown.
 		go func(pln *pipeline) {
-			<-pln.readBarrierCh
+			var waitFor, _ = pln.barrier()
+
+			if pln.closeSend(); pln.sendErr() != nil {
+				log.WithField("err", pln.sendErr()).Warn("tearing down pipeline: failed to closeSend")
+			}
+			<-waitFor
 
 			if pln.gatherEOF(); pln.recvErr() != nil {
 				log.WithField("err", pln.recvErr()).Warn("tearing down pipeline: failed to gatherEOF")
@@ -131,25 +117,41 @@ func (r *replica) acquirePipeline(ctx context.Context, resolution resolution, di
 		pln = nil
 	}
 
+	var err error
+
 	if pln == nil {
-		// Construct a new pipeline.
-		if spool, err := r.acquireSpool(ctx, true); err != nil {
-			return nil, 0, err
-		} else {
-			pln = newPipeline(r.ctx, &resolution.Header, spool, dialer)
-			err = pln.start(r.spoolCh)
+		// We must construct a new pipeline.
+		var spool fragment.Spool
+		spool, err = acquireSpool(ctx, r, true)
+
+		if err == nil {
+			pln = newPipeline(r.ctx, hdr, spool, r.spoolCh, dialer)
+			err = pln.synchronize()
 		}
 	}
 
 	if err != nil {
-		r.pipelineCh <- nil
+		r.pipelineCh <- nil // Release ownership, allow next acquirer to retry.
 		return nil, 0, err
 	} else if pln.readThroughRev != 0 {
-		r.pipelineCh <- pln
+		r.pipelineCh <- pln // Release placeholder for next acquirer to observe.
 		return nil, pln.readThroughRev, nil
 	}
+
 	return pln, 0, nil
 }
+
+/*
+	go r.index.WatchStores(func() (spec *pb.JournalSpec, ok bool) {
+		ks.Mu.RLock()
+		defer ks.Mu.RUnlock()
+
+		if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
+			return item.ItemValue.(*pb.JournalSpec), true
+		}
+		return nil, false
+	})
+*/
 
 /*
 func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {

@@ -3,7 +3,6 @@ package broker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -22,7 +21,7 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.header(0, 100), fragment.NewSpool("a/journal", rm), rm.dialer)
+	var pln = rm.newPipeline(rm.header(0, 100))
 
 	var req = &pb.ReplicateRequest{Content: []byte("foobar")}
 	pln.scatter(req)
@@ -39,6 +38,22 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	c.Check(<-rm.brokerA.replReqCh, gc.DeepEquals, req)
 	c.Check(<-rm.brokerC.replReqCh, gc.DeepEquals, req)
 
+	var waitFor1, closeAfter1 = pln.barrier()
+
+	// Second client issues a write and close.
+	pln.scatter(&pb.ReplicateRequest{Content: []byte("bazbing")})
+	_, _ = <-rm.brokerA.replReqCh, <-rm.brokerC.replReqCh
+	pln.closeSend()
+
+	c.Check(pln.sendErr(), gc.IsNil)
+	c.Check(<-rm.brokerA.replReqCh, gc.IsNil) // Expect EOF.
+	c.Check(<-rm.brokerC.replReqCh, gc.IsNil) // Expect EOF.
+
+	var waitFor2, closeAfter2 = pln.barrier()
+
+	// First client reads its response.
+	<-waitFor1
+
 	rm.brokerA.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
 	rm.brokerC.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
 
@@ -46,26 +61,25 @@ func (s *PipelineSuite) TestBasicLifeCycle(c *gc.C) {
 	c.Check(pln.recvErr(), gc.IsNil)
 	c.Check(pln.recvResp, gc.DeepEquals, []pb.ReplicateResponse{{}, {}, {}})
 
-	var spool = make(chan fragment.Spool, 1)
-	pln.closeSend(spool)
+	close(closeAfter1)
 
-	c.Check(<-rm.brokerA.replReqCh, gc.IsNil) // Expect EOF.
-	c.Check(<-rm.brokerC.replReqCh, gc.IsNil) // Expect EOF.
+	// Second client reads its response.
+	<-waitFor2
 
 	rm.brokerA.errCh <- nil // Send EOF.
 	rm.brokerC.errCh <- nil // Send EOF.
 
 	pln.gatherEOF()
-
-	c.Check(pln.sendErr(), gc.IsNil)
 	c.Check(pln.recvErr(), gc.IsNil)
+
+	close(closeAfter2)
 }
 
 func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.header(0, 100), fragment.NewSpool("a/journal", rm), rm.dialer)
+	var pln = rm.newPipeline(rm.header(0, 100))
 
 	var req = &pb.ReplicateRequest{Content: []byte("foo")}
 	pln.scatter(req)
@@ -102,17 +116,17 @@ func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 	// Expect sendErr decorates the first error with peer metadata.
 	c.Check(pln.sendErr(), gc.ErrorMatches, `send to zone:"A" suffix:"1" : EOF`)
 
-	var spoolCh = make(chan fragment.Spool, 1)
-	pln.closeSend(spoolCh)
+	pln.closeSend()
 
 	// Finish shutdown by having brokerC receive and send EOF.
 	c.Check(<-rm.brokerC.replReqCh, gc.IsNil)
 	rm.brokerC.errCh <- nil
+	pln.gatherEOF()
 
 	// Restart a new pipeline. Immediately send an EOF, and test handling of
 	// an unexpected received message prior to peer EOF.
-	pln = newPipeline(rm.ctx, rm.header(0, 100), <-spoolCh, rm.dialer)
-	pln.closeSend(spoolCh)
+	pln = rm.newPipeline(rm.header(0, 100))
+	pln.closeSend()
 
 	c.Check(<-rm.brokerA.replReqCh, gc.IsNil) // Read EOF.
 	c.Check(<-rm.brokerC.replReqCh, gc.IsNil) // Read EOF.
@@ -131,22 +145,29 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var pln = newPipeline(rm.ctx, rm.header(0, 100), fragment.NewSpool("a/journal", rm), rm.dialer)
+	var pln = rm.newPipeline(rm.header(0, 100))
 
 	var req = &pb.ReplicateRequest{
-		Header:      rm.header(0, 100),
+		Header:      rm.header(1, 100),
 		Journal:     "a/journal",
 		Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 123, End: 123},
 		Acknowledge: true,
 	}
 	pln.scatter(req)
 
+	// Expect each peer sees |req| with its ID in the Header.
+	req.Header = rm.header(0, 100)
 	c.Check(<-rm.brokerA.replReqCh, gc.DeepEquals, req)
+	req.Header = rm.header(2, 100)
 	c.Check(<-rm.brokerC.replReqCh, gc.DeepEquals, req)
+
+	// Craft a peer response Header at a later revision, with a different Route.
+	var wrongRouteHdr = rm.header(0, 4567)
+	wrongRouteHdr.Route.Brokers[0].Suffix = "other"
 
 	rm.brokerA.replRespCh <- &pb.ReplicateResponse{
 		Status: pb.Status_WRONG_ROUTE,
-		Header: rm.header(0, 4567),
+		Header: wrongRouteHdr,
 	}
 	rm.brokerC.replRespCh <- &pb.ReplicateResponse{
 		Status:   pb.Status_FRAGMENT_MISMATCH,
@@ -194,20 +215,21 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 	c.Check(pln.sendErr(), gc.IsNil)
 	c.Check(pln.recvErr(), gc.NotNil)
 
-	c.Check(pln.recvErrs[0], gc.ErrorMatches, `unexpected WRONG_ROUTE revision: revision:\d+ .*`)
+	c.Check(pln.recvErrs[0], gc.ErrorMatches, `unexpected WRONG_ROUTE: broker_id:.*`)
 	c.Check(pln.recvErrs[1], gc.IsNil)
 	c.Check(pln.recvErrs[2], gc.ErrorMatches, `unexpected FRAGMENT_MISMATCH: begin:567 end:889 .*`)
 }
 
-func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
+func (s *PipelineSuite) TestPipelineSync(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	var spool = fragment.NewSpool("a/journal", rm)
-	spool.Fragment.End = 123
-	spool.Fragment.Sum = pb.SHA1Sum{Part1: 999}
+	// Tweak Spool to have a different End & Sum.
+	var spool = <-rm.spoolCh
+	spool.Fragment.End, spool.Fragment.Sum = 123, pb.SHA1Sum{Part1: 999}
+	rm.spoolCh <- spool
 
-	var pln = newPipeline(rm.ctx, rm.header(0, 100), spool, rm.dialer)
+	var pln = rm.newPipeline(rm.header(0, 100))
 
 	go func() {
 		// Read sync request.
@@ -245,11 +267,14 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 		// Next round.
 		_, _ = <-rm.brokerA.replReqCh, <-rm.brokerC.replReqCh
 
-		// Peer C response with a larger etcd revision.
+		// Peer C response with a larger Etcd revision.
+		var wrongRouteHdr = rm.header(0, 4567)
+		wrongRouteHdr.Route.Brokers[0].Suffix = "other"
+
 		rm.brokerA.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
 		rm.brokerC.replRespCh <- &pb.ReplicateResponse{
 			Status: pb.Status_WRONG_ROUTE,
-			Header: rm.header(2, 4567),
+			Header: wrongRouteHdr,
 		}
 
 		// Expect start() sends EOF.
@@ -258,7 +283,7 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 		rm.brokerA.errCh <- nil
 		rm.brokerC.errCh <- nil
 
-		// Next round.
+		// Next round sends an error.
 		_, _ = <-rm.brokerA.replReqCh, <-rm.brokerC.replReqCh
 		rm.brokerA.errCh <- errors.New("an error")
 		rm.brokerC.replRespCh <- &pb.ReplicateResponse{Status: pb.Status_OK}
@@ -269,17 +294,16 @@ func (s *PipelineSuite) TestPipelineStart(c *gc.C) {
 		rm.brokerC.errCh <- nil // |brokerA| has already closed.
 	}()
 
-	c.Check(pln.start(nil), gc.IsNil)
+	c.Check(pln.synchronize(), gc.IsNil)
 	c.Check(pln.readThroughRev, gc.Equals, int64(0))
 
 	// Next round. This time, the pipeline is closed and readThroughRev is set.
-	var spoolCh = make(chan fragment.Spool, 1)
-	c.Check(pln.start(spoolCh), gc.IsNil)
+	c.Check(pln.synchronize(), gc.IsNil)
 	c.Check(pln.readThroughRev, gc.Equals, int64(4567))
 
-	// New pipeline & round. Peer returns an error, and it's passed through.
-	pln = newPipeline(rm.ctx, rm.header(0, 4567), <-spoolCh, rm.dialer)
-	c.Check(pln.start(spoolCh), gc.ErrorMatches, `recv from zone:"A" suffix:"1" : rpc error: .*`)
+	// Next round with new pipeline. Peer returns an error, and it's passed through.
+	pln = rm.newPipeline(rm.header(0, 100))
+	c.Check(pln.synchronize(), gc.ErrorMatches, `recv from zone:"A" suffix:"1" : rpc error: .*`)
 }
 
 type replicationMock struct {
@@ -289,6 +313,8 @@ type replicationMock struct {
 	brokerA, brokerC *mockPeer
 	dialer           dialer
 
+	spoolCh chan fragment.Spool
+
 	commits   []fragment.Fragment
 	completes []fragment.Spool
 }
@@ -296,6 +322,7 @@ type replicationMock struct {
 func newReplicationMock(c *gc.C) *replicationMock {
 	var ctx, cancel = context.WithCancel(context.Background())
 	var brokerA, brokerC = newMockPeer(c, ctx), newMockPeer(c, ctx)
+
 	var dialer, err = newDialer(8)
 	c.Assert(err, gc.IsNil)
 
@@ -305,7 +332,10 @@ func newReplicationMock(c *gc.C) *replicationMock {
 		brokerA: brokerA,
 		brokerC: brokerC,
 		dialer:  dialer,
+		spoolCh: make(chan fragment.Spool, 1),
 	}
+	m.spoolCh <- fragment.NewSpool("a/journal", m)
+
 	return m
 }
 
@@ -337,15 +367,8 @@ func (m *replicationMock) header(id int, rev int64) *pb.Header {
 	return hdr
 }
 
-func (m *replicationMock) dial(ctx context.Context, id pb.BrokerSpec_ID) (*grpc.ClientConn, error) {
-	switch id {
-	case pb.BrokerSpec_ID{Zone: "A", Suffix: "1"}:
-		return m.brokerA.dial(ctx)
-	case pb.BrokerSpec_ID{Zone: "C", Suffix: "3"}:
-		return m.brokerC.dial(ctx)
-	default:
-		return nil, fmt.Errorf("unexpected ID: %s", id)
-	}
+func (m *replicationMock) newPipeline(hdr *pb.Header) *pipeline {
+	return newPipeline(m.ctx, hdr, <-m.spoolCh, m.spoolCh, m.dialer)
 }
 
 func (m *replicationMock) SpoolCommit(f fragment.Fragment) { m.commits = append(m.commits, f) }
@@ -526,14 +549,6 @@ func (p *mockPeer) Append(srv pb.Broker_AppendServer) error {
 	}
 }
 
-var (
-	_ = gc.Suite(&PipelineSuite{})
+var _ = gc.Suite(&PipelineSuite{})
 
-//	etcdCluster *integration.ClusterV3
-)
-
-func Test(t *testing.T) {
-	//etcdCluster = integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
-	gc.TestingT(t)
-	//etcdCluster.Terminate(t)
-}
+func Test(t *testing.T) { gc.TestingT(t) }
