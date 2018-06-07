@@ -125,6 +125,9 @@ func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
 	req.Header = nil
 
 	c.Check(req.Validate(), gc.IsNil)
+
+	req = AppendRequest{} // Indicates Append should commit.
+	c.Check(req.Validate(), gc.IsNil)
 }
 
 func (s *RPCSuite) TestAppendResponseValidationCases(c *gc.C) {
@@ -246,7 +249,6 @@ func (s *RPCSuite) TestReplicateResponseValidationCases(c *gc.C) {
 func badHeaderFixture() *Header {
 	return &Header{
 		BrokerId: BrokerSpec_ID{"zone", "name"},
-		ProxyId:  &BrokerSpec_ID{"zone", "peer"},
 		Route:    Route{Primary: 0, Brokers: []BrokerSpec_ID{{"zone", "name"}}},
 		Etcd: Header_Etcd{
 			ClusterId: 0, // ClusterId is invalid, but easily fixed up.

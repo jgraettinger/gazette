@@ -59,6 +59,7 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 
 	// TODO(johnny): compare with proxyHeader Revision
 	// TODO(johnny): sanity-check proxyHeader Etcd ClusterId.
+	// TODO(johnny): sanity-check proxyHeader BrokerID matches local id
 
 	if args.minEtcdRevision > ks.Header.Revision {
 		if err = ks.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
@@ -74,6 +75,7 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	// Extract Route.
 	var assignments = ks.KeyValues.Prefixed(
 		v3_allocator.ItemAssignmentsPrefix(ks, args.journal.String()))
+
 	res.Route.Init(assignments)
 	res.Route.AttachEndpoints(ks)
 
@@ -93,8 +95,6 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 
 	if res.BrokerId == local.Id {
 		res.replica = r.replicas[args.journal]
-	} else {
-		res.Header.ProxyId = &local.Id
 	}
 
 	// Select a response Status code.
@@ -116,6 +116,12 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 		res.status = pb.Status_INSUFFICIENT_JOURNAL_BROKERS
 	} else {
 		res.status = pb.Status_OK
+	}
+
+	// If we're returning an error, the effective BrokerId is ourselves
+	// (since we authored the error response).
+	if res.status != pb.Status_OK {
+		res.BrokerId = local.Id
 	}
 
 	return

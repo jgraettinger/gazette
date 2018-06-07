@@ -13,7 +13,7 @@ import (
 
 // pipeline is an in-flight write replication pipeline of a journal.
 type pipeline struct {
-	*pb.Header                                // Header of the pipeline.
+	pb.Header                                 // Header of the pipeline.
 	spool         fragment.Spool              // Local, primary replication Spool.
 	returnCh      chan<- fragment.Spool       // |spool| return channel.
 	streams       []pb.Broker_ReplicateClient // Established streams to each replication peer.
@@ -28,7 +28,7 @@ type pipeline struct {
 }
 
 // newPipeline returns a new pipeline.
-func newPipeline(ctx context.Context, hdr *pb.Header, spool fragment.Spool, returnCh chan<- fragment.Spool, dialer dialer) *pipeline {
+func newPipeline(ctx context.Context, hdr pb.Header, spool fragment.Spool, returnCh chan<- fragment.Spool, dialer dialer) *pipeline {
 	if hdr.Route.Primary == -1 {
 		panic("dial requires Route with Primary != -1")
 	}
@@ -71,7 +71,7 @@ func (pln *pipeline) synchronize() error {
 
 	for {
 		pln.scatter(&pb.ReplicateRequest{
-			Header:      pln.Header,
+			Header:      &pln.Header,
 			Journal:     pln.spool.Journal,
 			Proposal:    &proposal,
 			Acknowledge: true,
@@ -116,7 +116,8 @@ func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 	for i, s := range pln.streams {
 		if s != nil && pln.sendErrs[i] == nil {
 			if r.Header != nil {
-				r.Header.BrokerId = pln.Route.Brokers[i]
+				// Copy and update to peer BrokerId.
+				r.Header = boxHeaderBroker(*r.Header, pln.Route.Brokers[i])
 			}
 			pln.sendErrs[i] = s.Send(r)
 		}
@@ -221,7 +222,7 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 				}
 			} else {
 				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE: %s (remote) vs %s (local)",
-					resp.Header, pln.Header)
+					resp.Header, &pln.Header)
 			}
 
 		case pb.Status_FRAGMENT_MISMATCH:
@@ -271,4 +272,11 @@ func (pln *pipeline) recvErr() error {
 		}
 	}
 	return nil
+}
+
+func boxHeaderBroker(hdr pb.Header, id pb.BrokerSpec_ID) *pb.Header {
+	var out = new(pb.Header)
+	*out = hdr
+	out.BrokerId = id
+	return out
 }

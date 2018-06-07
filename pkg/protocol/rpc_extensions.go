@@ -92,8 +92,6 @@ func (m *AppendRequest) Validate() error {
 		} else if len(m.Content) != 0 {
 			return NewValidationError("unexpected Content")
 		}
-	} else if len(m.Content) == 0 {
-		return NewValidationError("expected Content")
 	} else if m.Header != nil {
 		return NewValidationError("unexpected Header")
 	}

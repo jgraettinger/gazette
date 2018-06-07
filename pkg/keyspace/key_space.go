@@ -253,7 +253,7 @@ func patchHeader(h *etcdserverpb.ResponseHeader, update etcdserverpb.ResponseHea
 		return fmt.Errorf("etcd Revision mismatch (expected > %d, got %d)", h.Revision, update.Revision)
 	}
 
-	if h.MemberId != update.MemberId || h.RaftTerm != update.RaftTerm {
+	if h.ClusterId != 0 && (h.MemberId != update.MemberId || h.RaftTerm != update.RaftTerm) {
 		log.WithFields(log.Fields{
 			"memberId":        h.MemberId,
 			"raftTerm":        h.RaftTerm,

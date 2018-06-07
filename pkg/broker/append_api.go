@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"crypto/sha1"
+	"fmt"
 	"hash"
 	"io"
 
@@ -49,7 +50,7 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 		}
 
 		var pln *pipeline
-		if pln, rev, err = acquirePipeline(stream.Context(), res.replica, &res.Header, s.dialer); err != nil {
+		if pln, rev, err = acquirePipeline(stream.Context(), res.replica, res.Header, s.dialer); err != nil {
 			break
 		} else if rev != 0 {
 			// A peer told us of a future & non-equivalent Route revision.
@@ -145,7 +146,7 @@ func serveAppend(stream grpc.Stream, pln *pipeline, spec *pb.JournalSpec, releas
 		return pln.recvErr()
 	} else {
 		return stream.SendMsg(&pb.AppendResponse{
-			Header: pln.Header,
+			Header: &pln.Header,
 			Commit: appender.reqFragment,
 		})
 	}
@@ -157,9 +158,10 @@ type appender struct {
 	pln  *pipeline
 	spec pb.JournalSpec_Fragment
 
+	reqCommit   bool
+	reqErr      error
 	reqFragment *pb.Fragment
 	reqSummer   hash.Hash
-	reqErr      error
 }
 
 func beginAppending(pln *pipeline, spec pb.JournalSpec_Fragment) appender {
@@ -188,12 +190,26 @@ func beginAppending(pln *pipeline, spec pb.JournalSpec_Fragment) appender {
 }
 
 func (a *appender) onRecv(req *pb.AppendRequest, err error) bool {
+	// Ensure |req| is a valid content chunk.
 	if err == nil {
-		err = req.Validate()
+		if err = req.Validate(); err == nil && req.Journal != "" {
+			err = errExpectedContentChunk
+		}
 	}
 
-	if err == nil {
-		// Content chunk. Forward it through the pipeline.
+	if err == io.EOF && !a.reqCommit {
+		// EOF without first receiving an empty chunk is unexpected,
+		// and we treat it as a roll-back.
+		err = io.ErrUnexpectedEOF
+	} else if err == nil && a.reqCommit {
+		// *Not* reading an EOF after reading an empty chunk is also unexpected.
+		err = errExpectedEOF
+	} else if err == nil && len(req.Content) == 0 {
+		// Empty chunk indicates an EOF will follow, at which point we commit.
+		a.reqCommit = true
+		return true
+	} else if err == nil {
+		// Regular content chunk. Forward it through the pipeline.
 		a.pln.scatter(&pb.ReplicateRequest{
 			Content:      req.Content,
 			ContentDelta: a.reqFragment.ContentLength(),
@@ -209,6 +225,9 @@ func (a *appender) onRecv(req *pb.AppendRequest, err error) bool {
 
 	var proposal = new(pb.Fragment)
 	if err == io.EOF {
+		if !a.reqCommit {
+			panic("invariant violated: reqCommit = true")
+		}
 		// Commit the Append, by scattering the next Fragment to be committed
 		// to each peer. They will inspect & validate the Fragment locally,
 		// and commit or return an error.
@@ -247,3 +266,8 @@ func updateProposal(cur pb.Fragment, spec pb.JournalSpec_Fragment) (pb.Fragment,
 	}
 	return next, next != cur
 }
+
+var (
+	errExpectedEOF          = fmt.Errorf("expected EOF after empty Content chunk")
+	errExpectedContentChunk = fmt.Errorf("expected Content chunk")
+)

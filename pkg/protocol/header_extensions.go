@@ -13,12 +13,6 @@ func (m Header) Validate() error {
 	} else if err := m.Etcd.Validate(); err != nil {
 		return ExtendContext(err, "Etcd")
 	}
-
-	if m.ProxyId != nil {
-		if err := m.ProxyId.Validate(); err != nil {
-			return ExtendContext(err, "ProxyId")
-		}
-	}
 	return nil
 }
 

@@ -3,16 +3,11 @@ package broker
 import (
 	"context"
 	"errors"
-	"io"
-	"net"
 	"testing"
-
-	gc "github.com/go-check/check"
-	"github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
+	gc "github.com/go-check/check"
 )
 
 type PipelineSuite struct{}
@@ -341,8 +336,6 @@ func newReplicationMock(c *gc.C) *replicationMock {
 
 func (m *replicationMock) header(id int, rev int64) *pb.Header {
 	var hdr = &pb.Header{
-		ProxyId: &pb.BrokerSpec_ID{Zone: "B", Suffix: "2"},
-
 		Route: pb.Route{
 			Primary: 1,
 			Brokers: []pb.BrokerSpec_ID{
@@ -368,186 +361,11 @@ func (m *replicationMock) header(id int, rev int64) *pb.Header {
 }
 
 func (m *replicationMock) newPipeline(hdr *pb.Header) *pipeline {
-	return newPipeline(m.ctx, hdr, <-m.spoolCh, m.spoolCh, m.dialer)
+	return newPipeline(m.ctx, *hdr, <-m.spoolCh, m.spoolCh, m.dialer)
 }
 
 func (m *replicationMock) SpoolCommit(f fragment.Fragment) { m.commits = append(m.commits, f) }
 func (m *replicationMock) SpoolComplete(s fragment.Spool)  { m.completes = append(m.completes, s) }
-
-type testServer struct {
-	c        *gc.C
-	ctx      context.Context
-	listener net.Listener
-	srv      *grpc.Server
-}
-
-func newTestServer(c *gc.C, ctx context.Context, srv pb.BrokerServer) *testServer {
-	var l, err = net.Listen("tcp", "127.0.0.1:0")
-	c.Assert(err, gc.IsNil)
-
-	var p = &testServer{
-		c:        c,
-		ctx:      ctx,
-		listener: l,
-		srv:      grpc.NewServer(),
-	}
-
-	pb.RegisterBrokerServer(p.srv, srv)
-	go p.srv.Serve(p.listener)
-
-	go func() {
-		<-ctx.Done()
-		p.srv.GracefulStop()
-	}()
-
-	return p
-}
-
-func (s *testServer) addr() string { return s.listener.Addr().String() }
-
-func (s *testServer) dial(ctx context.Context) (*grpc.ClientConn, error) {
-	return grpc.DialContext(ctx, s.listener.Addr().String(), grpc.WithInsecure())
-}
-
-func (s *testServer) mustDial() *grpc.ClientConn {
-	var conn, err = s.dial(s.ctx)
-	s.c.Assert(err, gc.IsNil)
-	return conn
-}
-
-type mockPeer struct {
-	*testServer
-
-	replReqCh  chan *pb.ReplicateRequest
-	replRespCh chan *pb.ReplicateResponse
-
-	readReqCh  chan *pb.ReadRequest
-	readRespCh chan *pb.ReadResponse
-
-	appendReqCh  chan *pb.AppendRequest
-	appendRespCh chan *pb.AppendResponse
-
-	errCh chan error
-}
-
-func newMockPeer(c *gc.C, ctx context.Context) *mockPeer {
-	var p = &mockPeer{
-		replReqCh:    make(chan *pb.ReplicateRequest),
-		replRespCh:   make(chan *pb.ReplicateResponse),
-		readReqCh:    make(chan *pb.ReadRequest),
-		readRespCh:   make(chan *pb.ReadResponse),
-		appendReqCh:  make(chan *pb.AppendRequest),
-		appendRespCh: make(chan *pb.AppendResponse),
-		errCh:        make(chan error),
-	}
-	p.testServer = newTestServer(c, ctx, p)
-	return p
-}
-
-func (p *mockPeer) Replicate(srv pb.Broker_ReplicateServer) error {
-	// Start a read loop of requests from |srv|.
-	go func() {
-		logrus.WithField("id", p.addr()).Info("replicate read loop started")
-		for done := false; !done; {
-			var msg, err = srv.Recv()
-
-			if err == io.EOF {
-				msg, err, done = nil, nil, true
-			} else if err != nil {
-				done = true
-
-				p.c.Check(err, gc.ErrorMatches, `rpc error: code = Canceled desc = context canceled`)
-			}
-
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "msg": msg, "err": err, "done": done}).Info("read")
-
-			select {
-			case p.replReqCh <- msg:
-				// Pass.
-			case <-p.ctx.Done():
-				done = true
-			}
-		}
-	}()
-
-	for {
-		select {
-		case resp := <-p.replRespCh:
-			p.c.Check(srv.Send(resp), gc.IsNil)
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "resp": resp}).Info("sent")
-		case err := <-p.errCh:
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "err": err}).Info("closing")
-			return err
-		case <-p.ctx.Done():
-			logrus.WithFields(logrus.Fields{"id": p.addr()}).Info("cancelled")
-			return p.ctx.Err()
-		}
-	}
-}
-
-func (p *mockPeer) Read(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
-	select {
-	case p.readReqCh <- req:
-		// Pass.
-	case <-p.ctx.Done():
-		return p.ctx.Err()
-	}
-
-	for {
-		select {
-		case resp := <-p.readRespCh:
-			p.c.Check(srv.Send(resp), gc.IsNil)
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "resp": resp}).Info("sent")
-		case err := <-p.errCh:
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "err": err}).Info("closing")
-			return err
-		case <-p.ctx.Done():
-			logrus.WithFields(logrus.Fields{"id": p.addr()}).Info("cancelled")
-			return p.ctx.Err()
-		}
-	}
-}
-
-func (p *mockPeer) Append(srv pb.Broker_AppendServer) error {
-	// Start a read loop of requests from |srv|.
-	go func() {
-		logrus.WithField("id", p.addr()).Info("append read loop started")
-		for done := false; !done; {
-			var msg, err = srv.Recv()
-
-			if err == io.EOF {
-				msg, err, done = nil, nil, true
-			} else if err != nil {
-				done = true
-
-				p.c.Check(err, gc.ErrorMatches, `rpc error: code = Canceled desc = context canceled`)
-			}
-
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "msg": msg, "err": err, "done": done}).Info("read")
-
-			select {
-			case p.appendReqCh <- msg:
-				// Pass.
-			case <-p.ctx.Done():
-				done = true
-			}
-		}
-	}()
-
-	for {
-		select {
-		case resp := <-p.appendRespCh:
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "resp": resp}).Info("sending")
-			return srv.SendAndClose(resp)
-		case err := <-p.errCh:
-			logrus.WithFields(logrus.Fields{"id": p.addr(), "err": err}).Info("closing")
-			return err
-		case <-p.ctx.Done():
-			logrus.WithFields(logrus.Fields{"id": p.addr()}).Info("cancelled")
-			return p.ctx.Err()
-		}
-	}
-}
 
 var _ = gc.Suite(&PipelineSuite{})
 

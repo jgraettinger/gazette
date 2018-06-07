@@ -80,7 +80,7 @@ func acquireSpool(ctx context.Context, r *replica, waitForRemoteLoad bool) (spoo
 	return
 }
 
-func acquirePipeline(ctx context.Context, r *replica, hdr *pb.Header, dialer dialer) (*pipeline, int64, error) {
+func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer dialer) (*pipeline, int64, error) {
 	var pln *pipeline
 
 	select {

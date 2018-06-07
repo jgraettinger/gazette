@@ -229,7 +229,10 @@ message AppendRequest {
   Header header = 1;
   // Journal to be appended to.
   string journal = 2 [(gogoproto.casttype) = "Journal"];
-  // Content chunks to be appended.
+  // Content chunks to be appended. Immediately prior to closing the stream,
+  // the client must send an empty chunk (eg, zero-valued AppendRequest) to
+  // indicate the Append should be committed. Absence of this empty chunk
+  // prior to EOF is interpreted by the broker as a rollback of the Append.
   bytes content = 3;
 }
 
@@ -296,12 +299,9 @@ message Route {
 // an RPC, and its effective Etcd state.
 message Header {
   // ID of the broker responsible for request processing.
-  BrokerSpec.ID broker_id = 2 [(gogoproto.nullable) = false];
-  // ProxyId, if set, is the broker ID which recieved and proxied the request
-  // to the responsible broker.
-  BrokerSpec.ID proxy_id = 3;
+  BrokerSpec.ID broker_id = 1 [(gogoproto.nullable) = false];
   // Route of the journal.
-  Route route = 4 [(gogoproto.nullable) = false];
+  Route route = 2 [(gogoproto.nullable) = false];
   // Etcd represents the effective Etcd MVCC state under which a Gazette broker
   // is operating in its processing of requests and responses. Its inclusion
   // allows brokers to reason about relative "happened before" Revision ordering
@@ -319,7 +319,7 @@ message Header {
     // raft_term is the raft term when the request was applied.
     uint64 raft_term = 4;
   }
-  Etcd etcd = 5 [(gogoproto.nullable) = false];
+  Etcd etcd = 3 [(gogoproto.nullable) = false];
 }
 
 service Broker {

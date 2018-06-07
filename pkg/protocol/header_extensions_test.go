@@ -45,7 +45,6 @@ func (s *HeaderSuite) TestEtcdConversion(c *gc.C) {
 func (s *HeaderSuite) TestHeaderValidationCases(c *gc.C) {
 	var model = Header{
 		BrokerId: BrokerSpec_ID{"no-suffix", ""},
-		ProxyId:  &BrokerSpec_ID{"", "no-zone"},
 		Route:    Route{Primary: 2, Brokers: []BrokerSpec_ID{{"zone", "name"}}},
 		Etcd: Header_Etcd{
 			ClusterId: 0,
@@ -60,8 +59,6 @@ func (s *HeaderSuite) TestHeaderValidationCases(c *gc.C) {
 	model.Route.Primary = 0
 	c.Check(model.Validate(), gc.ErrorMatches, `Etcd: invalid ClusterId .*`)
 	model.Etcd.ClusterId = 12
-	c.Check(model.Validate(), gc.ErrorMatches, `ProxyId.Zone: invalid length .*`)
-	model.ProxyId = &BrokerSpec_ID{"zone", "name"}
 
 	c.Check(model.Validate(), gc.IsNil)
 }

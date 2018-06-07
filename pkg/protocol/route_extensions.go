@@ -37,8 +37,9 @@ func (m Route) Copy() Route {
 // BrokerSpecs, and attaches the associated Endpoint of each to the Route.
 // KeySpace must already be read-locked.
 func (m *Route) AttachEndpoints(ks *keyspace.KeySpace) {
-	m.Endpoints = make([]Endpoint, len(m.Brokers))
-
+	if len(m.Brokers) != 0 {
+		m.Endpoints = make([]Endpoint, len(m.Brokers))
+	}
 	for i, b := range m.Brokers {
 		if member, ok := v3_allocator.LookupMember(ks, b.Zone, b.Suffix); !ok {
 			continue // Assignment with missing Member. Ignore.
