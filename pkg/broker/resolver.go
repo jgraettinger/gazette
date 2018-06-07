@@ -57,6 +57,9 @@ type resolution struct {
 func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	var ks = r.state.KS
 
+	// TODO(johnny): compare with proxyHeader Revision
+	// TODO(johnny): sanity-check proxyHeader Etcd ClusterId.
+
 	if args.minEtcdRevision > ks.Header.Revision {
 		if err = ks.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
 			return

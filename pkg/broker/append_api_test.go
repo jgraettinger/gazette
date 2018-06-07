@@ -356,7 +356,7 @@ func (s *AppendSuite) TestAppenderCases(c *gc.C) {
 	})
 	c.Check(appender.reqErr, gc.IsNil)
 
-	// New request. This time, an updated proposal is not sent.
+	// New request. This time, an updating proposal is not required and is not sent.
 	appender = beginAppending(pln, spec)
 
 	// First chunk.
@@ -374,8 +374,8 @@ func (s *AppendSuite) TestAppenderCases(c *gc.C) {
 	c.Check(appender.reqFragment, gc.IsNil)
 	c.Check(appender.reqErr, gc.ErrorMatches, `Journal: cannot begin with '/' \(/invalid\)`)
 
-	// New request. An updated proposal is still not sent, despite the spec being
-	// different, because the spool is non-empty but not over the Fragment Length.
+	// New request. An updated proposal is still not sent, despite the spec codec
+	// differing, because the spool is non-empty and not over the Fragment Length.
 	spec.CompressionCodec = pb.CompressionCodec_GZIP
 	appender = beginAppending(pln, spec)
 

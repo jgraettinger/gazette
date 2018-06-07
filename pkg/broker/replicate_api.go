@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/LiveRamp/gazette/pkg/fragment"
 	log "github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
 
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
@@ -48,7 +49,7 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 		return err
 	}
 
-	spool, err = serveReplicate(req, stream, spool)
+	spool, err = serveReplicate(stream, req, spool)
 	res.replica.spoolCh <- spool // Release ownership of Spool.
 
 	if err != nil {
@@ -57,7 +58,8 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 	return err
 }
 
-func serveReplicate(req *pb.ReplicateRequest, stream pb.Broker_ReplicateServer, spool fragment.Spool) (fragment.Spool, error) {
+// serveReplicate evaluates a client's Replicate RPC against the local Spool.
+func serveReplicate(stream grpc.Stream, req *pb.ReplicateRequest, spool fragment.Spool) (fragment.Spool, error) {
 	var err error
 
 	var resp = new(pb.ReplicateResponse)
@@ -67,7 +69,7 @@ func serveReplicate(req *pb.ReplicateRequest, stream pb.Broker_ReplicateServer, 
 		}
 
 		if req.Acknowledge {
-			if err = stream.Send(resp); err != nil {
+			if err = stream.SendMsg(resp); err != nil {
 				return spool, err
 			}
 		} else if resp.Status != pb.Status_OK {

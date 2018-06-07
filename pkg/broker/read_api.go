@@ -6,9 +6,10 @@ import (
 	"io/ioutil"
 	"sync"
 
-	"github.com/LiveRamp/gazette/pkg/fragment"
 	log "github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
 
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
@@ -35,17 +36,17 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 			Header: &res.Header,
 		})
 	} else if res.replica == nil {
-		return proxyRead(req, stream, &res.Header, s.dialer)
+		return proxyRead(stream, req, &res.Header, s.dialer)
 	}
 
-	if err = serveRead(req, stream, &res.Header, res.replica.index); err != nil {
+	if err = serveRead(stream, req, &res.Header, res.replica.index); err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Read")
 	}
 	return err
 }
 
 // proxyRead forwards a ReadRequest to a resolved peer broker.
-func proxyRead(req *pb.ReadRequest, stream pb.Broker_ReadServer, hdr *pb.Header, dialer dialer) error {
+func proxyRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, dialer dialer) error {
 	var conn, err = dialer.dial(context.Background(), hdr.BrokerId, hdr.Route)
 	if err != nil {
 		return err
@@ -66,21 +67,21 @@ func proxyRead(req *pb.ReadRequest, stream pb.Broker_ReadServer, hdr *pb.Header,
 			return nil
 		} else if err != nil {
 			return err
-		} else if err = stream.Send(resp); err != nil {
+		} else if err = stream.SendMsg(resp); err != nil {
 			return err
 		}
 	}
 }
 
-// read evaluates a client's Read RPC.
-func serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer, hdr *pb.Header, index *fragment.Index) error {
+// serveRead evaluates a client's Read RPC against the local replica index.
+func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *fragment.Index) error {
 	var buffer = chunkBufferPool.Get().([]byte)
 	defer chunkBufferPool.Put(buffer)
 
 	var reader io.ReadCloser
 
 	for i := 0; true; i++ {
-		var resp, file, err = index.Query(srv.Context(), req)
+		var resp, file, err = index.Query(stream.Context(), req)
 		if err != nil {
 			return err
 		}
@@ -89,7 +90,7 @@ func serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer, hdr *pb.Header, in
 		if i == 0 {
 			resp.Header = hdr
 		}
-		if err = srv.Send(resp); err != nil {
+		if err = stream.SendMsg(resp); err != nil {
 			return err
 		}
 
@@ -126,7 +127,7 @@ func serveRead(req *pb.ReadRequest, srv pb.Broker_ReadServer, hdr *pb.Header, in
 			}
 			resp.Content = buffer[:n]
 
-			if err = srv.Send(resp); err != nil {
+			if err = stream.SendMsg(resp); err != nil {
 				return err
 			}
 			resp.Offset += int64(n)
@@ -148,10 +149,3 @@ var (
 	chunkSize       = 1 << 17 // 128K.
 	chunkBufferPool = sync.Pool{New: func() interface{} { return make([]byte, chunkSize) }}
 )
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
