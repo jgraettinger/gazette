@@ -73,6 +73,8 @@ func validateB64Str(n string, min, max int) error {
 }
 
 const (
+	// Note that any character with ordinal value less than or equal to '#' (35),
+	// which is the allocator KeySpace separator, must not be included in this alphabet.
 	base64Alphabet           = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+/="
 	minLabelLen, maxLabelLen = 2, 64
 	maxLabelValueLen         = 1024

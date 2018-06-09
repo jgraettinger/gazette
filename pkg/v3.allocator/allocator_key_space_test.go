@@ -13,6 +13,41 @@ import (
 
 type AllocKeySpaceSuite struct{}
 
+func (s *AllocKeySpaceSuite) TestKeyOrderingEdgeCases(c *gc.C) {
+	var ks = NewAllocatorKeySpace("/root", testAllocDecoder{})
+
+	// Expect the choice of "#" as separator means we handle prefix cases
+	// appropriately while maintaining the key ordering invariant.
+	var cases = []string{
+		MemberKey(ks, "11", "XX"),
+		MemberKey(ks, "111", "XX"),
+		MemberKey(ks, "1111", "XX"),
+		MemberKey(ks, "22", "Y"),
+		MemberKey(ks, "22", "YY"),
+		MemberKey(ks, "22", "YYY"),
+	}
+	for i := 1; i != len(cases); i++ {
+		c.Check(cases[i-1] < cases[i], gc.Equals, true)
+	}
+
+	cases = []string{
+		AssignmentKey(ks, Assignment{"11", "xx", "YY", 0, nil}),
+		AssignmentKey(ks, Assignment{"111", "xx", "YY", 0, nil}),
+		AssignmentKey(ks, Assignment{"22", "xx", "YY", 0, nil}),
+		AssignmentKey(ks, Assignment{"22", "xxx", "YY", 0, nil}),
+		AssignmentKey(ks, Assignment{"33", "xx", "yy", 0, nil}),
+		AssignmentKey(ks, Assignment{"33", "xx", "yyy", 0, nil}),
+		AssignmentKey(ks, Assignment{"33", "xx", "yyy", 1, nil}),
+	}
+	for i := 1; i != len(cases); i++ {
+		c.Check(cases[i-1] < cases[i], gc.Equals, true)
+	}
+}
+
+func (s *AllocKeySpaceSuite) TestKeyConstructorsAssertSepOrdering(c *gc.C) {
+
+}
+
 func (s *AllocKeySpaceSuite) TestAllocKeySpaceDecoding(c *gc.C) {
 	var client = etcdCluster.RandClient()
 	var ctx = context.Background()
@@ -26,25 +61,25 @@ func (s *AllocKeySpaceSuite) TestAllocKeySpaceDecoding(c *gc.C) {
 		key   string
 		value interface{}
 	}{
-		{"/root/assign/item-1|us-east|foo|1", Assignment{
+		{"/root/assign/item-1#us-east#foo#1", Assignment{
 			ItemID: "item-1", MemberZone: "us-east", MemberSuffix: "foo", Slot: 1, AssignmentValue: testAssignment{true}}},
-		{"/root/assign/item-1|us-west|baz|0", Assignment{
+		{"/root/assign/item-1#us-west#baz#0", Assignment{
 			ItemID: "item-1", MemberZone: "us-west", MemberSuffix: "baz", Slot: 0, AssignmentValue: testAssignment{true}}},
-		{"/root/assign/item-missing|us-west|baz|0", Assignment{
+		{"/root/assign/item-missing#us-west#baz#0", Assignment{
 			ItemID: "item-missing", MemberZone: "us-west", MemberSuffix: "baz", Slot: 0, AssignmentValue: testAssignment{false}}},
-		{"/root/assign/item-two|missing|member|2", Assignment{
+		{"/root/assign/item-two#missing#member#2", Assignment{
 			ItemID: "item-two", MemberZone: "missing", MemberSuffix: "member", Slot: 2, AssignmentValue: testAssignment{false}}},
-		{"/root/assign/item-two|us-east|bar|0", Assignment{
+		{"/root/assign/item-two#us-east#bar#0", Assignment{
 			ItemID: "item-two", MemberZone: "us-east", MemberSuffix: "bar", Slot: 0, AssignmentValue: testAssignment{true}}},
-		{"/root/assign/item-two|us-west|baz|1", Assignment{
+		{"/root/assign/item-two#us-west#baz#1", Assignment{
 			ItemID: "item-two", MemberZone: "us-west", MemberSuffix: "baz", Slot: 1, AssignmentValue: testAssignment{false}}},
 
 		{"/root/items/item-1", Item{ID: "item-1", ItemValue: testItem{R: 2}}},
 		{"/root/items/item-two", Item{ID: "item-two", ItemValue: testItem{R: 1}}},
 
-		{"/root/members/us-east|bar", Member{Zone: "us-east", Suffix: "bar", MemberValue: testMember{R: 1}}},
-		{"/root/members/us-east|foo", Member{Zone: "us-east", Suffix: "foo", MemberValue: testMember{R: 2}}},
-		{"/root/members/us-west|baz", Member{Zone: "us-west", Suffix: "baz", MemberValue: testMember{R: 3}}},
+		{"/root/members/us-east#bar", Member{Zone: "us-east", Suffix: "bar", MemberValue: testMember{R: 1}}},
+		{"/root/members/us-east#foo", Member{Zone: "us-east", Suffix: "foo", MemberValue: testMember{R: 2}}},
+		{"/root/members/us-west#baz", Member{Zone: "us-west", Suffix: "baz", MemberValue: testMember{R: 3}}},
 	}
 
 	c.Assert(ks.KeyValues, gc.HasLen, len(expect))
@@ -240,31 +275,31 @@ func buildAllocKeySpaceFixture(c *gc.C, ctx context.Context, client *clientv3.Cl
 		"/root/items/item-two": `{"R": 1}`, // 1
 
 		// Invalid KeyValues which are omitted.
-		"/root/items/invalid|item|key": `{"R": 1}`,
+		"/root/items/invalid#item#key": `{"R": 1}`,
 		"/root/items/valid-id":         `invalid value`,
 
-		"/root/members/us-east|bar": `{"R": 1}`, // Members index 0
-		"/root/members/us-east|foo": `{"R": 2}`, // 1
-		"/root/members/us-west|baz": `{"R": 3}`, // 2.
+		"/root/members/us-east#bar": `{"R": 1}`, // Members index 0
+		"/root/members/us-east#foo": `{"R": 2}`, // 1
+		"/root/members/us-west#baz": `{"R": 3}`, // 2.
 
 		// Invalid KeyValues which are omitted.
 		"/root/members/invalid-key":       `{"R": 1}`,
-		"/root/members/us-west|valid-key": `invalid value`,
+		"/root/members/us-west#valid-key": `invalid value`,
 
-		"/root/assign/item-1|us-east|foo|1":       `consistent`, // Assignments index 0
-		"/root/assign/item-1|us-west|baz|0":       `consistent`, // 1
-		"/root/assign/item-missing|us-west|baz|0": ``,           // 2
-		"/root/assign/item-two|missing|member|2":  ``,           // 3
-		"/root/assign/item-two|us-east|bar|0":     `consistent`, // 4
-		"/root/assign/item-two|us-west|baz|1":     ``,           // 5
+		"/root/assign/item-1#us-east#foo#1":       `consistent`, // Assignments index 0
+		"/root/assign/item-1#us-west#baz#0":       `consistent`, // 1
+		"/root/assign/item-missing#us-west#baz#0": ``,           // 2
+		"/root/assign/item-two#missing#member#2":  ``,           // 3
+		"/root/assign/item-two#us-east#bar#0":     `consistent`, // 4
+		"/root/assign/item-two#us-west#baz#1":     ``,           // 5
 
 		// Invalid KeyValues which are omitted.
-		"/root/assign/item-1|us-east|foo|invalid-slot": ``,
-		"/root/assign/item-two|valid|key|2":            `invalid value`,
+		"/root/assign/item-1#us-east#foo#invalid-slot": ``,
+		"/root/assign/item-two#valid#key#2":            `invalid value`,
 
-		"/root/aaaaa/unknown|prefix": ``,
-		"/root/jjjjj/unknown|prefix": ``,
-		"/root/zzzzz/unknown|prefix": ``,
+		"/root/aaaaa/unknown#prefix": ``,
+		"/root/jjjjj/unknown#prefix": ``,
+		"/root/zzzzz/unknown#prefix": ``,
 	} {
 		var _, err = client.Put(ctx, k, v)
 		c.Assert(err, gc.IsNil)

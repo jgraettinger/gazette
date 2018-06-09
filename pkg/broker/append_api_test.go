@@ -18,7 +18,6 @@ func (s *AppendSuite) TestSingleAppend(c *gc.C) {
 	defer cancel()
 
 	var ks = NewKeySpace("/root")
-
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 

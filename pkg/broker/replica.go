@@ -99,7 +99,8 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer dial
 
 	// If |pln| is a valid pipeline but is built on a non-equivalent & older Route,
 	// tear it down asynchronously and immediately begin a new one.
-	if pln != nil && !pln.Route.Equivalent(&hdr.Route) && pln.Etcd.Revision < hdr.Etcd.Revision {
+	if pln != nil && pln.readThroughRev == 0 &&
+		!pln.Route.Equivalent(&hdr.Route) && pln.Etcd.Revision < hdr.Etcd.Revision {
 
 		go func(pln *pipeline) {
 			var waitFor, _ = pln.barrier()

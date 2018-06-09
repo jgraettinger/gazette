@@ -157,8 +157,7 @@ func (h *HTTPGateway) serveWrite(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var buffer = chunkBufferPool.Get().([]byte)
-	defer chunkBufferPool.Put(buffer)
+	var buffer = make([]byte, chunkSize)
 
 	// Proxy content chunks from the http.Request through the Broker_AppendClient.
 	var n int

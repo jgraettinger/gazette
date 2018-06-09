@@ -13,9 +13,9 @@ import (
 const (
 	// Item keys are structured as "prefix/items/id"
 	ItemsPrefix = "/items/"
-	// Member keys are structured as "prefix/members/zone|suffix"
+	// Member keys are structured as "prefix/members/zone#suffix"
 	MembersPrefix = "/members/"
-	// Assignment keys are structured as "prefix/assign/item-id|zone|member-suffix|slot"
+	// Assignment keys are structured as "prefix/assign/item-id#zone#member-suffix#slot"
 	AssignmentsPrefix = "/assign/"
 )
 
@@ -92,7 +92,7 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 	return func(raw *mvccpb.KeyValue) (interface{}, error) {
 		switch {
 		case bytes.HasPrefix(raw.Key, []byte(membersPrefix)):
-			if p := strings.Split(string(raw.Key[len(membersPrefix):]), "|"); len(p) != 2 {
+			if p := strings.Split(string(raw.Key[len(membersPrefix):]), Sep); len(p) != 2 {
 				return nil, fmt.Errorf("expected (zone, suffix) in member key")
 			} else if value, err := decode.DecodeMember(p[0], p[1], raw); err != nil {
 				return nil, err
@@ -101,7 +101,7 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 			}
 
 		case bytes.HasPrefix(raw.Key, []byte(itemsPrefix)):
-			if p := strings.Split(string(raw.Key[len(itemsPrefix):]), "|"); len(p) != 1 {
+			if p := strings.Split(string(raw.Key[len(itemsPrefix):]), Sep); len(p) != 1 {
 				return nil, fmt.Errorf("expected (id) in item key")
 			} else if value, err := decode.DecodeItem(p[0], raw); err != nil {
 				return nil, err
@@ -110,7 +110,7 @@ func NewAllocatorKeyValueDecoder(prefix string, decode AllocatorDecoder) keyspac
 			}
 
 		case bytes.HasPrefix(raw.Key, []byte(assignmentsPrefix)):
-			if p := strings.Split(string(raw.Key[len(assignmentsPrefix):]), "|"); len(p) != 4 {
+			if p := strings.Split(string(raw.Key[len(assignmentsPrefix):]), Sep); len(p) != 4 {
 				return nil, fmt.Errorf("expected (item-id, member-zone, member-suffix, slot) in assignment key")
 			} else if slot, err := strconv.Atoi(p[3]); err != nil {
 				return nil, err
@@ -134,22 +134,28 @@ func NewAllocatorKeySpace(prefix string, decode AllocatorDecoder) *keyspace.KeyS
 
 // MemberKey returns the unique key for a Member with |zone| and |suffix| under the KeySpace.
 func MemberKey(ks *keyspace.KeySpace, zone, suffix string) string {
-	return ks.Root + MembersPrefix + zone + "|" + suffix
+	assertAboveSep(zone)
+	assertAboveSep(suffix)
+	return ks.Root + MembersPrefix + zone + Sep + suffix
 }
 
 // ItemKey returns the unique key for an Item with ID |id| under the KeySpace.
 func ItemKey(ks *keyspace.KeySpace, id string) string {
+	assertAboveSep(id)
 	return ks.Root + ItemsPrefix + id
 }
 
 // ItemAssignmentsPrefix returns the unique key prefix for all Assignments of |itemID| under the KeySpace.
 func ItemAssignmentsPrefix(ks *keyspace.KeySpace, itemID string) string {
-	return ks.Root + AssignmentsPrefix + itemID + "|"
+	assertAboveSep(itemID)
+	return ks.Root + AssignmentsPrefix + itemID + Sep
 }
 
 // AssignmentKey returns the unique key for Assignment |assignment| under the KeySpace.
 func AssignmentKey(ks *keyspace.KeySpace, a Assignment) string {
-	return ItemAssignmentsPrefix(ks, a.ItemID) + a.MemberZone + "|" + a.MemberSuffix + "|" + strconv.Itoa(a.Slot)
+	assertAboveSep(a.MemberZone)
+	assertAboveSep(a.MemberSuffix)
+	return ItemAssignmentsPrefix(ks, a.ItemID) + a.MemberZone + Sep + a.MemberSuffix + Sep + strconv.Itoa(a.Slot)
 }
 
 // LookupMember returns the identified Member, or false if not found.
@@ -248,3 +254,21 @@ func (j *leftJoin) next() (cursor, bool) {
 	}
 	return cursor{}, false
 }
+
+func assertAboveSep(s string) {
+	for i := range s {
+		if s[i] <= '#' {
+			panic(fmt.Sprintf("invalid char <= '#' (ind %d of %+q)", i, s))
+		}
+	}
+}
+
+// '#' is selected as separator, because it's the first visual ASCII character
+// which is not interpreted by shells (preceding visual characters are " and !).
+// The fact that it's lowest-value ensures that the natural ordering of KeySpace
+// entities like Member and Assignment agrees with the lexicographic ordering of
+// their encoded Etcd keys. As fallout, this means ", !, and other non-visual
+// characters below ord('#') = 35 are disallowed (such as ' ', '\t', '\r', '\n'),
+// but everything else is fair game. Note that includes UTF-8, which by design
+// does not collide with the first 128 ASCII code-points.
+const Sep = "#"

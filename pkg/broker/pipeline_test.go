@@ -344,9 +344,9 @@ func (m *replicationMock) header(id int, rev int64) *pb.Header {
 				{Zone: "C", Suffix: "3"},
 			},
 			Endpoints: []pb.Endpoint{
-				pb.Endpoint("http://" + m.brokerA.addr()),
+				m.brokerA.endpoint(),
 				pb.Endpoint("http://[100::]"),
-				pb.Endpoint("http://" + m.brokerC.addr()),
+				m.brokerC.endpoint(),
 			},
 		},
 		Etcd: pb.Header_Etcd{

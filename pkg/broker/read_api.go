@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"io/ioutil"
-	"sync"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
@@ -75,9 +74,7 @@ func proxyRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, dialer d
 
 // serveRead evaluates a client's Read RPC against the local replica index.
 func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *fragment.Index) error {
-	var buffer = chunkBufferPool.Get().([]byte)
-	defer chunkBufferPool.Put(buffer)
-
+	var buffer = make([]byte, chunkSize)
 	var reader io.ReadCloser
 
 	for i := 0; true; i++ {
@@ -145,7 +142,4 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 	return nil
 }
 
-var (
-	chunkSize       = 1 << 17 // 128K.
-	chunkBufferPool = sync.Pool{New: func() interface{} { return make([]byte, chunkSize) }}
-)
+var chunkSize = 1 << 17 // 128K.

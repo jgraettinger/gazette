@@ -7,6 +7,7 @@ import (
 
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/integration"
+	gc "github.com/go-check/check"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 
@@ -25,16 +26,17 @@ func BenchmarkAll(b *testing.B) {
 	})
 }
 
-// TestBenchmarkHealth runs benchmarks with a small N to ensure they don't bit rot.
-func TestBenchmarkHealth(t *testing.T) {
-	var etcdCluster = integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
-	defer etcdCluster.Terminate(t)
+type BenchmarkHealthSuite struct{}
 
+// TestBenchmarkHealth runs benchmarks with a small N to ensure they don't bit rot.
+func (s *BenchmarkHealthSuite) TestBenchmarkHealth(c *gc.C) {
 	var fakeB testing.B
 	var client = etcdCluster.RandClient()
 
 	benchmarkSimulatedDeploy(&fakeB, client)
 }
+
+var _ = gc.Suite(&BenchmarkHealthSuite{})
 
 func benchmarkSimulatedDeploy(b *testing.B, client *clientv3.Client) {
 	var ctx, _ = context.WithCancel(context.Background())

@@ -19,7 +19,7 @@ func (s *DialerSuite) TestDialer(c *gc.C) {
 
 	var route = pb.Route{
 		Brokers:   []pb.BrokerSpec_ID{{"zone-a", "member-1"}, {"zone-b", "member-2"}},
-		Endpoints: []pb.Endpoint{pb.Endpoint("http://" + peer1.addr() + "/path"), pb.Endpoint("http://" + peer2.addr() + "/path")},
+		Endpoints: []pb.Endpoint{peer1.endpoint(), peer2.endpoint()},
 	}
 
 	var d, err = newDialer(8)
@@ -46,7 +46,7 @@ func (s *DialerSuite) TestDialer(c *gc.C) {
 	// Expect an error for an ID not in the Route (even if it's cached).
 	route = pb.Route{
 		Brokers:   []pb.BrokerSpec_ID{{"zone-a", "member-1"}},
-		Endpoints: []pb.Endpoint{pb.Endpoint("http://" + peer1.addr() + "/path")},
+		Endpoints: []pb.Endpoint{peer1.endpoint()},
 	}
 	_, err = d.dial(ctx, pb.BrokerSpec_ID{Zone: "zone-b", Suffix: "member-2"}, route)
 	c.Check(err, gc.ErrorMatches, `no such Broker in Route \(id: zone:"zone-b" suffix:"member-2" .*\)`)

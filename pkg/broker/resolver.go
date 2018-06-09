@@ -56,10 +56,33 @@ type resolution struct {
 
 func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	var ks = r.state.KS
+	defer ks.Mu.RUnlock()
+	ks.Mu.RLock()
 
-	// TODO(johnny): compare with proxyHeader Revision
-	// TODO(johnny): sanity-check proxyHeader Etcd ClusterId.
-	// TODO(johnny): sanity-check proxyHeader BrokerID matches local id
+	if r.state.LocalMemberInd == -1 {
+		err = fmt.Errorf("local allocator member key not found in Etcd (%s)", r.state.LocalKey)
+		return
+	}
+	var local = r.state.Members[r.state.LocalMemberInd].
+		Decoded.(v3_allocator.Member).MemberValue.(*pb.BrokerSpec)
+
+	if hdr := args.proxyHeader; hdr != nil {
+		// Sanity check the proxy broker is using our same Etcd cluster.
+		if hdr.Etcd.ClusterId != ks.Header.ClusterId {
+			err = fmt.Errorf("proxied request Etcd ClusterId doesn't match our own (%d vs %d)",
+				hdr.Etcd.ClusterId, ks.Header.ClusterId)
+			return
+		}
+		// Sanity-check that the proxy broker reached the intended recipient.
+		if hdr.BrokerId != local.Id {
+			err = fmt.Errorf("proxied request BrokerId doesn't match our own (%s vs %s)",
+				&hdr.BrokerId, &local.Id)
+		}
+		// We want to wait for the greater of a |proxyHeader| or |minEtcdRevision|.
+		if args.proxyHeader.Etcd.Revision > args.minEtcdRevision {
+			args.minEtcdRevision = args.proxyHeader.Etcd.Revision
+		}
+	}
 
 	if args.minEtcdRevision > ks.Header.Revision {
 		if err = ks.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
@@ -78,13 +101,6 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 
 	res.Route.Init(assignments)
 	res.Route.AttachEndpoints(ks)
-
-	if r.state.LocalMemberInd == -1 {
-		err = fmt.Errorf("local member key not found")
-		return
-	}
-	var local = r.state.Members[r.state.LocalMemberInd].
-		Decoded.(v3_allocator.Member).MemberValue.(*pb.BrokerSpec)
 
 	// Select a best, responsible BrokerID.
 	if args.requirePrimary && res.Route.Primary != -1 {
@@ -127,6 +143,8 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	return
 }
 
+// observeKeySpace, by virtue of being a KeySpace.Observer, expects that the
+// KeySpace.Mu Lock is held.
 func (r *resolver) observeKeySpace() {
 	var next = make(map[pb.Journal]*replica, len(r.state.LocalItems))
 

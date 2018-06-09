@@ -31,7 +31,7 @@ func (s *IndexSuite) TestSimpleRemoteAndLocalQueries(c *gc.C) {
 
 	// Add a local fragment with backing file. Expect we can query it.
 	set[2].File = os.Stdin
-	ind.AddLocal(set[2])
+	ind.SpoolCommit(set[2])
 
 	resp, file, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: 210, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -48,7 +48,7 @@ func (s *IndexSuite) TestRemoteReplacesLocal(c *gc.C) {
 
 	var set = buildSet(c, 100, 200)
 	set[0].File = os.Stdin
-	ind.AddLocal(set[0])
+	ind.SpoolCommit(set[0])
 
 	// Precondition: local fragment is queryable.
 	var resp, file, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: 110, Block: true})
@@ -78,7 +78,7 @@ func (s *IndexSuite) TestRemoteReplacesLocal(c *gc.C) {
 
 func (s *IndexSuite) TestQueryAtHead(c *gc.C) {
 	var ind = NewIndex(context.Background())
-	ind.AddLocal(buildSet(c, 100, 200)[0])
+	ind.SpoolCommit(buildSet(c, 100, 200)[0])
 
 	var resp, _, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: -1, Block: false})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -88,7 +88,7 @@ func (s *IndexSuite) TestQueryAtHead(c *gc.C) {
 	})
 	c.Check(err, gc.IsNil)
 
-	go ind.AddLocal(buildSet(c, 200, 250)[0])
+	go ind.SpoolCommit(buildSet(c, 200, 250)[0])
 
 	resp, _, err = ind.Query(context.Background(), &pb.ReadRequest{Offset: -1, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -108,8 +108,8 @@ func (s *IndexSuite) TestQueryAtMissingMiddle(c *gc.C) {
 
 	// Establish fixture with zero'd Fragment ModTimes.
 	var set = buildSet(c, 100, 200, 300, 400)
-	ind.AddLocal(set[0])
-	ind.AddLocal(set[1])
+	ind.SpoolCommit(set[0])
+	ind.SpoolCommit(set[1])
 
 	// Expect before and after the missing span are queryable, but the missing middle is not available.
 	var resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 110, Block: false})
@@ -128,7 +128,7 @@ func (s *IndexSuite) TestQueryAtMissingMiddle(c *gc.C) {
 
 	// Perform a blocking query, and arrange for a satisfying Fragment to be added.
 	// Expect it's returned.
-	go ind.AddLocal(buildSet(c, 200, 250)[0])
+	go ind.SpoolCommit(buildSet(c, 200, 250)[0])
 
 	resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 210, Block: true})
 	c.Check(resp, gc.DeepEquals, &pb.ReadResponse{
@@ -143,7 +143,7 @@ func (s *IndexSuite) TestQueryAtMissingMiddle(c *gc.C) {
 	// jumps forward to the next Fragment.
 	go func() {
 		timeNow = func() time.Time { return baseTime.Add(offsetJumpAgeThreshold + 1) }
-		ind.AddLocal(buildSet(c, 400, 420)[0])
+		ind.SpoolCommit(buildSet(c, 400, 420)[0])
 	}()
 
 	resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 250, Block: true})
@@ -163,7 +163,7 @@ func (s *IndexSuite) TestBlockedContextCancelled(c *gc.C) {
 	var reqCtx, reqCancel = context.WithCancel(context.Background())
 
 	var ind = NewIndex(indCtx)
-	ind.AddLocal(buildSet(c, 100, 200)[0])
+	ind.SpoolCommit(buildSet(c, 100, 200)[0])
 
 	// Cancel the request context. Expect the query returns immediately.
 	go reqCancel()
@@ -202,9 +202,8 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		c.Assert(ioutil.WriteFile(path, []byte("data"), 0600), gc.IsNil)
 	}
 
-	var indCtx, indCancel = context.WithCancel(context.Background())
-	var ind = NewIndex(indCtx)
-	var signalCh = make(chan struct{})
+	var ctx, cancel = context.WithCancel(context.Background())
+	var ind = NewIndex(ctx)
 
 	var cases = []func() *pb.JournalSpec{
 		func() *pb.JournalSpec {
@@ -221,12 +220,9 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		},
 
 		func() *pb.JournalSpec {
-			// Expect |signalCh| is not yet closed.
-			select {
-			case <-signalCh:
-				c.FailNow()
-			default:
-			}
+			// Expect first remote load does not signal.
+			var timeoutCtx, _ = context.WithTimeout(context.Background(), time.Microsecond)
+			c.Check(ind.WaitForFirstRemoteLoad(timeoutCtx), gc.Equals, context.DeadlineExceeded)
 
 			// Return a Spec which gathers fixture Fragments from |path1|.
 			return &pb.JournalSpec{
@@ -241,12 +237,8 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		},
 
 		func() *pb.JournalSpec {
-			// Expect |signalCh| is now closed.
-			select {
-			case <-signalCh:
-			default:
-				c.FailNow()
-			}
+			// Expect first remote load has completed.
+			c.Check(ind.WaitForFirstRemoteLoad(context.Background()), gc.IsNil)
 
 			// Return nil (!ok). Expect the watch will exit.
 			return nil
@@ -259,8 +251,7 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		return spec, spec != nil
 	}
 
-	// TODO(johnny) Test WaitForFirstRemoteLoad
-	ind.WatchStores(getSpec, signalCh)
+	ind.WatchStores(getSpec)
 	c.Check(cases, gc.HasLen, 0) // Expect all cases ran.
 
 	c.Check(ind.set, gc.HasLen, 3)
@@ -268,11 +259,11 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 
 	cases = []func() *pb.JournalSpec{
 		func() *pb.JournalSpec {
-			indCancel()
+			cancel()
 
-			// Return a Spec which gathers fixture Fragments from |path1| & |path2|,
-			// with a long RefreshInterval. Expect watch exists anyway, because
-			// we cancelled its context.
+			// Return a Spec which gathers fixture Fragments from |path2| as well
+			// as |path1|, and with with a long RefreshInterval. Expect watch exists
+			// anyway after its first iteration, because we cancelled its context.
 			return &pb.JournalSpec{
 				Name: "a/journal",
 				Fragment: pb.JournalSpec_Fragment{
@@ -286,10 +277,10 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		},
 	}
 
-	ind.WatchStores(getSpec, make(chan struct{}))
+	ind.WatchStores(getSpec)
 	c.Check(cases, gc.HasLen, 0) // Expect the case ran.
 
-	c.Check(ind.set, gc.HasLen, 4)
+	c.Check(ind.set, gc.HasLen, 4) // Combined Fragments are reflected.
 	c.Check(ind.EndOffset(), gc.Equals, int64(0x555))
 
 	c.Assert(os.RemoveAll(path1), gc.IsNil)

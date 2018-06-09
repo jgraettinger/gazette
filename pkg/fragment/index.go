@@ -152,7 +152,7 @@ func (fi *Index) ReplaceRemote(set Set) {
 
 	select {
 	case <-fi.firstLoadCh:
-		// Pass.
+		// Already closed.
 	default:
 		close(fi.firstLoadCh)
 	}
