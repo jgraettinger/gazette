@@ -93,7 +93,7 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 
 		// Return after sending Metadata if the Fragment query failed,
 		// or we were only asked to send metadata, or the Fragment is
-		// remote and we're not instructed to proxy.
+		// remote and we're instructed to not proxy.
 		if resp.Status != pb.Status_OK || req.MetadataOnly || file == nil && req.DoNotProxy {
 			return nil
 		}
