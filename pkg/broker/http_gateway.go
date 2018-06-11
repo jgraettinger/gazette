@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	"github.com/gogo/protobuf/proto"
 	"github.com/gorilla/schema"
 	log "github.com/sirupsen/logrus"
@@ -19,10 +20,10 @@ import (
 type HTTPGateway struct {
 	decoder  *schema.Decoder
 	resolver resolver
-	dialer   dialer
+	dialer   client.Dialer
 }
 
-func NewHTTPGateway(resolver resolver, dialer dialer) *HTTPGateway {
+func NewHTTPGateway(resolver resolver, dialer client.Dialer) *HTTPGateway {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
 
@@ -80,7 +81,7 @@ func (h *HTTPGateway) serveRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if conn, err = h.dialer.dial(r.Context(), resolution.BrokerId, resolution.Route); err == nil {
+	if conn, err = h.dialer.Dial(r.Context(), resolution.BrokerId, resolution.Route); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Read(r.Context(), req); err == nil {
 			err = client.RecvMsg(resp)
 		}
@@ -150,7 +151,7 @@ func (h *HTTPGateway) serveWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if conn, err = h.dialer.dial(r.Context(), resolution.BrokerId, resolution.Route); err == nil {
+	if conn, err = h.dialer.Dial(r.Context(), resolution.BrokerId, resolution.Route); err == nil {
 		if client, err = pb.NewBrokerClient(conn).Append(r.Context()); err == nil {
 			err = client.SendMsg(req)
 			*req = pb.AppendRequest{} // Clear metadata: hereafter, only Content is sent.

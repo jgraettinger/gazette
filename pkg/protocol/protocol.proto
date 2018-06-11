@@ -30,17 +30,26 @@ enum Status {
 
 // CompressionCode defines codecs known to Gazette.
 enum CompressionCodec {
+  // NONE encodes Fragments without any applied compression, with default suffix ".raw".
   NONE = 0;
+  // GZIP encodes Fragments using the Gzip library, with default suffix ".gz".
   GZIP = 1;
+  // ZSTANDARD encodes Fragments using the ZStandard library, with default suffix ".zst".
   ZSTANDARD = 2;
+  // SNAPPY encodes Fragments using the Snappy library, with default suffix ".sz".
   SNAPPY = 3;
-
-  // CONTENT_ENCODING is not itself a CompressionCodec, but instead conveys
-  // that the actual codec is stored under the Content-Encoding header of
-  // the Fragment within the backing store.
-  //
-  // Deprecated. Going forward, we prefer to use explicit codec extensions.
-  CONTENT_ENCODING = 4;
+  // GZIP_OFFLOAD_DECOMPRESSION is the GZIP codec with additional behavior
+  // around reads and writes to remote Fragment stores, designed to offload
+  // the work of decompression onto compatible stores. Specifically:
+  //  * Fragments are written with a "Content-Encoding: gzip" header.
+  //  * Client read requests are made with "Accept-Encoding: identity".
+  // This can be helpful in contexts where reader IO bandwidth to the storage
+  // API is unconstrained, as the cost of decompression is offloaded to the
+  // store and CPU-intensive batch readers may receive a parallelism benefit.
+  // While this codec may provide substantial read-time performance improvements,
+  // it is an advanced configuration and the "Content-Encoding" header handling
+  // can be subtle and sometimes confusing. It uses the default suffix ".gzod".
+  GZIP_OFFLOAD_DECOMPRESSION = 4;
 }
 
 // Label defines a key & value pair which can be attached to entities like

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	"google.golang.org/grpc"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
@@ -28,7 +29,7 @@ type pipeline struct {
 }
 
 // newPipeline returns a new pipeline.
-func newPipeline(ctx context.Context, hdr pb.Header, spool fragment.Spool, returnCh chan<- fragment.Spool, dialer dialer) *pipeline {
+func newPipeline(ctx context.Context, hdr pb.Header, spool fragment.Spool, returnCh chan<- fragment.Spool, dialer client.Dialer) *pipeline {
 	if hdr.Route.Primary == -1 {
 		panic("dial requires Route with Primary != -1")
 	}
@@ -55,7 +56,7 @@ func newPipeline(ctx context.Context, hdr pb.Header, spool fragment.Spool, retur
 		}
 		var conn *grpc.ClientConn
 
-		if conn, pln.sendErrs[i] = dialer.dial(ctx, b, pln.Route); pln.sendErrs[i] == nil {
+		if conn, pln.sendErrs[i] = dialer.Dial(ctx, b, pln.Route); pln.sendErrs[i] == nil {
 			pln.streams[i], pln.sendErrs[i] = pb.NewBrokerClient(conn).Replicate(ctx)
 		}
 	}

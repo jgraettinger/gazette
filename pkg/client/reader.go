@@ -7,7 +7,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/LiveRamp/gazette/pkg/codecs"
 	log "github.com/sirupsen/logrus"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
@@ -36,19 +35,15 @@ type Reader struct {
 	// Fragment stores. If true, the broker returns metadata for Reader to
 	// retry the request directly. Clients should generally set this.
 	DoNotProxy bool
-	// Last Header received from a serving broker.
-	Header *pb.Header
-	// Last Fragment received.
-	Fragment *pb.Fragment
-	// Direct URL at which the last Fragment received may be read,
-	// or "" if the Fragment is not directly read-able.
-	FragmentURL string
+	// UpdateRouteCache is an optional closure which informs the Route cache
+	// of an updated Route entry for a Journal, or if Route is nil purges
+	// any existing entry.
+	UpdateRouteCache func(pb.Journal, *pb.Route)
+	// Last ReadResponse read from the broker.
+	Response pb.ReadResponse
 
 	stream pb.Broker_ReadClient
-	resp pb.ReadResponse
-
-	frag io.ReadCloser
-	fragCodec codecs.Decompressor
+	frag   io.ReadCloser
 }
 
 // AdjustedOffset returns the current journal offset, adjusted for content read
@@ -68,21 +63,23 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		// we consume and mask errors (possibly logging a warning), and manage
 		// our own back-off timer.
 		if err != nil {
+
+			// Context cancellations are usually wrapped by augmenting errors as they
+			// return up the call stack. If the context is Done, assume that is the
+			// primary error.
+			if r.Context.Err() != nil {
+				err = r.Context.Err()
+			}
+
 			switch err {
 			case io.EOF, context.DeadlineExceeded, context.Canceled:
 				// Suppress logging for expected errors.
-			case ErrNotYetAvailable:
-				if !r.Block {
-					return
-				} else {
-					// This RetryReader was in non-blocking mode but has since switched
-					// to blocking. Ignore this error and retry as a blocking operation.
-				}
 			default:
-				if r.Context.Err() == nil {
-					log.WithFields(log.Fields{"journal": r.Journal, "offset": r.Offset, "err": err}).
-						Warn("Read failure (will retry)")
+				if r.UpdateRouteCache != nil {
+					r.UpdateRouteCache(r.Journal, nil) // Purge any current entry.
 				}
+				log.WithFields(log.Fields{"journal": r.Journal, "offset": r.Offset, "err": err}).
+					Warn("read failure (will retry)")
 			}
 
 			// Wait for a back-off timer, or context cancellation.
@@ -95,78 +92,82 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 			err = nil // Clear.
 		}
 
-		if r.stream == nil {
+		// Is there remaining Content in the last ReadResponse?
+		if len(r.Response.Content) != 0 {
+			n = copy(p, r.Response.Content)
+			r.Response.Content = r.Response.Content[n:]
+			r.Offset += int64(n)
+			return
+		}
 
-			// Check if we can directly open the fragment.
-			if r.FragmentURL != "" && r.Fragment.GetEnd() > r.Offset && r.Fragment.GetBegin() <= r.Offset {
-
+		// Do we have an open, direct Fragment reader?
+		if r.frag != nil {
+			if n, err = r.frag.Read(p); err == nil {
+				r.Offset += int64(n)
+				return
+			} else {
+				_, r.frag = r.frag.Close(), nil
+				continue
 			}
-
-
-
-
-			r.stream, err = r.Client.Read(r.Context, &pb.ReadRequest{
-				Journal:      r.Journal,
-				Offset:       r.Offset,
-				Block:        r.Block,
-				DoNotProxy:   false,
-				MetadataOnly: false,
-			})
-			continue
 		}
 
-		err = r.stream.RecvMsg(&r.resp)
-
-		if err == nil && r.resp.Status == pb.Status_OFFSET_NOT_YET_AVAILABLE {
-			err = ErrNotYetAvailable
-		} else if r.resp.Status != pb.Status_OK {
-			err = errors.New(r.resp.Status.String())
-		}
-
-		if err != nil {
-			continue
-		}
-
-		if r.resp.Header != nil {
-			r.Header = r.resp.Header
-		}
-		if r.resp.Fragment != nil {
-			r.Fragment = r.resp.Fragment
-		}
-
-
-
-			rr.LastResult, rr.MarkedReader.ReadCloser = rr.Getter.Get(args)
-			if n, err = 0, rr.LastResult.Error; err != nil {
-				rr.MarkedReader.ReadCloser = nil
+		// Iff we have an open server stream, read the next ReadResponse.
+		if r.stream != nil {
+			if err = r.stream.RecvMsg(&r.Response); err != nil {
+				r.stream = nil
 				continue
 			}
 
-			if o := rr.MarkedReader.Mark.Offset; o != 0 && o != -1 && o != rr.LastResult.Offset {
-				// Offset jumps should be uncommon, but are possible if data has
-				// been removed from the middle of a journal.
-				log.WithFields(log.Fields{"mark": rr.MarkedReader.Mark, "result": rr.LastResult}).
-					Warn("offset jump")
-			}
-			rr.MarkedReader.Mark.Offset = rr.LastResult.Offset
-		}
-
-		if n, err = rr.MarkedReader.Read(p); err == nil {
-			return
-		} else {
-			// Close to nil rr.MarkedReader.ReadCloser.
-			rr.MarkedReader.Close()
-
-			if n != 0 {
-				// If data was returned with the error, squash |err|.
-				if err != io.EOF {
-					log.WithFields(log.Fields{"err": err, "n": n}).Warn("data read error (will retry)")
+			switch r.Response.Status {
+			case pb.Status_OK, pb.Status_NOT_JOURNAL_BROKER:
+				// Expected statuses.
+			case pb.Status_OFFSET_NOT_YET_AVAILABLE:
+				// If this Reader is in non-blocking mode, and the response indicates
+				// the requested read operation would have to block, return
+				// ErrNotYetAvailable to the client. Otherwise, we may have enabled Block
+				// since the last RPC, in which case we should simply retry.
+				if !r.Block {
+					err = ErrNotYetAvailable
+					return
 				}
-				err = nil
-				return
+			default:
+				err = errors.New(r.Response.Status.String())
 			}
+
+			if r.Response.Header != nil && r.UpdateRouteCache != nil {
+				r.UpdateRouteCache(r.Journal, &r.Response.Header.Route)
+			}
+
+			if r.Response.Offset > r.Offset {
+				// Offset jumps are uncommon, but still possible if fragments are removed from a journal.
+				log.WithFields(log.Fields{"journal": r.Journal, "from": r.Offset, "to": r.Response.Offset}).
+					Warn("offset jump")
+				r.Offset = r.Response.Offset
+
+				return // Return an n=0 read to allow the client to observe the updated Offset.
+			}
+			continue
 		}
+
+		// Do we have a Fragment location covering |Offset| which we can directly open?
+		if r.Response.Fragment != nil &&
+			r.Response.FragmentUrl != "" &&
+			r.Response.Fragment.Begin <= r.Offset && r.Response.Fragment.End > r.Offset {
+
+			r.frag, err = OpenFragmentURL(r.Offset, *r.Response.Fragment, r.Response.FragmentUrl)
+			continue
+		}
+
+		// Begin a new Read RPC.
+		r.stream, err = r.Client.Read(r.Context, &pb.ReadRequest{
+			Journal:      r.Journal,
+			Offset:       r.Offset,
+			Block:        r.Block,
+			DoNotProxy:   r.DoNotProxy,
+			MetadataOnly: false,
+		})
 	}
+
 	panic("not reached")
 }
 

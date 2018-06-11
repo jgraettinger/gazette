@@ -42,7 +42,7 @@ func (s *ResolverSuite) TestResolutionCases(c *gc.C) {
 		Route: pb.Route{
 			Brokers:   []pb.BrokerSpec_ID{broker.id, peer.id},
 			Primary:   1,
-			Endpoints: []pb.Endpoint{broker.endpoint(), peer.endpoint()},
+			Endpoints: []pb.Endpoint{broker.Endpoint(), peer.Endpoint()},
 		},
 		Etcd: pb.FromEtcdResponseHeader(ks.Header),
 	})
@@ -116,7 +116,7 @@ func (s *ResolverSuite) TestFutureRevisionCases(c *gc.C) {
 		Route: pb.Route{
 			Brokers:   []pb.BrokerSpec_ID{broker.id},
 			Primary:   0,
-			Endpoints: []pb.Endpoint{broker.endpoint()},
+			Endpoints: []pb.Endpoint{broker.Endpoint()},
 		},
 		Etcd: pb.FromEtcdResponseHeader(ks.Header),
 	}

@@ -1,4 +1,4 @@
-package broker
+package client
 
 import (
 	"context"
@@ -13,22 +13,22 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-type dialer struct {
+type Dialer struct {
 	cache *lru.Cache
 }
 
-// newDialer builds and returns a dialer.
-func newDialer(size int) (dialer, error) {
+// NewDialer builds and returns a dialer.
+func NewDialer(size int) (Dialer, error) {
 	var cache, err = lru.NewWithEvict(size, func(key, value interface{}) {
 		if err := value.(*grpc.ClientConn).Close(); err != nil {
 			log.WithFields(log.Fields{"broker": key, "err": err}).
 				Warn("failed to Close evicted grpc.ClientConn")
 		}
 	})
-	return dialer{cache: cache}, err
+	return Dialer{cache: cache}, err
 }
 
-func (d dialer) dial(ctx context.Context, id pb.BrokerSpec_ID, route pb.Route) (*grpc.ClientConn, error) {
+func (d Dialer) Dial(ctx context.Context, id pb.BrokerSpec_ID, route pb.Route) (*grpc.ClientConn, error) {
 	var ind int
 	for ind = 0; ind != len(route.Brokers) && route.Brokers[ind] != id; ind++ {
 	}

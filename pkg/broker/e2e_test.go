@@ -26,18 +26,18 @@ func (s *E2ESuite) TestReplicatedAppendAndRead(c *gc.C) {
 	broker.replicas["journal/one"].index.ReplaceRemote(fragment.Set{})
 	peer.replicas["journal/two"].index.ReplaceRemote(fragment.Set{})
 
-	var rOne, _ = peer.mustClient().Read(ctx, &pb.ReadRequest{Journal: "journal/one", Block: true})
-	var rTwo, _ = broker.mustClient().Read(ctx, &pb.ReadRequest{Journal: "journal/two", Block: true})
+	var rOne, _ = peer.MustClient().Read(ctx, &pb.ReadRequest{Journal: "journal/one", Block: true})
+	var rTwo, _ = broker.MustClient().Read(ctx, &pb.ReadRequest{Journal: "journal/two", Block: true})
 
 	// First Append is served by |broker|, with its Read served by |peer|.
-	var stream, _ = broker.mustClient().Append(ctx)
+	var stream, _ = broker.MustClient().Append(ctx)
 	c.Check(stream.Send(&pb.AppendRequest{Journal: "journal/one"}), gc.IsNil)
 	c.Check(stream.Send(&pb.AppendRequest{Content: []byte("hello")}), gc.IsNil)
 	c.Check(stream.Send(&pb.AppendRequest{}), gc.IsNil)
 	_, _ = stream.CloseAndRecv()
 
 	// Second Append is served by |peer| (through |broker|), with its Read served by |broker|.
-	stream, _ = broker.mustClient().Append(ctx)
+	stream, _ = broker.MustClient().Append(ctx)
 	c.Check(stream.Send(&pb.AppendRequest{Journal: "journal/two"}), gc.IsNil)
 	c.Check(stream.Send(&pb.AppendRequest{Content: []byte("world!")}), gc.IsNil)
 	c.Check(stream.Send(&pb.AppendRequest{}), gc.IsNil)

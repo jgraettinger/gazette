@@ -10,6 +10,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
@@ -69,8 +70,8 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 }
 
 // proxyAppend forwards an AppendRequest to a resolved peer broker.
-func proxyAppend(stream grpc.Stream, req *pb.AppendRequest, hdr *pb.Header, dialer dialer) error {
-	var conn, err = dialer.dial(context.Background(), hdr.BrokerId, hdr.Route)
+func proxyAppend(stream grpc.Stream, req *pb.AppendRequest, hdr *pb.Header, dialer client.Dialer) error {
+	var conn, err = dialer.Dial(context.Background(), hdr.BrokerId, hdr.Route)
 	if err != nil {
 		return err
 	}

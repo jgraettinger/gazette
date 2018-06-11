@@ -3,68 +3,64 @@ package broker
 import (
 	"context"
 	"crypto/sha1"
-	"io"
-	"net"
 	"time"
 
+	"github.com/LiveRamp/gazette/pkg/broker/teststub"
+	"github.com/LiveRamp/gazette/pkg/client"
+	"github.com/LiveRamp/gazette/pkg/keyspace"
+	pb "github.com/LiveRamp/gazette/pkg/protocol"
+	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/mvcc/mvccpb"
 	gc "github.com/go-check/check"
-	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
-
-	"github.com/LiveRamp/gazette/pkg/keyspace"
-	pb "github.com/LiveRamp/gazette/pkg/protocol"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 type testBroker struct {
 	id pb.BrokerSpec_ID
-	*testServer
+	*teststub.Server
 
-	*mockPeer // nil if not built with newMockBroker.
-	*resolver // nil if not built with newTestBroker.
+	*teststub.Broker // nil if not built with newMockBroker.
+	*resolver        // nil if not built with newTestBroker.
 }
 
 func newTestBroker(c *gc.C, ctx context.Context, ks *keyspace.KeySpace, id pb.BrokerSpec_ID) *testBroker {
 	var state = v3_allocator.NewObservedState(ks, v3_allocator.MemberKey(ks, id.Zone, id.Suffix))
 	var resolver = newResolver(state)
 
-	var dialer, err = newDialer(16)
+	var dialer, err = client.NewDialer(16)
 	c.Assert(err, gc.IsNil)
 
-	var srv = newTestServer(c, ctx, &Service{
+	var srv = teststub.NewServer(c, ctx, &Service{
 		resolver: resolver,
 		dialer:   dialer,
 	})
 
 	c.Check(ks.Apply(etcdEvent(ks, "put", state.LocalKey, (&pb.BrokerSpec{
 		Id:       id,
-		Endpoint: srv.endpoint(),
+		Endpoint: srv.Endpoint(),
 	}).MarshalString())), gc.IsNil)
 
 	return &testBroker{
-		id:         id,
-		testServer: srv,
-		resolver:   resolver,
+		id:       id,
+		Server:   srv,
+		resolver: resolver,
 	}
 }
 
 func newMockBroker(c *gc.C, ctx context.Context, ks *keyspace.KeySpace, id pb.BrokerSpec_ID) *testBroker {
-	var mock = newMockPeer(c, ctx)
-	var srv = mock.testServer
+	var broker = teststub.NewBroker(c, ctx)
 	var key = v3_allocator.MemberKey(ks, id.Zone, id.Suffix)
 
 	c.Check(ks.Apply(etcdEvent(ks, "put", key, (&pb.BrokerSpec{
 		Id:       id,
-		Endpoint: srv.endpoint(),
+		Endpoint: broker.Server.Endpoint(),
 	}).MarshalString())), gc.IsNil)
 
 	return &testBroker{
-		id:         id,
-		testServer: srv,
-		mockPeer:   mock,
+		id:     id,
+		Server: broker.Server,
+		Broker: broker,
 	}
 }
 
@@ -156,183 +152,6 @@ func etcdEvent(ks *keyspace.KeySpace, typeKeyValue ...string) clientv3.WatchResp
 		resp.Events = append(resp.Events, event)
 	}
 	return resp
-}
-
-type testServer struct {
-	c        *gc.C
-	ctx      context.Context
-	listener net.Listener
-	srv      *grpc.Server
-}
-
-func newTestServer(c *gc.C, ctx context.Context, srv pb.BrokerServer) *testServer {
-	var l, err = net.Listen("tcp", "127.0.0.1:0")
-	c.Assert(err, gc.IsNil)
-
-	var p = &testServer{
-		c:        c,
-		ctx:      ctx,
-		listener: l,
-		srv:      grpc.NewServer(),
-	}
-
-	pb.RegisterBrokerServer(p.srv, srv)
-	go p.srv.Serve(p.listener)
-
-	go func() {
-		<-ctx.Done()
-		p.srv.GracefulStop()
-	}()
-
-	return p
-}
-
-func (s *testServer) endpoint() pb.Endpoint {
-	return pb.Endpoint("http://" + s.listener.Addr().String() + "/path")
-}
-
-func (s *testServer) dial(ctx context.Context) (*grpc.ClientConn, error) {
-	return grpc.DialContext(ctx, s.listener.Addr().String(), grpc.WithInsecure())
-}
-
-func (s *testServer) mustClient() pb.BrokerClient {
-	var conn, err = s.dial(s.ctx)
-	s.c.Assert(err, gc.IsNil)
-	return pb.NewBrokerClient(conn)
-}
-
-type mockPeer struct {
-	*testServer
-
-	replReqCh  chan *pb.ReplicateRequest
-	replRespCh chan *pb.ReplicateResponse
-
-	readReqCh  chan *pb.ReadRequest
-	readRespCh chan *pb.ReadResponse
-
-	appendReqCh  chan *pb.AppendRequest
-	appendRespCh chan *pb.AppendResponse
-
-	errCh chan error
-}
-
-func newMockPeer(c *gc.C, ctx context.Context) *mockPeer {
-	var p = &mockPeer{
-		replReqCh:    make(chan *pb.ReplicateRequest),
-		replRespCh:   make(chan *pb.ReplicateResponse),
-		readReqCh:    make(chan *pb.ReadRequest),
-		readRespCh:   make(chan *pb.ReadResponse),
-		appendReqCh:  make(chan *pb.AppendRequest),
-		appendRespCh: make(chan *pb.AppendResponse),
-		errCh:        make(chan error),
-	}
-	p.testServer = newTestServer(c, ctx, p)
-	return p
-}
-
-func (p *mockPeer) Replicate(srv pb.Broker_ReplicateServer) error {
-	// Start a read loop of requests from |srv|.
-	go func() {
-		log.WithField("id", p.endpoint()).Info("replicate read loop started")
-		for done := false; !done; {
-			var msg, err = srv.Recv()
-
-			if err == io.EOF {
-				msg, err, done = nil, nil, true
-			} else if err != nil {
-				done = true
-
-				p.c.Check(err, gc.ErrorMatches, `rpc error: code = Canceled desc = context canceled`)
-			}
-
-			log.WithFields(log.Fields{"ep": p.endpoint(), "msg": msg, "err": err, "done": done}).Info("read")
-
-			select {
-			case p.replReqCh <- msg:
-				// Pass.
-			case <-p.ctx.Done():
-				done = true
-			}
-		}
-	}()
-
-	for {
-		select {
-		case resp := <-p.replRespCh:
-			p.c.Check(srv.Send(resp), gc.IsNil)
-			log.WithFields(log.Fields{"ep": p.endpoint(), "resp": resp}).Info("sent")
-		case err := <-p.errCh:
-			log.WithFields(log.Fields{"ep": p.endpoint(), "err": err}).Info("closing")
-			return err
-		case <-p.ctx.Done():
-			log.WithFields(log.Fields{"ep": p.endpoint()}).Info("cancelled")
-			return p.ctx.Err()
-		}
-	}
-}
-
-func (p *mockPeer) Read(req *pb.ReadRequest, srv pb.Broker_ReadServer) error {
-	select {
-	case p.readReqCh <- req:
-		// Pass.
-	case <-p.ctx.Done():
-		return p.ctx.Err()
-	}
-
-	for {
-		select {
-		case resp := <-p.readRespCh:
-			p.c.Check(srv.Send(resp), gc.IsNil)
-			log.WithFields(log.Fields{"ep": p.endpoint(), "resp": resp}).Info("sent")
-		case err := <-p.errCh:
-			log.WithFields(log.Fields{"ep": p.endpoint(), "err": err}).Info("closing")
-			return err
-		case <-p.ctx.Done():
-			log.WithFields(log.Fields{"ep": p.endpoint()}).Info("cancelled")
-			return p.ctx.Err()
-		}
-	}
-}
-
-func (p *mockPeer) Append(srv pb.Broker_AppendServer) error {
-	// Start a read loop of requests from |srv|.
-	go func() {
-		log.WithField("ep", p.endpoint()).Info("append read loop started")
-		for done := false; !done; {
-			var msg, err = srv.Recv()
-
-			if err == io.EOF {
-				msg, err, done = nil, nil, true
-			} else if err != nil {
-				done = true
-
-				p.c.Check(err, gc.ErrorMatches, `rpc error: code = Canceled desc = context canceled`)
-			}
-
-			log.WithFields(log.Fields{"ep": p.endpoint(), "msg": msg, "err": err, "done": done}).Info("read")
-
-			select {
-			case p.appendReqCh <- msg:
-				// Pass.
-			case <-p.ctx.Done():
-				done = true
-			}
-		}
-	}()
-
-	for {
-		select {
-		case resp := <-p.appendRespCh:
-			log.WithFields(log.Fields{"ep": p.endpoint(), "resp": resp}).Info("sending")
-			return srv.SendAndClose(resp)
-		case err := <-p.errCh:
-			log.WithFields(log.Fields{"ep": p.endpoint(), "err": err}).Info("closing")
-			return err
-		case <-p.ctx.Done():
-			log.WithFields(log.Fields{"ep": p.endpoint()}).Info("cancelled")
-			return p.ctx.Err()
-		}
-	}
 }
 
 func sumOf(s string) pb.SHA1Sum {

@@ -98,16 +98,16 @@ func (m SHA1Sum) IsZero() bool { return m == (SHA1Sum{}) }
 // CompressionCodecFromExtension matches a file extension to its corresponding CompressionCodec.
 func CompressionCodecFromExtension(ext string) (CompressionCodec, error) {
 	switch strings.ToLower(ext) {
-	case "":
-		return CompressionCodec_CONTENT_ENCODING, nil
 	case ".raw":
 		return CompressionCodec_NONE, nil
 	case ".gz", ".gzip":
 		return CompressionCodec_GZIP, nil
-	case ".sz", ".snappy":
-		return CompressionCodec_SNAPPY, nil
 	case ".zst", ".zstandard":
 		return CompressionCodec_ZSTANDARD, nil
+	case ".sz", ".snappy":
+		return CompressionCodec_SNAPPY, nil
+	case "", ".gzod":
+		return CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION, nil
 	default:
 		return CompressionCodec_NONE, NewValidationError("unrecognized compression extension: %s", ext)
 	}
@@ -124,16 +124,16 @@ func (m CompressionCodec) Validate() error {
 // ToExension returns the file extension of the CompressionCodec.
 func (m CompressionCodec) ToExtension() string {
 	switch m {
-	case CompressionCodec_CONTENT_ENCODING:
-		return ""
 	case CompressionCodec_NONE:
 		return ".raw"
 	case CompressionCodec_GZIP:
 		return ".gz"
-	case CompressionCodec_SNAPPY:
-		return ".sz"
 	case CompressionCodec_ZSTANDARD:
 		return ".zst"
+	case CompressionCodec_SNAPPY:
+		return ".sz"
+	case CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION:
+		return "" // TODO(johnny): Switch to ".gzod" when v2 broker fully released.
 	default:
 		panic("invalid CompressionCodec")
 	}

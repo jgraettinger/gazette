@@ -21,7 +21,7 @@ func (s *ReplicateSuite) TestStreamAndCommit(c *gc.C) {
 
 	newTestJournal(c, ks, "a/journal", 2, peer.id, broker.id)
 	var res, _ = broker.resolve(resolveArgs{ctx: ctx, journal: "a/journal"})
-	var stream, _ = broker.mustClient().Replicate(ctx)
+	var stream, _ = broker.MustClient().Replicate(ctx)
 
 	// Initial sync.
 	c.Check(stream.Send(&pb.ReplicateRequest{
@@ -69,7 +69,7 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
 	// Case: Resolution error (Journal not found).
-	var stream, _ = broker.mustClient().Replicate(ctx)
+	var stream, _ = broker.MustClient().Replicate(ctx)
 	var res, _ = broker.resolve(resolveArgs{ctx: ctx, journal: "does/not/exist"})
 
 	c.Check(stream.Send(&pb.ReplicateRequest{
@@ -90,7 +90,7 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 
 	// Case: request Route doesn't match the broker's own resolution.
 	newTestJournal(c, ks, "a/journal", 2, peer.id, broker.id)
-	stream, _ = broker.mustClient().Replicate(ctx)
+	stream, _ = broker.MustClient().Replicate(ctx)
 	res, _ = broker.resolve(resolveArgs{ctx: ctx, journal: "a/journal"})
 
 	var hdr = res.Header
@@ -114,7 +114,7 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 	c.Check(err, gc.Equals, io.EOF)
 
 	// Case: acknowledged proposal doesn't match.
-	stream, _ = broker.mustClient().Replicate(ctx)
+	stream, _ = broker.MustClient().Replicate(ctx)
 
 	c.Check(stream.Send(&pb.ReplicateRequest{
 		Journal:     "a/journal",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	gc "github.com/go-check/check"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
@@ -78,7 +79,7 @@ func (s *ReplicaSuite) TestPipelineAcquisition(c *gc.C) {
 	var ks = NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
-	var dialer, _ = newDialer(8)
+	var dialer, _ = client.NewDialer(8)
 
 	newTestJournal(c, ks, "a/journal", 2, broker.id, peer.id)
 	broker.replicas["a/journal"].index.ReplaceRemote(fragment.Set{}) // Unblock initial load.

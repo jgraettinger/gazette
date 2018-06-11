@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	gc "github.com/go-check/check"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
@@ -21,7 +22,7 @@ func (s *HTTPSuite) TestReadAndWrite(c *gc.C) {
 
 	var ks = NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
-	var dialer, _ = newDialer(1)
+	var dialer, _ = client.NewDialer(1)
 
 	newTestJournal(c, ks, "a/journal", 1, broker.id)
 	broker.replicas["a/journal"].index.ReplaceRemote(fragment.Set{}) // "Complete" remote load.

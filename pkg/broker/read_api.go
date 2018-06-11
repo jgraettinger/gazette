@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/ioutil"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
@@ -45,8 +46,8 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 }
 
 // proxyRead forwards a ReadRequest to a resolved peer broker.
-func proxyRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, dialer dialer) error {
-	var conn, err = dialer.dial(context.Background(), hdr.BrokerId, hdr.Route)
+func proxyRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, dialer client.Dialer) error {
+	var conn, err = dialer.Dial(context.Background(), hdr.BrokerId, hdr.Route)
 	if err != nil {
 		return err
 	}

@@ -53,10 +53,10 @@ func (s *RouteSuite) TestEndpointAttachmentAndCopy(c *gc.C) {
 	var ks = keyspace.KeySpace{
 		Root: "/root",
 		KeyValues: keyspace.KeyValues{
-			{Raw: mvccpb.KeyValue{Key: []byte("/root/members/zone-a|member-1")},
+			{Raw: mvccpb.KeyValue{Key: []byte("/root/members/zone-a#member-1")},
 				Decoded: v3_allocator.Member{Zone: "zone-a", Suffix: "member-1",
 					MemberValue: &BrokerSpec{Endpoint: "http://host-a:port/path"}}},
-			{Raw: mvccpb.KeyValue{Key: []byte("/root/members/zone-b|member-2")},
+			{Raw: mvccpb.KeyValue{Key: []byte("/root/members/zone-b#member-2")},
 				Decoded: v3_allocator.Member{Zone: "zone-b", Suffix: "member-2",
 					MemberValue: &BrokerSpec{Endpoint: "http://host-b:port/path"}}},
 		},

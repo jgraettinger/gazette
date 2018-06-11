@@ -1,7 +1,9 @@
 package broker
 
+import "github.com/LiveRamp/gazette/pkg/client"
+
 type Service struct {
-	dialer   dialer
+	dialer   client.Dialer
 	resolver *resolver
 }
 

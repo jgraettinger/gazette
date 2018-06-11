@@ -24,7 +24,7 @@ func (s *FragmentSuite) TestContentName(c *gc.C) {
 	c.Check(f.ContentName(), gc.Equals,
 		"00000000499602d2-7fffffffffffffff-0102030405060708090a0b0c0d0e0f1011121314.sz")
 
-	f.CompressionCodec = CompressionCodec_CONTENT_ENCODING
+	f.CompressionCodec = CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION
 	c.Check(f.ContentName(), gc.Equals,
 		"00000000499602d2-7fffffffffffffff-0102030405060708090a0b0c0d0e0f1011121314")
 }
@@ -86,7 +86,7 @@ func (s *FragmentSuite) TestParsingSuccessCases(c *gc.C) {
 		Begin:            1234567890,
 		End:              math.MaxInt64,
 		Sum:              SHA1Sum{Part1: 0x0102030405060708, Part2: 0x090a0b0c0d0e0f10, Part3: 0x11121314},
-		CompressionCodec: CompressionCodec_CONTENT_ENCODING,
+		CompressionCodec: CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION,
 	})
 
 	// Empty spool (begin == end, and zero checksum).

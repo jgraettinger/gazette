@@ -30,7 +30,7 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 	var spool, err = acquireSpool(ctx, res.replica, false)
 	c.Check(err, gc.IsNil)
 
-	stream, err := broker.mustClient().Read(ctx, &pb.ReadRequest{
+	stream, err := broker.MustClient().Read(ctx, &pb.ReadRequest{
 		Journal:      "a/journal",
 		Offset:       0,
 		Block:        true,
@@ -108,7 +108,7 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 	spool.Apply(&pb.ReplicateRequest{Content: []byte("feedbeef")})
 	spool.Apply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
 
-	stream, err := broker.mustClient().Read(ctx, &pb.ReadRequest{
+	stream, err := broker.MustClient().Read(ctx, &pb.ReadRequest{
 		Journal:      "a/journal",
 		Offset:       3,
 		Block:        false,
@@ -144,7 +144,7 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 	c.Check(err, gc.Equals, io.EOF)
 
 	// Now, issue a blocking metadata-only request.
-	stream, err = broker.mustClient().Read(ctx, &pb.ReadRequest{
+	stream, err = broker.MustClient().Read(ctx, &pb.ReadRequest{
 		Journal:      "a/journal",
 		Offset:       8,
 		Block:        true,
@@ -194,15 +194,15 @@ func (s *ReadSuite) TestProxyCases(c *gc.C) {
 		DoNotProxy:   false,
 		MetadataOnly: false,
 	}
-	var stream, _ = broker.mustClient().Read(ctx, req)
+	var stream, _ = broker.MustClient().Read(ctx, req)
 
 	// Expect initial request is proxied to the peer, with attached Header, followed by client EOF.
 	req.Header = &res.Header
-	c.Check(<-peer.readReqCh, gc.DeepEquals, req)
+	c.Check(<-peer.ReadReqCh, gc.DeepEquals, req)
 
-	peer.readRespCh <- &pb.ReadResponse{Offset: 1234}
-	peer.readRespCh <- &pb.ReadResponse{Offset: 5678}
-	peer.errCh <- nil
+	peer.ReadRespCh <- &pb.ReadResponse{Offset: 1234}
+	peer.ReadRespCh <- &pb.ReadResponse{Offset: 5678}
+	peer.ErrCh <- nil
 
 	expectReadResponse(c, stream, &pb.ReadResponse{Offset: 1234})
 	expectReadResponse(c, stream, &pb.ReadResponse{Offset: 5678})
@@ -216,7 +216,7 @@ func (s *ReadSuite) TestProxyCases(c *gc.C) {
 		Offset:     0,
 		DoNotProxy: true,
 	}
-	stream, _ = broker.mustClient().Read(ctx, req)
+	stream, _ = broker.MustClient().Read(ctx, req)
 
 	expectReadResponse(c, stream, &pb.ReadResponse{
 		Status: pb.Status_NOT_JOURNAL_BROKER,
@@ -231,11 +231,11 @@ func (s *ReadSuite) TestProxyCases(c *gc.C) {
 		Journal: "a/journal",
 		Offset:  0,
 	}
-	stream, _ = broker.mustClient().Read(ctx, req)
+	stream, _ = broker.MustClient().Read(ctx, req)
 
 	// Peer reads request, and returns an error.
-	<-peer.readReqCh
-	peer.errCh <- errors.New("some kind of error")
+	<-peer.ReadReqCh
+	peer.ErrCh <- errors.New("some kind of error")
 
 	_, err = stream.Recv()
 	c.Check(err, gc.ErrorMatches, `rpc error: code = Unknown desc = some kind of error`)

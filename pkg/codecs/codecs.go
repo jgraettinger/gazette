@@ -23,7 +23,7 @@ type Compressor io.WriteCloser
 
 func NewCodecReader(r io.Reader, codec pb.CompressionCodec) (Decompressor, error) {
 	switch codec {
-	case pb.CompressionCodec_NONE:
+	case pb.CompressionCodec_NONE, pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION:
 		return ioutil.NopCloser(r), nil
 	case pb.CompressionCodec_GZIP:
 		return gzip.NewReader(r)
