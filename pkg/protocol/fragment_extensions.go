@@ -84,6 +84,12 @@ func SHA1SumFromDigest(r []byte) SHA1Sum {
 	return m
 }
 
+// SHA1SumOf SHA1 sums |str| and returns a SHA1Sum.
+func SHA1SumOf(str string) SHA1Sum {
+	var r = sha1.Sum([]byte(str))
+	return SHA1SumFromDigest(r[:])
+}
+
 // ToDigest converts the SHA1Sum to a flat, fixed-size array.
 func (m SHA1Sum) ToDigest() (r [20]byte) {
 	binary.BigEndian.PutUint64(r[0:8], m.GetPart1())

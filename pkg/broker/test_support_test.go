@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"crypto/sha1"
 	"time"
 
 	"github.com/LiveRamp/gazette/pkg/broker/teststub"
@@ -152,9 +151,4 @@ func etcdEvent(ks *keyspace.KeySpace, typeKeyValue ...string) clientv3.WatchResp
 		resp.Events = append(resp.Events, event)
 	}
 	return resp
-}
-
-func sumOf(s string) pb.SHA1Sum {
-	var d = sha1.Sum([]byte(s))
-	return pb.SHA1SumFromDigest(d[:])
 }

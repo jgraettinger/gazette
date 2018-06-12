@@ -31,7 +31,7 @@ func NewRoutingClient(client pb.BrokerClient, zone string, dialer Dialer, cacheS
 	if err != nil {
 		return nil, err
 	}
-	return &routeClient{
+	return &routingClient{
 		def:    client,
 		zone:   zone,
 		dialer: dialer,
@@ -39,14 +39,14 @@ func NewRoutingClient(client pb.BrokerClient, zone string, dialer Dialer, cacheS
 	}, nil
 }
 
-type routeClient struct {
+type routingClient struct {
 	def    pb.BrokerClient
 	zone   string
 	dialer Dialer
 	routes *lru.Cache
 }
 
-func (rc *routeClient) Read(ctx context.Context, in *pb.ReadRequest, opts ...grpc.CallOption) (pb.Broker_ReadClient, error) {
+func (rc *routingClient) Read(ctx context.Context, in *pb.ReadRequest, opts ...grpc.CallOption) (pb.Broker_ReadClient, error) {
 	var iRoute, ok = rc.routes.Get(in.Journal)
 	if !ok {
 		return rc.def.Read(ctx, in, opts...)
@@ -62,7 +62,7 @@ func (rc *routeClient) Read(ctx context.Context, in *pb.ReadRequest, opts ...grp
 	return pb.NewBrokerClient(client).Read(ctx, in, opts...)
 }
 
-func (rc *routeClient) Append(ctx context.Context, opts ...grpc.CallOption) (pb.Broker_AppendClient, error) {
+func (rc *routingClient) Append(ctx context.Context, opts ...grpc.CallOption) (pb.Broker_AppendClient, error) {
 	var journal pb.Journal
 
 	if v := ctx.Value(journalHint); v == nil {
@@ -84,11 +84,11 @@ func (rc *routeClient) Append(ctx context.Context, opts ...grpc.CallOption) (pb.
 	return pb.NewBrokerClient(client).Append(ctx, opts...)
 }
 
-func (rc *routeClient) Replicate(ctx context.Context, opts ...grpc.CallOption) (pb.Broker_ReplicateClient, error) {
+func (rc *routingClient) Replicate(ctx context.Context, opts ...grpc.CallOption) (pb.Broker_ReplicateClient, error) {
 	panic("not supported")
 }
 
-func (rc *routeClient) UpdateRoute(journal pb.Journal, route *pb.Route) {
+func (rc *routingClient) UpdateRoute(journal pb.Journal, route *pb.Route) {
 	// Only cache non-empty Routes with an assigned primary broker. Presumptively,
 	// Routes not meeting this criteria will be updated shortly anyway.
 	if route == nil || len(route.Brokers) == 0 || route.Primary == -1 {

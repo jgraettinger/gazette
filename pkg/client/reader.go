@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"time"
 
+	"github.com/LiveRamp/gazette/pkg/codecs"
 	log "github.com/sirupsen/logrus"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
@@ -27,7 +30,7 @@ type Reader struct {
 	// Offset of the next journal byte to be returned by Read.
 	Offset int64
 	// Whether the next dispatched Read RPC should block (the default).
-	// If Block is false, than Read calls may return ErrNotYetAvailable.
+	// If Block is false, than Read calls may return ErrWouldBlock.
 	Block bool
 
 	// Last ReadResponse read from the broker.
@@ -115,11 +118,11 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 				// Expected statuses.
 			case pb.Status_OFFSET_NOT_YET_AVAILABLE:
 				// If this Reader is in non-blocking mode, and the response indicates
-				// the requested read operation would have to block, return
-				// ErrNotYetAvailable to the client. Otherwise, we may have enabled Block
-				// since the last RPC, in which case we should simply retry.
+				// the requested read operation would have to block, return ErrWouldBlock
+				// to the client. Otherwise we may have enabled |Block| since the last RPC,
+				// in which case we should simply retry.
 				if !r.Block {
-					err = ErrNotYetAvailable
+					err = ErrWouldBlock
 					return
 				}
 			default:
@@ -251,7 +254,75 @@ func (r *Reader) AdjustedSeek(offset int64, whence int, br *bufio.Reader) (int64
 	return n, err
 }
 
-var ErrNotYetAvailable = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
+// ErrWouldBlock is returned by Reader if a non-blocking read operation would
+// otherwise have to block in order to complete.
+var ErrWouldBlock = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
+
+// OpenFragmentURL directly opens |fragment|, which must be available at URL
+// |url|, and returns a ReadCloser which has been pre-seeked to |offset|.
+func OpenFragmentURL(ctx context.Context, offset int64, fragment pb.Fragment, url string) (io.ReadCloser, error) {
+	var req, err = http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+
+	if fragment.CompressionCodec == pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION {
+		// Require that the server send us un-encoded content, offloading
+		// decompression onto the storage API. Go's standard `gzip` package is slow,
+		// and we also see a parallelism benefit by offloading decompression work
+		// onto cloud storage system.
+		req.Header.Set("Accept-Encoding", "identity")
+	} else if fragment.CompressionCodec == pb.CompressionCodec_GZIP {
+		// Explicitly request gzip. Doing so disables the http client's transparent
+		// handling for gzip decompression if the Fragment happened to be written with
+		// "Content-Encoding: gzip", and it instead directly surfaces the compressed
+		// bytes to us.
+		req.Header.Set("Accept-Encoding", "gzip")
+	}
+
+	resp, err := HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	} else if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("!OK fetching (%s, %q)", resp.Status, url)
+	}
+
+	decomp, err := codecs.NewCodecReader(resp.Body, fragment.CompressionCodec)
+	if err != nil {
+		resp.Body.Close()
+		return nil, fmt.Errorf("building decompressor (%s, %q)", err, url)
+	}
+
+	var rc = &doubleCloser{
+		Reader: decomp,
+		a:      decomp,
+		b:      resp.Body,
+	}
+
+	// Attempt to seek to |offset| within the fragment.
+	var delta = offset - fragment.Begin
+	if _, err := io.CopyN(ioutil.Discard, rc, delta); err != nil {
+		rc.Close()
+		return nil, fmt.Errorf("error seeking fragment (%s, %q)", err, url)
+	}
+
+	return rc, nil
+}
+
+type doubleCloser struct {
+	io.Reader
+	a, b io.Closer
+}
+
+func (dc *doubleCloser) Close() error {
+	var errA, errB = dc.a.Close(), dc.b.Close()
+	if errA != nil {
+		return errA
+	}
+	return errB
+}
 
 func backoff(attempt int) time.Duration {
 	switch attempt {
@@ -265,3 +336,5 @@ func backoff(attempt int) time.Duration {
 		return 5 * time.Second
 	}
 }
+
+var HTTPClient = http.DefaultClient

@@ -1,4 +1,4 @@
-package broker
+package http_gateway
 
 import (
 	"context"
