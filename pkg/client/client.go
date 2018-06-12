@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -10,11 +11,12 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-func OpenFragmentURL(offset int64, fragment pb.Fragment, url string) (io.ReadCloser, error) {
+func OpenFragmentURL(ctx context.Context, offset int64, fragment pb.Fragment, url string) (io.ReadCloser, error) {
 	var req, err = http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
+	req = req.WithContext(ctx)
 
 	if fragment.CompressionCodec == pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION {
 		// Require that the server send us un-encoded content, offloading

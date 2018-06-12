@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/ioutil"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -12,38 +13,29 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-func NewReader(ctx context.Context, c pb.BrokerClient, journal pb.Journal) *Reader {
-	return &Reader{}
-}
-
 // Reader wraps a BrokerClient and journal to provide callers with a long-lived
 // journal Reader which transparently handles and retries errors, and will block
 // as needed to await new journal content.
 type Reader struct {
-	Client pb.BrokerClient
 	// Context of the Reader. Notably, cancelling this context will also cancel
 	// a blocking Read RPC in progress.
 	Context context.Context
-	// Journal which is read.
+	// Client used to dispatch Read RPCs.
+	Client pb.BrokerClient
+	// Journal which is to be read.
 	Journal pb.Journal
 	// Offset of the next journal byte to be returned by Read.
 	Offset int64
 	// Whether the next dispatched Read RPC should block (the default).
 	// If Block is false, than Read calls may return ErrNotYetAvailable.
 	Block bool
-	// Whether the broker should not proxy reads to other brokers or remote
-	// Fragment stores. If true, the broker returns metadata for Reader to
-	// retry the request directly. Clients should generally set this.
-	DoNotProxy bool
-	// UpdateRouteCache is an optional closure which informs the Route cache
-	// of an updated Route entry for a Journal, or if Route is nil purges
-	// any existing entry.
-	UpdateRouteCache func(pb.Journal, *pb.Route)
+
 	// Last ReadResponse read from the broker.
 	Response pb.ReadResponse
 
-	stream pb.Broker_ReadClient
-	frag   io.ReadCloser
+	stream       pb.Broker_ReadClient
+	streamCancel context.CancelFunc
+	frag         io.ReadCloser
 }
 
 // AdjustedOffset returns the current journal offset, adjusted for content read
@@ -75,8 +67,8 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 			case io.EOF, context.DeadlineExceeded, context.Canceled:
 				// Suppress logging for expected errors.
 			default:
-				if r.UpdateRouteCache != nil {
-					r.UpdateRouteCache(r.Journal, nil) // Purge any current entry.
+				if u, ok := r.Client.(RouteUpdater); ok {
+					u.UpdateRoute(r.Journal, nil) // Purge any current entry.
 				}
 				log.WithFields(log.Fields{"journal": r.Journal, "offset": r.Offset, "err": err}).
 					Warn("read failure (will retry)")
@@ -114,7 +106,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		// Iff we have an open server stream, read the next ReadResponse.
 		if r.stream != nil {
 			if err = r.stream.RecvMsg(&r.Response); err != nil {
-				r.stream = nil
+				r.stream, r.streamCancel = nil, nil
 				continue
 			}
 
@@ -134,8 +126,10 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 				err = errors.New(r.Response.Status.String())
 			}
 
-			if r.Response.Header != nil && r.UpdateRouteCache != nil {
-				r.UpdateRouteCache(r.Journal, &r.Response.Header.Route)
+			if r.Response.Header != nil {
+				if u, ok := r.Client.(RouteUpdater); ok {
+					u.UpdateRoute(r.Journal, &r.Response.Header.Route)
+				}
 			}
 
 			if r.Response.Offset > r.Offset {
@@ -143,8 +137,6 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 				log.WithFields(log.Fields{"journal": r.Journal, "from": r.Offset, "to": r.Response.Offset}).
 					Warn("offset jump")
 				r.Offset = r.Response.Offset
-
-				return // Return an n=0 read to allow the client to observe the updated Offset.
 			}
 			continue
 		}
@@ -154,26 +146,112 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 			r.Response.FragmentUrl != "" &&
 			r.Response.Fragment.Begin <= r.Offset && r.Response.Fragment.End > r.Offset {
 
-			r.frag, err = OpenFragmentURL(r.Offset, *r.Response.Fragment, r.Response.FragmentUrl)
+			r.frag, err = OpenFragmentURL(r.Context, r.Offset, *r.Response.Fragment, r.Response.FragmentUrl)
 			continue
 		}
 
-		// Begin a new Read RPC.
-		r.stream, err = r.Client.Read(r.Context, &pb.ReadRequest{
+		// If our BrokerClient is capable of directly routing to responsible brokers,
+		// assume we don't want brokers to proxy to peers or remotely Fragments on
+		// our behalf.
+		var _, doNotProxy = r.Client.(RouteUpdater)
+
+		// Begin a new Read RPC, using a cancel-able child context.
+		var ctx, cancel = context.WithCancel(r.Context)
+
+		r.stream, err = r.Client.Read(ctx, &pb.ReadRequest{
 			Journal:      r.Journal,
 			Offset:       r.Offset,
 			Block:        r.Block,
-			DoNotProxy:   r.DoNotProxy,
+			DoNotProxy:   doNotProxy,
 			MetadataOnly: false,
 		})
+		r.streamCancel = cancel
 	}
 
 	panic("not reached")
 }
 
-var (
-	ErrNotYetAvailable = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
-)
+// Reset closes and releases underlying readers opened by this Reader,
+// returning the Reader to an initialized state. It must not be called
+// concurrently with Read.
+func (r *Reader) Reset() (err error) {
+	if r.frag != nil {
+		err = r.frag.Close()
+		r.frag = nil
+	}
+
+	if r.stream != nil {
+		r.streamCancel()
+
+		// Read & discard pending messages, until our cancellation is handled.
+		for _, err = r.stream.Recv(); err == nil; _, err = r.stream.Recv() {
+		}
+		if err == context.Canceled {
+			err = nil
+		}
+		r.stream, r.streamCancel = nil, nil
+	}
+	return err
+}
+
+// Seek sets the offset for the next Read. It returns an error if (and only if)
+// |whence| is io.SeekEnd, which is not supported.
+func (r *Reader) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		// |offset| is already absolute.
+	case io.SeekCurrent:
+		offset = r.Offset + offset
+	default:
+		return r.Offset, errors.New("io.SeekEnd whence is not supported")
+	}
+
+	var delta = offset - r.Offset
+	r.Offset = offset
+
+	// Can the seek be satisfied by an open fragment reader?
+	if r.frag != nil && offset < r.Response.Fragment.End {
+		if _, err := io.CopyN(ioutil.Discard, r.frag, delta); err == nil {
+			return offset, nil
+		} else {
+			log.WithFields(log.Fields{"delta": delta, "err": err}).
+				Warn("failed to seek open fragment (will retry)")
+		}
+	}
+
+	if err := r.Reset(); err != nil {
+		log.WithFields(log.Fields{"err": err}).Warn("during Reader Reset (will retry)")
+	}
+	return offset, nil
+}
+
+// AdjustedSeek sets the offset for the next Read, accounting for buffered data and updating
+// the buffer as needed.
+func (r *Reader) AdjustedSeek(offset int64, whence int, br *bufio.Reader) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		// |offset| is already absolute.
+	case io.SeekCurrent:
+		offset = r.AdjustedOffset(br) + offset
+	default:
+		return r.AdjustedOffset(br), errors.New("io.SeekEnd whence is not supported")
+	}
+
+	var delta = offset - r.AdjustedOffset(br)
+
+	// Fast path: can we fulfill the seek by discarding a portion of buffered data?
+	if delta >= 0 && delta <= int64(br.Buffered()) {
+		br.Discard(int(delta))
+		return offset, nil
+	}
+
+	// We must Seek the underlying reader, discarding and resetting the current buffer.
+	var n, err = r.Seek(offset, io.SeekStart)
+	br.Reset(r)
+	return n, err
+}
+
+var ErrNotYetAvailable = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
 
 func backoff(attempt int) time.Duration {
 	switch attempt {
