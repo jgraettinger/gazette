@@ -66,6 +66,8 @@ func (w *Append) Close() (err error) {
 		// Pass.
 	} else if err = w.stream.RecvMsg(&w.Response); err != nil {
 		// Pass.
+	} else {
+		err = w.Response.Validate()
 	}
 
 	if u, ok := w.Client.(RouteUpdater); ok {

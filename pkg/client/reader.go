@@ -108,7 +108,10 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 
 		// Iff we have an open server stream, read the next ReadResponse.
 		if r.stream != nil {
-			if err = r.stream.RecvMsg(&r.Response); err != nil {
+			if err = r.stream.RecvMsg(&r.Response); err == nil {
+				err = r.Response.Validate()
+			}
+			if err != nil {
 				r.stream, r.streamCancel = nil, nil
 				continue
 			}

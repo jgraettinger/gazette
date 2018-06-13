@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -17,8 +19,8 @@ import (
 
 type ReaderSuite struct{}
 
-func (s *ReaderSuite) TestFoo(c *gc.C) {
-	var frag, url, cleanup = buildFragmentFixture(c)
+func (s *ReaderSuite) TestReaderCases(c *gc.C) {
+	var frag, _, cleanup = buildFragmentFixture(c)
 	defer cleanup()
 	defer installFileClient()()
 
@@ -26,15 +28,62 @@ func (s *ReaderSuite) TestFoo(c *gc.C) {
 	defer cancel()
 
 	var broker = teststub.NewBroker(c, ctx)
+	//var routes = make(map[pb.Journal]*pb.Route)
 
-	var r = &Reader{
+	// Non-blocking proxy read.
+	var ar = startAsyncRead(&Reader{
 		Context: ctx,
 		Client:  broker.MustClient(),
 		Journal: "a/journal",
-		Offset:  23456,
-		Block:   true,
+		Offset:  105,
+		Block:   false,
+	})
+
+	var req = <-broker.ReadReqCh
+	c.Check(req, gc.DeepEquals, &pb.ReadRequest{
+		Journal:    "a/journal",
+		Offset:     105,
+		Block:      false,
+		DoNotProxy: false,
+	})
+
+	broker.ReadRespCh <- &pb.ReadResponse{Offset: 105, Fragment: &frag}
+	broker.ReadRespCh <- &pb.ReadResponse{Content: []byte("hello, world!!!")}
+	broker.ReadRespCh <- &pb.ReadResponse{Status: pb.Status_OFFSET_NOT_YET_AVAILABLE}
+	broker.ErrCh <- nil
+
+	<-ar.doneCh
+	c.Check(ar.err, gc.Equals, ErrWouldBlock)
+	c.Check(ar.buffer.String(), gc.Equals, "hello, world!")
+}
+
+type routeWrapper struct {
+	pb.BrokerClient
+	routes map[pb.Journal]*pb.Route
+}
+
+func (w routeWrapper) UpdateRoute(journal pb.Journal, route *pb.Route) { w.routes[journal] = route }
+
+type asyncRead struct {
+	reader *Reader
+	buffer bytes.Buffer
+	err    error
+	doneCh chan struct{}
+}
+
+func startAsyncRead(reader *Reader) *asyncRead {
+	var ar = &asyncRead{
+		reader: reader,
+		doneCh: make(chan struct{}),
 	}
 
+	go func() {
+		// Use CopyBuffer with a small buffer to exercise multiple reads per chunk.
+		_, ar.err = io.CopyBuffer(&ar.buffer, reader, make([]byte, 3))
+		close(ar.doneCh)
+	}()
+
+	return ar
 }
 
 func installFileClient() (cleanup func()) {
@@ -59,9 +108,9 @@ func buildFragmentFixture(c *gc.C) (frag pb.Fragment, url string, cleanup func()
 
 	frag = pb.Fragment{
 		Journal:          "a/journal",
-		Begin:            12345,
-		End:              67890,
-		Sum:              pb.SHA1SumOf("hello, world!"),
+		Begin:            100,
+		End:              120,
+		Sum:              pb.SHA1SumOf("XXXXXhello, world!!!"),
 		CompressionCodec: pb.CompressionCodec_GZIP,
 		BackingStore:     pb.FragmentStore("file://" + dir),
 	}
@@ -76,6 +125,8 @@ func buildFragmentFixture(c *gc.C) (frag pb.Fragment, url string, cleanup func()
 	c.Assert(err, gc.IsNil)
 	c.Assert(comp.Close(), gc.IsNil)
 	c.Assert(file.Close(), gc.IsNil)
+
+	return
 }
 
 var _ = gc.Suite(&ReaderSuite{})
