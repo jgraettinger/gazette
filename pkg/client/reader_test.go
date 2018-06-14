@@ -19,8 +19,8 @@ import (
 
 type ReaderSuite struct{}
 
-func (s *ReaderSuite) TestReaderCases(c *gc.C) {
-	var frag, _, cleanup = buildFragmentFixture(c)
+func (s *ReaderSuite) TestReaderEOFCases(c *gc.C) {
+	var frag, url, cleanup = buildFragmentFixture(c)
 	defer cleanup()
 	defer installFileClient()()
 
@@ -28,33 +28,39 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 	defer cancel()
 
 	var broker = teststub.NewBroker(c, ctx)
-	//var routes = make(map[pb.Journal]*pb.Route)
 
-	// Non-blocking proxy read.
-	var ar = startAsyncRead(&Reader{
-		Context: ctx,
-		Client:  broker.MustClient(),
-		Journal: "a/journal",
-		Offset:  105,
-		Block:   false,
-	})
+	var cases = []struct {
+		pb.ReadResponse
+		expectErr     error
+		expectContent string
+	}{
+		// Case: broker sends OK with a Fragment & URL before EOF
+		// (eg, due to a DoNotProxy or MetadataOnly ReadRequest).
+		{
+			ReadResponse: pb.ReadResponse{
+				Status: pb.Status_OK,
+				Offset: 105,
+				///WriteHead:   120,
+				Fragment:    &frag,
+				FragmentUrl: url,
+			},
+			expectContent: "hello, world!!!",
+		},
+	}
 
-	var req = <-broker.ReadReqCh
-	c.Check(req, gc.DeepEquals, &pb.ReadRequest{
-		Journal:    "a/journal",
-		Offset:     105,
-		Block:      false,
-		DoNotProxy: false,
-	})
+	for _, tc := range cases {
+		var r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal", Offset: 105})
+		var ar = readAsync(r)
 
-	broker.ReadRespCh <- &pb.ReadResponse{Offset: 105, Fragment: &frag}
-	broker.ReadRespCh <- &pb.ReadResponse{Content: []byte("hello, world!!!")}
-	broker.ReadRespCh <- &pb.ReadResponse{Status: pb.Status_OFFSET_NOT_YET_AVAILABLE}
-	broker.ErrCh <- nil
+		c.Check(<-broker.ReadReqCh, gc.DeepEquals, &pb.ReadRequest{Journal: "a/journal", Offset: 105})
 
-	<-ar.doneCh
-	c.Check(ar.err, gc.Equals, ErrWouldBlock)
-	c.Check(ar.buffer.String(), gc.Equals, "hello, world!")
+		broker.ReadRespCh <- &tc.ReadResponse
+		broker.ErrCh <- nil
+
+		<-ar.doneCh
+		c.Check(ar.err, gc.Equals, tc.expectErr)
+		c.Check(ar.buffer.String(), gc.Equals, tc.expectContent)
+	}
 }
 
 type routeWrapper struct {
@@ -71,7 +77,7 @@ type asyncRead struct {
 	doneCh chan struct{}
 }
 
-func startAsyncRead(reader *Reader) *asyncRead {
+func readAsync(reader *Reader) *asyncRead {
 	var ar = &asyncRead{
 		reader: reader,
 		doneCh: make(chan struct{}),

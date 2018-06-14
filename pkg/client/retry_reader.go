@@ -12,14 +12,19 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// Reader wraps a BrokerClient and journal to provide callers with a long-lived
-// journal Reader which transparently handles and retries errors, and will block
-// as needed to await new journal content.
+// RetryReader wraps Reader with error handling and retry behavior, as well as
+// support for cancellation of a ongoing Read RPC, restarts, and seeks.
+// RetryReader is not thread-safe, with one exception: Cancel may be called from
+// one goroutine to abort an ongoing Read call in another.
 type RetryReader struct {
 	// Reader is the current underlying Reader of the RetryReader. This instance
 	// may change many times over the lifetime of a RetryReader, as Read RPCs
-	// are restarted.
+	// finish or are cancelled and then restarted.
 	Reader *Reader
+	// Cancel Read operations of the current Reader. Notably this will cause an
+	// ongoing blocked Read (as well as any future Reads) to return a "Cancelled"
+	// error. Restart may be called to re-initialize the RetryReader.
+	Cancel context.CancelFunc
 
 	ctx    context.Context
 	client pb.BrokerClient
@@ -32,11 +37,12 @@ func NewRetryReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequ
 		req.DoNotProxy = true
 	}
 
-	return &RetryReader{
-		Reader: NewReader(ctx, client, req),
+	var rr = &RetryReader{
 		ctx:    ctx,
 		client: client,
 	}
+	rr.Restart(req)
+	return rr
 }
 
 // Journal being read by this RetryReader.
@@ -46,12 +52,12 @@ func (rr *RetryReader) Journal() pb.Journal {
 
 // Offset of the next Journal byte to be returned by Read.
 func (rr *RetryReader) Offset() int64 {
-	return rr.Reader.Offset
+	return rr.Reader.Request.Offset
 }
 
 // Read returns the next bytes of journal content. It will return a non-nil
 // error in the following cases:
-//  * If the RetryReader context is cancelled.
+//  * Cancel is called, or the RetryReader context is cancelled.
 //  * The broker returns OFFSET_NOT_YET_AVAILABLE (ErrOffsetNotYetAvailable)
 //    for a non-blocking ReadRequest.
 // All other errors are retried.
@@ -67,17 +73,17 @@ func (rr *RetryReader) Read(p []byte) (n int, err error) {
 		// and restart the stream when ready for another attempt.
 
 		// Context cancellations are usually wrapped by augmenting errors as they
-		// return up the call stack. If our Reader's sub-context is Done, assume
+		// return up the call stack. If our Reader's context is Done, assume
 		// that is the primary error.
-		if rr.Reader.subCtx.Err() != nil {
-			err = rr.Reader.subCtx.Err()
+		if rr.Reader.ctx.Err() != nil {
+			err = rr.Reader.ctx.Err()
 		}
 
 		switch err {
-		case io.EOF, context.DeadlineExceeded, context.Canceled:
-			// Suppress logging for expected errors.
-		case ErrOffsetNotYetAvailable:
+		case ErrOffsetNotYetAvailable, context.DeadlineExceeded, context.Canceled:
 			return
+		case io.EOF, ErrNotJournalBroker:
+			// Suppress logging for expected errors.
 		default:
 			log.WithFields(log.Fields{"journal": rr.Journal(), "offset": rr.Offset(), "err": err}).
 				Warn("read failure (will retry)")
@@ -85,12 +91,14 @@ func (rr *RetryReader) Read(p []byte) (n int, err error) {
 
 		// Wait for a back-off timer, or context cancellation.
 		select {
-		case <-rr.ctx.Done():
-			return 0, rr.ctx.Err()
+		case <-rr.Reader.ctx.Done():
+			return 0, rr.Reader.ctx.Err()
 		case <-time.After(backoff(i)):
 		}
 
-		rr.restartReaderAt(rr.Offset())
+		// Restart the Reader re-using the same context (note we could be racing
+		// this restart with a concurrent call to |rr.Cancel|).
+		rr.Reader = NewReader(rr.Reader.ctx, rr.Reader.client, rr.Reader.Request)
 	}
 	panic("not reached")
 }
@@ -102,9 +110,9 @@ func (rr *RetryReader) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekStart:
 		// |offset| is already absolute.
 	case io.SeekCurrent:
-		offset = rr.Offset() + offset
+		offset = rr.Reader.Request.Offset + offset
 	default:
-		return rr.Offset(), errors.New("io.SeekEnd whence is not supported")
+		return rr.Reader.Request.Offset, errors.New("io.SeekEnd whence is not supported")
 	}
 
 	if _, err := rr.Reader.Seek(offset, io.SeekStart); err != nil {
@@ -113,10 +121,13 @@ func (rr *RetryReader) Seek(offset int64, whence int) (int64, error) {
 				Warn("failed to seek open Reader (will retry)")
 		}
 
-		rr.Reader.Cancel()
-		rr.restartReaderAt(offset)
+		var req = rr.Reader.Request
+		req.Offset = offset
+
+		rr.Cancel()
+		rr.Restart(req)
 	}
-	return rr.Offset(), nil
+	return rr.Reader.Request.Offset, nil
 }
 
 // AdjustedOffset returns the current journal offset, adjusted for content read
@@ -149,11 +160,12 @@ func (rr *RetryReader) AdjustedSeek(offset int64, whence int, br *bufio.Reader) 
 	return n, err
 }
 
-func (rr *RetryReader) restartReaderAt(offset int64) {
-	var req = rr.Reader.Request
-	req.Offset = offset
+// Restart the RetryReader with a new ReadRequest.
+func (rr *RetryReader) Restart(req pb.ReadRequest) {
+	var ctx, cancel = context.WithCancel(rr.ctx)
 
-	rr.Reader = NewReader(rr.ctx, rr.client, req)
+	rr.Reader = NewReader(ctx, rr.client, req)
+	rr.Cancel = cancel
 }
 
 func backoff(attempt int) time.Duration {

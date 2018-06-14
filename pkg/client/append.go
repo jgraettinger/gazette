@@ -7,49 +7,53 @@ import (
 )
 
 // Append adapts an open Append RPC to the io.WriteCloser interface. Usages of
-// an Append should be short-lived, as an in-progress RPC, by design, prevents
+// an Append should be short lived as an in-progress RPC, by design, prevents
 // the broker from serving other Append RPCs concurrently. Usages of Append
-// should thus be limited to cases where the full and complete buffer to write
-// is already available and can be immediately dispatched.
+// should thus be limited to cases where the full and complete buffer to
+// append is already available and can be immediately dispatched.
 type Append struct {
-	// Context of the Append. Notably, cancelling this context will also cancel
-	// an Append RPC in progress.
-	Context context.Context
-	// Client used to dispatch the Append RPC.
-	Client pb.BrokerClient
-	// Journal which is to be appended to.
-	Journal pb.Journal
+	Request  pb.AppendRequest  // AppendRequest of the Append.
+	Response pb.AppendResponse // AppendResponse sent by broker.
 
-	// Response holds the broker AppendResponse.
-	Response pb.AppendResponse
-
-	stream pb.Broker_AppendClient
+	ctx    context.Context
+	client pb.BrokerClient        // Client against which Read is dispatched.
+	stream pb.Broker_AppendClient // Server stream.
 }
 
-func (w *Append) Write(p []byte) (n int, err error) {
+func NewAppend(ctx context.Context, client pb.BrokerClient, req pb.AppendRequest) *Append {
+	var a = &Append{
+		Request: req,
+		ctx:     ctx,
+		client:  client,
+	}
+	return a
+}
+
+func (a *Append) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return // The broker interprets empty chunks as "commit".
 	}
 
-	if w.stream == nil {
-		w.stream, err = w.Client.Append(WithJournalHint(w.Context, w.Journal))
+	// Lazy initialization: begin the Append RPC.
+	if a.stream == nil {
+		a.stream, err = a.client.Append(WithJournalHint(a.ctx, a.Request.Journal))
 
 		if err == nil {
-			err = w.stream.SendMsg(&pb.AppendRequest{Journal: w.Journal})
+			err = a.stream.SendMsg(&a.Request)
 		}
 	}
 
 	if err != nil {
 		// Pass.
-	} else if err = w.stream.SendMsg(&pb.AppendRequest{Content: p}); err != nil {
+	} else if err = a.stream.SendMsg(&pb.AppendRequest{Content: p}); err != nil {
 		// Pass.
 	} else {
 		n = len(p)
 	}
 
 	if err != nil {
-		if u, ok := w.Client.(RouteUpdater); ok {
-			u.UpdateRoute(w.Journal, nil) // Purge cached Route.
+		if u, ok := a.client.(RouteUpdater); ok {
+			u.UpdateRoute(a.Request.Journal, nil) // Purge cached Route.
 		}
 	}
 	return
@@ -58,32 +62,32 @@ func (w *Append) Write(p []byte) (n int, err error) {
 // Close the Append to complete the transaction, committing previously
 // written content. If Close returns without an error, Append.Response
 // will hold the broker response.
-func (w *Append) Close() (err error) {
+func (a *Append) Close() (err error) {
 	// Send an empty chunk to signal commit of previously written content.
-	if err = w.stream.SendMsg(&pb.AppendRequest{}); err != nil {
+	if err = a.stream.SendMsg(&pb.AppendRequest{}); err != nil {
 		// Pass.
-	} else if err = w.stream.CloseSend(); err != nil {
+	} else if err = a.stream.CloseSend(); err != nil {
 		// Pass.
-	} else if err = w.stream.RecvMsg(&w.Response); err != nil {
+	} else if err = a.stream.RecvMsg(&a.Response); err != nil {
 		// Pass.
 	} else {
-		err = w.Response.Validate()
+		err = a.Response.Validate()
 	}
 
-	if u, ok := w.Client.(RouteUpdater); ok {
+	if u, ok := a.client.(RouteUpdater); ok {
 		if err == nil {
-			u.UpdateRoute(w.Journal, &w.Response.Header.Route)
+			u.UpdateRoute(a.Request.Journal, &a.Response.Header.Route)
 		} else {
-			u.UpdateRoute(w.Journal, nil)
+			u.UpdateRoute(a.Request.Journal, nil)
 		}
 	}
 	return
 }
 
 // Abort the write, causing the broker to discard previously written content.
-func (w *Append) Abort() {
-	// Abort is implicit by sending EOF without a preceding empty chunk.
-	_, _ = w.stream.CloseAndRecv()
+func (a *Append) Abort() {
+	// Abort is implied by sending EOF without a preceding empty chunk.
+	_, _ = a.stream.CloseAndRecv()
 }
 
 var chunkSize = 1 << 17 // 128K.

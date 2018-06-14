@@ -9,34 +9,27 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"github.com/LiveRamp/gazette/pkg/codecs"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/LiveRamp/gazette/pkg/codecs"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type Reader struct {
-	Request  pb.ReadRequest     // Initial ReadRequest.
-	Response pb.ReadResponse    // Most recent ReadResponse from broker.
-	Offset   int64              // Next Journal byte Offset to be returned by Read.
-	Cancel   context.CancelFunc // Cancel the Reader.
+	Request  pb.ReadRequest  // ReadRequest of the Reader.
+	Response pb.ReadResponse // Most recent ReadResponse from broker.
 
+	ctx    context.Context
 	client pb.BrokerClient      // Client against which Read is dispatched.
-	subCtx context.Context      // Child Context owned by Reader and canceled by |Cancel|.
 	stream pb.Broker_ReadClient // Server stream.
 	direct io.ReadCloser        // Directly opened Fragment URL.
 }
 
 func NewReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequest) *Reader {
-	// Create a cancel-able child context to allow for canceling reads.
-	var subCtx, cancel = context.WithCancel(ctx)
-
 	var r = &Reader{
 		Request: req,
-		Offset:  req.Offset,
-		Cancel:  cancel,
+		ctx:     ctx,
 		client:  client,
-		subCtx:  subCtx,
 	}
 	return r
 }
@@ -44,7 +37,7 @@ func NewReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequest) 
 func (r *Reader) Read(p []byte) (n int, err error) {
 	// Lazy initialization: begin the Read RPC.
 	if r.stream == nil {
-		if r.stream, err = r.client.Read(r.subCtx, &r.Request); err == nil {
+		if r.stream, err = r.client.Read(r.ctx, &r.Request); err == nil {
 			n, err = r.Read(p) // Recurse to attempt read against opened |r.stream|.
 		}
 		return // Surface read or error.
@@ -55,98 +48,114 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		if n, err = r.direct.Read(p); err != nil {
 			_ = r.direct.Close()
 		}
-		r.Offset += int64(n)
+		r.Request.Offset += int64(n)
 		return
 	}
 
 	// Is there remaining content in the last ReadResponse?
-	if d := int(r.Offset - r.Response.Offset); d < len(r.Response.Content) {
+	if d := int(r.Request.Offset - r.Response.Offset); d < len(r.Response.Content) {
 		n = copy(p, r.Response.Content[d:])
-		r.Offset += int64(n)
+		r.Request.Offset += int64(n)
 		return
 	}
 
 	// Read and Validate the next frame.
 	if err = r.stream.RecvMsg(&r.Response); err == nil {
-		err = r.Response.Validate()
+		if err = r.Response.Validate(); err != nil {
+			err = pb.ExtendContext(err, "ReadResponse")
+		} else if r.Response.Offset < r.Request.Offset {
+			err = pb.NewValidationError("invalid ReadResponse offset (%d; expected >= %d)",
+				r.Response.Offset, r.Request.Offset) // Violation of Read API contract.
+		}
 	}
 
-	if err == io.EOF {
-		// If the broker closed the stream but previously provided a direct fragment URL, attempt to open that URL directly.
-		if r.Response.FragmentUrl != "" {
-			if r.direct, err = OpenFragmentURL(r.subCtx, r.Offset, *r.Response.Fragment, r.Response.FragmentUrl); err == nil {
-				n, err = r.Read(p) // Recurse to attempt read against opened |r.direct|.
-			}
-			return // Surface read or error.
-		}
-	} else if err != nil {
-		// On a non-EOF error, purge any existing Route advisement for the journal.
-		if u, ok := r.client.(RouteUpdater); ok {
-			u.UpdateRoute(r.Request.Journal, nil)
-		}
-	} else /* err == nil */ {
+	// A note on resource leaks: an invariant of Read is that in invocations where
+	// the returned error != nil, an error has also been read from |r.stream|,
+	// implying that the gRPC transport has been torn down. The exception is if
+	// response validation fails, which indicates a client / server API version
+	// incompatibility and cannot happen in normal operation.
 
-		// If a Header was sent, advise on its advertised journal Route.
+	if err == nil {
+
+		if r.Request.Offset < r.Response.Offset {
+			// Offset jumps are uncommon, but possible if fragments were removed.
+			log.WithFields(log.Fields{
+				"journal": r.Request.Journal,
+				"from":    r.Request.Offset,
+				"to":      r.Response.Offset,
+			}).Warn("offset jump")
+			r.Request.Offset = r.Response.Offset
+		}
+
+		// If a Header was sent, advise of its advertised journal Route.
 		if u, ok := r.client.(RouteUpdater); r.Response.Header != nil && ok {
 			u.UpdateRoute(r.Request.Journal, &r.Response.Header.Route)
 		}
 
-		// Map a non-OK status into an |err|.
-		switch r.Response.Status {
-		case pb.Status_OK:
-			// Pass.
-		case pb.Status_NOT_JOURNAL_BROKER:
-			err = ErrNotJournalBroker
-		case pb.Status_OFFSET_NOT_YET_AVAILABLE:
-			err = ErrOffsetNotYetAvailable
-		default:
-			err = errors.New(r.Response.Status.String())
-		}
-	}
+		n, err = r.Read(p) // Recurse to attempt read against updated |r.Response|.
+		return
 
-	if err != nil {
-		r.Cancel() // Abort the gRPC stream (if it's still alive).
+	} else if err != io.EOF {
+		// We read an error _other_ than a graceful tear-down of the stream.
+		// Purge any existing Route advisement for the journal.
+		if u, ok := r.client.(RouteUpdater); ok {
+			u.UpdateRoute(r.Request.Journal, nil)
+		}
 		return
 	}
 
-	if r.Offset < r.Response.Offset {
-		// Offset jumps are uncommon but possible if fragments are removed from a journal.
-		log.WithFields(log.Fields{"journal": r.Request.Journal, "from": r.Offset, "to": r.Response.Offset}).
-			Warn("offset jump")
-		r.Offset = r.Response.Offset
-	} else if r.Offset > r.Response.Offset {
-		// This is a violation of the Read API contract.
-		panic(fmt.Sprintf("invalid response offset (%d; expected >= %d)", r.Response.Offset, r.Offset))
+	// We read a graceful stream closure (err == io.EOF).
+
+	// If the frame preceding EOF provided a fragment URL, open it directly.
+	if r.Response.Status == pb.Status_OK && r.Response.FragmentUrl != "" {
+		if r.direct, err = OpenFragmentURL(r.ctx, r.Request.Offset,
+			*r.Response.Fragment, r.Response.FragmentUrl); err == nil {
+			n, err = r.Read(p) // Recurse to attempt read against opened |r.direct|.
+		}
+		return
 	}
 
-	return r.Read(p) // Recurse to attempt read against updated |r.Response|.
+	// Otherwise, map Status of the preceding frame into a more specific error.
+	switch r.Response.Status {
+	case pb.Status_OK:
+		// Return err = io.EOF.
+	case pb.Status_NOT_JOURNAL_BROKER:
+		err = ErrNotJournalBroker
+	case pb.Status_OFFSET_NOT_YET_AVAILABLE:
+		err = ErrOffsetNotYetAvailable
+	default:
+		err = errors.New(r.Response.Status.String())
+	}
+	return
 }
 
 // AdjustedOffset returns the current journal offset, adjusted for content read
 // by |br| (which wraps this Reader) but not yet consumed from |br|'s buffer.
-func (r *Reader) AdjustedOffset(br *bufio.Reader) int64 { return r.Offset - int64(br.Buffered()) }
+func (r *Reader) AdjustedOffset(br *bufio.Reader) int64 {
+	return r.Request.Offset - int64(br.Buffered())
+}
 
 // Seek provides a limited form of seeking support. Specifically, iff a
 // Fragment URL is being directly read, the Seek offset is ahead of the current
-// Reader offset, and the Fragment also covers the desired Seek offset, then
-// the interleaving portion of the Fragment will be read and discarded. In all
-// other cases, Seek returns ErrSeekRequiresNewReader.
+// Reader offset, and the Fragment also covers the desired Seek offset, then a
+// seek is performed by reading and discarding to the seeked offset. Seek will
+// otherwise return ErrSeekRequiresNewReader.
 func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 	switch whence {
 	case io.SeekStart:
 		// |offset| is already absolute.
 	case io.SeekCurrent:
-		offset = r.Offset + offset
+		offset = r.Request.Offset + offset
 	default:
-		return r.Offset, errors.New("io.SeekEnd whence is not supported")
+		return r.Request.Offset, errors.New("io.SeekEnd whence is not supported")
 	}
 
-	if r.direct == nil || offset < r.Offset || offset >= r.Response.Fragment.End {
-		return r.Offset, ErrSeekRequiresNewReader
+	if r.direct == nil || offset < r.Request.Offset || offset >= r.Response.Fragment.End {
+		return r.Request.Offset, ErrSeekRequiresNewReader
 	}
 
-	var _, err = io.CopyN(ioutil.Discard, r, offset-r.Offset)
-	return r.Offset, err
+	var _, err = io.CopyN(ioutil.Discard, r, offset-r.Request.Offset)
+	return r.Request.Offset, err
 }
 
 // OpenFragmentURL directly opens |fragment|, which must be available at URL
