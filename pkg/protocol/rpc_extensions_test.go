@@ -66,7 +66,7 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 	c.Check(resp.Validate(), gc.ErrorMatches, `invalid WriteHead \(-1; expected >= 0\)`)
 	resp.WriteHead = 1234
 
-	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Offset without Fragment \(\d+\)`)
+	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Offset without Fragment or Content \(\d+\)`)
 	resp.Offset = 0
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected FragmentUrl without Fragment \(http://foo\)`)
@@ -86,9 +86,6 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Header with Content \(broker_id:.*`)
 	resp.Header = nil
-
-	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected Offset with Content \(5678\)`)
-	resp.Offset = 0
 
 	c.Check(resp.Validate(), gc.ErrorMatches, `unexpected WriteHead with Content \(1234\)`)
 	resp.WriteHead = 0

@@ -32,8 +32,6 @@ func (m *ReadResponse) Validate() error {
 			return NewValidationError("unexpected Status with Content (%v)", m.Status)
 		} else if m.Header != nil {
 			return NewValidationError("unexpected Header with Content (%s)", m.Header)
-		} else if m.Offset != 0 {
-			return NewValidationError("unexpected Offset with Content (%d)", m.Offset)
 		} else if m.WriteHead != 0 {
 			return NewValidationError("unexpected WriteHead with Content (%d)", m.WriteHead)
 		} else if m.Fragment != nil {
@@ -70,7 +68,7 @@ func (m *ReadResponse) Validate() error {
 		}
 	} else {
 		if m.Offset != 0 {
-			return NewValidationError("unexpected Offset without Fragment (%d)", m.Offset)
+			return NewValidationError("unexpected Offset without Fragment or Content (%d)", m.Offset)
 		} else if m.FragmentUrl != "" {
 			return NewValidationError("unexpected FragmentUrl without Fragment (%s)", m.FragmentUrl)
 		}

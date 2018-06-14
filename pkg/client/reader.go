@@ -15,6 +15,9 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
+// Reader adapts a Read RPC to the io.Reader interface. It additionally supports
+// directly reading Fragment URLs advertised but not proxied by the broker (eg,
+// because DoNotProxy of the ReadRequest is true).
 type Reader struct {
 	Request  pb.ReadRequest  // ReadRequest of the Reader.
 	Response pb.ReadResponse // Most recent ReadResponse from broker.
@@ -63,7 +66,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	if err = r.stream.RecvMsg(&r.Response); err == nil {
 		if err = r.Response.Validate(); err != nil {
 			err = pb.ExtendContext(err, "ReadResponse")
-		} else if r.Response.Offset < r.Request.Offset {
+		} else if r.Response.Status == pb.Status_OK && r.Response.Offset < r.Request.Offset {
 			err = pb.NewValidationError("invalid ReadResponse offset (%d; expected >= %d)",
 				r.Response.Offset, r.Request.Offset) // Violation of Read API contract.
 		}
@@ -195,29 +198,44 @@ func OpenFragmentURL(ctx context.Context, offset int64, fragment pb.Fragment, ur
 		return nil, fmt.Errorf("building decompressor (%s, %q)", err, url)
 	}
 
-	var rc = &doubleCloser{
-		Reader: decomp,
-		a:      decomp,
-		b:      resp.Body,
+	var fr = &fragReader{
+		decomp:   decomp,
+		raw:      resp.Body,
+		fragment: fragment,
 	}
 
 	// Attempt to seek to |offset| within the fragment.
 	var delta = offset - fragment.Begin
-	if _, err := io.CopyN(ioutil.Discard, rc, delta); err != nil {
-		rc.Close()
+	if _, err := io.CopyN(ioutil.Discard, fr, delta); err != nil {
+		fr.Close()
 		return nil, fmt.Errorf("error seeking fragment (%s, %q)", err, url)
 	}
-
-	return rc, nil
+	return fr, nil
 }
 
-type doubleCloser struct {
-	io.Reader
-	a, b io.Closer
+type fragReader struct {
+	decomp   io.ReadCloser
+	raw      io.ReadCloser
+	fragment pb.Fragment
 }
 
-func (dc *doubleCloser) Close() error {
-	var errA, errB = dc.a.Close(), dc.b.Close()
+func (fr *fragReader) Read(p []byte) (n int, err error) {
+	n, err = fr.decomp.Read(p)
+	fr.fragment.Begin += int64(n)
+
+	if fr.fragment.Begin > fr.fragment.End {
+		// Did we somehow read beyond Fragment.End?
+		n -= int(fr.fragment.Begin - fr.fragment.End)
+		err = ErrExpectedEOF
+	} else if err == io.EOF && fr.fragment.Begin != fr.fragment.End {
+		// Did we read EOF before the reaching Fragment.End?
+		err = io.ErrUnexpectedEOF
+	}
+	return
+}
+
+func (fr *fragReader) Close() error {
+	var errA, errB = fr.decomp.Close(), fr.raw.Close()
 	if errA != nil {
 		return errA
 	}
@@ -228,8 +246,10 @@ var (
 	// Map common broker error status into named errors.
 	ErrOffsetNotYetAvailable = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
 	ErrNotJournalBroker      = errors.New(pb.Status_NOT_JOURNAL_BROKER.String())
-	ErrSeekRequiresNewReader = errors.New("seek offset requires new Reader")
 
-	// HTTPClient is used by OpenFragmentURL
+	ErrSeekRequiresNewReader = errors.New("seek offset requires new Reader")
+	ErrExpectedEOF           = errors.New("did not read EOF at expected Fragment.End")
+
+	// HTTPClient is the http.Client used by OpenFragmentURL
 	HTTPClient = http.DefaultClient
 )

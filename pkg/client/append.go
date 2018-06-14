@@ -6,11 +6,10 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// Append adapts an open Append RPC to the io.WriteCloser interface. Usages of
-// an Append should be short lived as an in-progress RPC, by design, prevents
-// the broker from serving other Append RPCs concurrently. Usages of Append
-// should thus be limited to cases where the full and complete buffer to
-// append is already available and can be immediately dispatched.
+// Append adapts an Append RPC to the io.WriteCloser interface. Its usages should
+// should be limited to cases where the full and complete buffer to append is
+// already available and can be immediately dispatched as, by design, an in-
+// progress RPC prevents the broker from serving other Append RPCs concurrently.
 type Append struct {
 	Request  pb.AppendRequest  // AppendRequest of the Append.
 	Response pb.AppendResponse // AppendResponse sent by broker.
