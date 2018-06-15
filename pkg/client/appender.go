@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -69,8 +70,10 @@ func (a *Appender) Close() (err error) {
 		// Pass.
 	} else if err = a.stream.RecvMsg(&a.Response); err != nil {
 		// Pass.
-	} else {
-		err = a.Response.Validate()
+	} else if err = a.Response.Validate(); err != nil {
+		// Pass.
+	} else if a.Response.Status != pb.Status_OK {
+		err = errors.New(a.Response.Status.String())
 	}
 
 	if u, ok := a.client.(RouteUpdater); ok {
