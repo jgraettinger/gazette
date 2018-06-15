@@ -93,7 +93,7 @@ func (h *Gateway) serveWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var append = &client.Append{
+	var append = &client.Appender{
 		Context: r.Context(),
 		Client:  h.client,
 		Journal: req.Journal,

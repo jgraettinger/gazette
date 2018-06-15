@@ -79,6 +79,10 @@ func (rr *RetryReader) Read(p []byte) (n int, err error) {
 			err = rr.Reader.ctx.Err()
 		}
 
+		// Restart the Reader re-using the same context (note we could be racing
+		// this restart with a concurrent call to |rr.Cancel|).
+		rr.Reader = NewReader(rr.Reader.ctx, rr.Reader.client, rr.Reader.Request)
+
 		switch err {
 		case ErrOffsetNotYetAvailable, context.DeadlineExceeded, context.Canceled:
 			return
@@ -95,10 +99,6 @@ func (rr *RetryReader) Read(p []byte) (n int, err error) {
 			return 0, rr.Reader.ctx.Err()
 		case <-time.After(backoff(i)):
 		}
-
-		// Restart the Reader re-using the same context (note we could be racing
-		// this restart with a concurrent call to |rr.Cancel|).
-		rr.Reader = NewReader(rr.Reader.ctx, rr.Reader.client, rr.Reader.Request)
 	}
 	panic("not reached")
 }

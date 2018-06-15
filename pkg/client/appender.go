@@ -10,7 +10,7 @@ import (
 // should be limited to cases where the full and complete buffer to append is
 // already available and can be immediately dispatched as, by design, an in-
 // progress RPC prevents the broker from serving other Append RPCs concurrently.
-type Append struct {
+type Appender struct {
 	Request  pb.AppendRequest  // AppendRequest of the Append.
 	Response pb.AppendResponse // AppendResponse sent by broker.
 
@@ -19,8 +19,8 @@ type Append struct {
 	stream pb.Broker_AppendClient // Server stream.
 }
 
-func NewAppend(ctx context.Context, client pb.BrokerClient, req pb.AppendRequest) *Append {
-	var a = &Append{
+func NewAppender(ctx context.Context, client pb.BrokerClient, req pb.AppendRequest) *Appender {
+	var a = &Appender{
 		Request: req,
 		ctx:     ctx,
 		client:  client,
@@ -28,7 +28,7 @@ func NewAppend(ctx context.Context, client pb.BrokerClient, req pb.AppendRequest
 	return a
 }
 
-func (a *Append) Write(p []byte) (n int, err error) {
+func (a *Appender) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return // The broker interprets empty chunks as "commit".
 	}
@@ -61,7 +61,7 @@ func (a *Append) Write(p []byte) (n int, err error) {
 // Close the Append to complete the transaction, committing previously
 // written content. If Close returns without an error, Append.Response
 // will hold the broker response.
-func (a *Append) Close() (err error) {
+func (a *Appender) Close() (err error) {
 	// Send an empty chunk to signal commit of previously written content.
 	if err = a.stream.SendMsg(&pb.AppendRequest{}); err != nil {
 		// Pass.
@@ -84,7 +84,7 @@ func (a *Append) Close() (err error) {
 }
 
 // Abort the write, causing the broker to discard previously written content.
-func (a *Append) Abort() {
+func (a *Appender) Abort() {
 	// Abort is implied by sending EOF without a preceding empty chunk.
 	_, _ = a.stream.CloseAndRecv()
 }
