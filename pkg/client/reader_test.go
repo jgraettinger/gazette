@@ -312,20 +312,8 @@ func (f readFixture) serve(c *gc.C, broker *teststub.Broker) {
 
 	// Start with a basic response template which may be customized
 	var resp = &pb.ReadResponse{
-		Status: pb.Status_OK,
-		Header: &pb.Header{
-			BrokerId: pb.BrokerSpec_ID{Zone: "a", Suffix: "broker"},
-			Route: pb.Route{
-				Brokers: []pb.BrokerSpec_ID{{Zone: "a", Suffix: "broker"}},
-				Primary: 0,
-			},
-			Etcd: pb.Header_Etcd{
-				ClusterId: 12,
-				MemberId:  34,
-				Revision:  56,
-				RaftTerm:  78,
-			},
-		},
+		Status:    pb.Status_OK,
+		Header:    headerFixture,
 		Offset:    req.Offset,
 		WriteHead: 1024,
 		Fragment:  &pb.Fragment{Journal: "a/journal", Begin: 0, End: 1024},
@@ -407,6 +395,22 @@ func buildFragmentFixture(c *gc.C) (frag pb.Fragment, url string, cleanup func()
 	return
 }
 
-var _ = gc.Suite(&ReaderSuite{})
+var (
+	_ = gc.Suite(&ReaderSuite{})
+
+	headerFixture = &pb.Header{
+		BrokerId: pb.BrokerSpec_ID{Zone: "a", Suffix: "broker"},
+		Route: pb.Route{
+			Brokers: []pb.BrokerSpec_ID{{Zone: "a", Suffix: "broker"}},
+			Primary: 0,
+		},
+		Etcd: pb.Header_Etcd{
+			ClusterId: 12,
+			MemberId:  34,
+			Revision:  56,
+			RaftTerm:  78,
+		},
+	}
+)
 
 func Test(t *testing.T) { gc.TestingT(t) }

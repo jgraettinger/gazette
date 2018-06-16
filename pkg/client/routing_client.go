@@ -94,7 +94,7 @@ func (rc *routingClient) UpdateRoute(journal pb.Journal, route *pb.Route) {
 	if route == nil || len(route.Brokers) == 0 || route.Primary == -1 {
 		rc.routes.Remove(journal)
 	} else {
-		rc.routes.Add(journal, route)
+		rc.routes.Add(journal, *route)
 	}
 }
 

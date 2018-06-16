@@ -91,5 +91,3 @@ func (a *Appender) Abort() {
 	// Abort is implied by sending EOF without a preceding empty chunk.
 	_, _ = a.stream.CloseAndRecv()
 }
-
-var chunkSize = 1 << 17 // 128K.

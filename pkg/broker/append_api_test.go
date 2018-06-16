@@ -44,7 +44,7 @@ func (s *AppendSuite) TestSingleAppend(c *gc.C) {
 			CompressionCodec: pb.CompressionCodec_SNAPPY,
 			Begin:            0,
 			End:              6,
-			Sum:              sumOf("foobar"),
+			Sum:              pb.SHA1SumOf("foobar"),
 		},
 		Acknowledge: true,
 	})
@@ -61,7 +61,7 @@ func (s *AppendSuite) TestSingleAppend(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     6,
-			Sum:     sumOf("foobar"),
+			Sum:     pb.SHA1SumOf("foobar"),
 		},
 	})
 }
@@ -96,7 +96,7 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 			CompressionCodec: pb.CompressionCodec_SNAPPY,
 			Begin:            0,
 			End:              3,
-			Sum:              sumOf("foo"),
+			Sum:              pb.SHA1SumOf("foo"),
 		},
 		Acknowledge: true,
 	})
@@ -116,7 +116,7 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 			CompressionCodec: pb.CompressionCodec_SNAPPY,
 			Begin:            0,
 			End:              9,
-			Sum:              sumOf("foobarbaz"),
+			Sum:              pb.SHA1SumOf("foobarbaz"),
 		},
 		Acknowledge: true,
 	})
@@ -133,7 +133,7 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     3,
-			Sum:     sumOf("foo"),
+			Sum:     pb.SHA1SumOf("foo"),
 		},
 	})
 
@@ -149,7 +149,7 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   3,
 			End:     9,
-			Sum:     sumOf("barbaz"),
+			Sum:     pb.SHA1SumOf("barbaz"),
 		},
 	})
 }

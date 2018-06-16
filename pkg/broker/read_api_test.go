@@ -52,7 +52,7 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     9,
-			Sum:     sumOf("foobarbaz"),
+			Sum:     pb.SHA1SumOf("foobarbaz"),
 		},
 	})
 	expectReadResponse(c, stream, &pb.ReadResponse{
@@ -79,7 +79,7 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     13,
-			Sum:     sumOf("foobarbazbing"),
+			Sum:     pb.SHA1SumOf("foobarbazbing"),
 		},
 	})
 	expectReadResponse(c, stream, &pb.ReadResponse{
@@ -126,7 +126,7 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     8,
-			Sum:     sumOf("feedbeef"),
+			Sum:     pb.SHA1SumOf("feedbeef"),
 		},
 	})
 	expectReadResponse(c, stream, &pb.ReadResponse{
@@ -166,7 +166,7 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     12,
-			Sum:     sumOf("feedbeefbing"),
+			Sum:     pb.SHA1SumOf("feedbeefbing"),
 		},
 	})
 

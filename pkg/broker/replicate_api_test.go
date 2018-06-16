@@ -45,7 +45,7 @@ func (s *ReplicateSuite) TestStreamAndCommit(c *gc.C) {
 			Journal: "a/journal",
 			Begin:   0,
 			End:     13,
-			Sum:     sumOf("foobarbazbing"),
+			Sum:     pb.SHA1SumOf("foobarbazbing"),
 		},
 		Acknowledge: true,
 	}), gc.IsNil)
