@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/etcd/integration"
 	gc "github.com/go-check/check"
 	"github.com/gorilla/mux"
 
@@ -365,11 +364,4 @@ func (s *ReadAPISuite) Read(op journal.ReadOp) {
 
 var _ = gc.Suite(&ReadAPISuite{})
 
-// TODO(johnny): Find a better factoring for this, and the `gazette` package at-large.
-var etcdCluster *integration.ClusterV3
-
-func Test(t *testing.T) {
-	etcdCluster = integration.NewClusterV3(t, &integration.ClusterConfig{Size: 1})
-	gc.TestingT(t)
-	etcdCluster.Terminate(t)
-}
+func Test(t *testing.T) { gc.TestingT(t) }

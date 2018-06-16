@@ -1,4 +1,3 @@
-// Package config provides building blocks and utilities for defining and parsing configuration file.
 package mainboilerplate
 
 import (

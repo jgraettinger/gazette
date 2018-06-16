@@ -19,12 +19,19 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/LiveRamp/gazette/pkg/cloudstore"
-	"github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type Fragment struct {
-	protocol.Fragment
-	File FragmentFile // Backing file of the fragment, if present locally.
+	Journal    Name
+	Begin, End int64
+	Sum        [sha1.Size]byte
+
+	// Backing file of the fragment, if present locally.
+	File FragmentFile
+	// If fragment is remote, the time of last modification.
+	// NOTE(joshk): Does not get set in Client use.
+	// TODO(johnny): Is this the appropriate factoring?
+	RemoteModTime time.Time
 }
 
 func (f Fragment) ContentName() string {

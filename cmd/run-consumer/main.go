@@ -3,16 +3,19 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"path"
 	"plugin"
+	"strings"
 
-	"github.com/LiveRamp/gazette/pkg/config"
-	"github.com/LiveRamp/gazette/pkg/consumer"
-	"github.com/LiveRamp/gazette/pkg/gazette"
-	"github.com/LiveRamp/gazette/pkg/metrics"
 	etcd "github.com/coreos/etcd/client"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
+
+	"github.com/LiveRamp/gazette/pkg/consumer"
+	"github.com/LiveRamp/gazette/pkg/gazette"
+	"github.com/LiveRamp/gazette/pkg/metrics"
 )
 
 var configFile = flag.String("config", "", "Path to configuration file. "+
@@ -49,15 +52,39 @@ func (cfg Config) Validate() error {
 }
 
 func main() {
-	var cfg Config
-	config.MustParse("consumer-config", configFile, &cfg)
-
 	prometheus.MustRegister(metrics.GazetteClientCollectors()...)
 	prometheus.MustRegister(metrics.GazetteConsumerCollectors()...)
+	flag.Parse()
 
-	var module, err = plugin.Open(cfg.Service.Plugin)
+	if *configFile != "" {
+		viper.SetConfigFile(*configFile)
+	} else {
+		viper.AddConfigPath(".")
+		viper.SetConfigName("consumer-config")
+	}
+
+	if err := viper.ReadInConfig(); err != nil {
+		log.WithField("err", err).Fatal("failed to read config")
+	} else {
+		log.WithField("path", viper.ConfigFileUsed()).Info("read config")
+	}
+
+	// Allow environment variables to override file configuration.
+	// Treat variable underscores as nested-path specifiers.
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		log.WithField("err", err).Fatal("failed to unmarshal")
+	} else if err := config.Validate(); err != nil {
+		viper.Debug()
+		log.WithFields(log.Fields{"err": err, "cfg": config, "env": os.Environ()}).Fatal("config validation failed")
+	}
+
+	var module, err = plugin.Open(config.Service.Plugin)
 	if err != nil {
-		log.WithFields(log.Fields{"path": cfg.Service.Plugin, "err": err}).Fatal("failed to open plugin module")
+		log.WithFields(log.Fields{"path": config.Service.Plugin, "err": err}).Fatal("failed to open plugin module")
 	}
 	flag.Parse() // Parse again to initialize any plugin flags.
 
@@ -70,11 +97,11 @@ func main() {
 		instance = *c
 	}
 
-	etcdClient, err := etcd.New(etcd.Config{Endpoints: []string{cfg.Etcd.Endpoint}})
+	etcdClient, err := etcd.New(etcd.Config{Endpoints: []string{config.Etcd.Endpoint}})
 	if err != nil {
 		log.WithField("err", err).Fatal("failed to init etcd client")
 	}
-	gazClient, err := gazette.NewClient(cfg.Gazette.Endpoint)
+	gazClient, err := gazette.NewClient(config.Gazette.Endpoint)
 	if err != nil {
 		log.WithField("err", err).Fatal("failed to init gazette client")
 	}
@@ -85,11 +112,11 @@ func main() {
 
 	var runner = &consumer.Runner{
 		Consumer:        instance,
-		ConsumerRoot:    cfg.Service.AllocatorRoot,
-		LocalDir:        cfg.Service.Workdir,
-		LocalRouteKey:   cfg.Service.LocalRouteKey,
-		RecoveryLogRoot: cfg.Service.RecoveryLogRoot,
-		ReplicaCount:    int(cfg.Service.ShardStandbys),
+		ConsumerRoot:    config.Service.AllocatorRoot,
+		LocalDir:        config.Service.Workdir,
+		LocalRouteKey:   config.Service.LocalRouteKey,
+		RecoveryLogRoot: config.Service.RecoveryLogRoot,
+		ReplicaCount:    int(config.Service.ShardStandbys),
 
 		Etcd: etcdClient,
 		Gazette: struct {

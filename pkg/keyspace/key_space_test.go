@@ -182,7 +182,7 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 		})
 }
 
-func (s *KeySpaceSuite) TestWaiForRevision(c *gc.C) {
+func (s *KeySpaceSuite) TestWaitForRevision(c *gc.C) {
 	var ks = NewKeySpace("/", testDecoder)
 
 	var ctx, cancel = context.WithCancel(context.Background())
