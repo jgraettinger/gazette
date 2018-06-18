@@ -192,35 +192,3 @@ func must(err error, msg string, extra ...interface{}) {
 	}
 	log.WithFields(f).Fatal(msg)
 }
-
-/*
-	var advertiseTestJournal = func() {
-		var spec = pb.JournalSpec{
-			Name:        "foo/bar",
-			Replication: 1,
-			Fragment: pb.JournalSpec_Fragment{
-				Length:           1 << 16,
-				CompressionCodec: pb.CompressionCodec_GZIP,
-				RefreshInterval:  time.Second,
-			},
-			Labels: pb.LabelSet{
-				Labels: []pb.Label{
-					{Name: "label-key", Value: "label-value"},
-					{Name: "topic", Value: "foo"},
-				},
-			},
-		}
-		if err = spec.Validate(); err != nil {
-			log.WithField("err", err).Fatal("bad journal spec")
-		}
-
-		if _, err = etcd.Put(ctx,
-			v3_allocator.ItemKey(ks, spec.Name.String()),
-			spec.MarshalString(),
-		); err != nil {
-			log.WithField("err", err).Fatal("failed to write JournalSpec to etcd")
-		}
-	}
-	advertiseTestJournal()
-
-*/
