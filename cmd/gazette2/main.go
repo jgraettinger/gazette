@@ -5,14 +5,16 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/LiveRamp/gazette/pkg/client"
+	"github.com/LiveRamp/gazette/pkg/http_gateway"
 	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/clientv3/concurrency"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"github.com/soheilhy/cmux"
@@ -49,6 +51,10 @@ type Config struct {
 	GRPC struct {
 		KeepAlive keepalive.ServerParameters
 	}
+	Caches struct {
+		DialerConns       int
+		HTTPGatewayRoutes int
+	}
 }
 
 func (cfg Config) Validate() error {
@@ -78,63 +84,125 @@ func (cfg Config) Validate() error {
 	return nil
 }
 
+func buildListeners(cfg *Config) (mux cmux.CMux, grpc, http net.Listener) {
+	// Bind the specified listener. Use cmux to multiplex both HTTP and gRPC
+	// sessions over the same port.
+	var raw, err = net.Listen("tcp", cfg.Spec.Endpoint.URL().Host)
+	must(err, "failed to bind listener")
+
+	log.WithField("endpoint", cfg.Spec.Endpoint).Info("listening on endpoint")
+
+	mux = cmux.New(keepalive2.TCPListener{TCPListener: raw.(*net.TCPListener)})
+	grpc = mux.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
+	http = mux.Match(cmux.HTTP1Fast())
+
+	return
+}
+
+func buildEtcdSession(cfg *Config) (etcd *clientv3.Client, session *concurrency.Session) {
+	var err error
+	etcd, err = clientv3.NewFromURL(string(cfg.Etcd.Endpoint))
+	must(err, "failed to init etcd client")
+
+	session, err = concurrency.NewSession(etcd, concurrency.WithTTL(int(cfg.Etcd.LeaseTTL.Seconds())))
+	must(err, "failed to establish etcd lease session")
+	return
+}
+
+func serveHTTPGateway(cfg *Config, l net.Listener, dialer client.Dialer) error {
+	var loopback, err = dialer.DialEndpoint(context.Background(), cfg.Spec.Endpoint)
+	must(err, "failed to dial local broker")
+
+	routingClient, err := client.NewRoutingClient(pb.NewBrokerClient(loopback),
+		cfg.Spec.Id.Zone, dialer, cfg.Caches.HTTPGatewayRoutes)
+	must(err, "failed to build RoutingClient")
+
+	return http.Serve(l, http_gateway.NewGateway(routingClient))
+}
+
+func serveGRPC(cfg *Config, l net.Listener, srv pb.BrokerServer) error {
+	var grpcSrv = grpc.NewServer(grpc.KeepaliveParams(cfg.GRPC.KeepAlive))
+	pb.RegisterBrokerServer(grpcSrv, srv)
+
+	return grpcSrv.Serve(l)
+}
+
 func main() {
-	//defer mainboilerplate.LogPanic()
+	defer mainboilerplate.LogPanic()
 
 	var cfg Config
 	mainboilerplate.MustParseConfig(configFile, "gazette-config", &cfg)
 
 	prometheus.MustRegister(metrics.GazetteCollectors()...)
 	mainboilerplate.InitMetrics(strconv.Itoa(int(cfg.Metrics.Port)), cfg.Metrics.Path)
-	//mainboilerplate.InitLog(cfg.Log.Level)
-	//gensupport.RegisterHook(traceRequests)
+	mainboilerplate.InitLog(cfg.Log.Level)
 
-	var ctx = context.Background()
+	var etcd, session = buildEtcdSession(&cfg)
+	defer session.Close()
 
-	// Bind the specified listener. Use cmux to multiplex both HTTP and gRPC
-	// sessions over the same port.
-	var listener net.Listener
+	// Bind listeners before we advertise our endpoint.
+	var cMux, grpcL, httpL = buildListeners(&cfg)
 
-	if u, err := url.Parse(cfg.Spec.Endpoint); err != nil {
-		log.WithField("err", err).Fatal("failed to parse Spec.Endpoint") // Also covered by cfg.Validate.
-	} else if listener, err = net.Listen("tcp", u.Host); err != nil {
-		log.WithField("err", err).Fatal("failed to bind listener")
-	}
+	var ks = broker.NewKeySpace(cfg.Etcd.Root)
+	var memberKey = v3_allocator.MemberKey(ks, cfg.Spec.Id.Zone, cfg.Spec.Id.Suffix)
 
-	var lMux = cmux.New(keepalive2.TCPListener{listener.(*net.TCPListener)})
-	var grpcL = lMux.Match(cmux.HTTP2HeaderField("content-type", "application/grpc"))
-	var httpL = lMux.Match(cmux.HTTP1Fast())
-	log.WithField("endpoint", cfg.Spec.Endpoint).Info("listening on endpoint")
+	announcement, err := v3_allocator.Announce(context.Background(),
+		etcd, memberKey, cfg.Spec.MarshalString(), session.Lease())
+	must(err, "failed to announce member key", "key", memberKey)
 
-	// Connect to Etcd, and establish a lease having the same lifetime as the broker.
-	etcd, err := clientv3.NewFromURL(cfg.Etcd.Endpoint)
-	if err != nil {
-		log.WithField("err", err).Fatal("failed to init etcd client")
-	}
-	lease, err := etcd.Lease.Grant(ctx, int64(cfg.Etcd.LeaseTTL.Seconds()))
-	if err != nil {
-		log.WithField("err", err).Fatal("failed to obtain etcd lease")
-	} else if _, err = etcd.Lease.KeepAlive(ctx, lease.ID); err != nil {
-		log.WithField("err", err).Fatal("failed to begin Lease KeepAlive")
-	}
-	log.WithField("lease", lease).Info("acquired etcd lease")
+	// Install a signal handler which zeros our advertised JournalLimit.
+	// Upon seeing this, Allocator will work to discharge all of our assigned
+	// Items, and Allocate will exit gracefully when none remain.
+	var signalCh = make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
 
-	defer func() {
-		if _, err := etcd.Lease.Revoke(ctx, lease.ID); err != nil {
-			log.WithField("err", err).Warn("failed to remove lease")
+	go func() {
+		var sig = <-signalCh
+		log.WithField("signal", sig).Info("caught signal")
+
+		// Write an updated advertisement of our spec, dropping the JournalLimit to zero.
+		cfg.Spec.JournalLimit = 0
+		if err := announcement.Update(context.Background(), cfg.Spec.MarshalString()); err != nil {
+			log.WithField("err", err).Error("failed to update member announcement")
 		}
 	}()
 
-	var ks = newBrokerKeySpace(cfg.Etcd.Root)
-	var localKey = v3_allocator.MemberKey(ks, cfg.Spec.Id.Zone, cfg.Spec.Id.Suffix)
+	dialer, err := client.NewDialer(cfg.Caches.DialerConns)
+	must(err, "failed to create Dialer")
 
+	var state = v3_allocator.NewObservedState(ks, memberKey)
+	var service = broker.NewService(dialer, state)
+
+	must(ks.Load(context.Background(), etcd, announcement.Revision), "failed to load KeySpace")
+
+	go must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
+	go must(serveHTTPGateway(&cfg, httpL, dialer), "gateway http.Serve failed")
+	go must(serveGRPC(&cfg, grpcL, &service), "grpc Serve failed")
+	must(cMux.Serve(), "cMux.Serve failed")
+}
+
+func must(err error, msg string, extra ...interface{}) {
+	if err == nil {
+		return
+	}
+
+	var f = log.Fields{"err": err}
+	for i := 0; i+1 < len(extra); i += 2 {
+		f[extra[i].(string)] = extra[i+1]
+	}
+	log.WithFields(f).Fatal(msg)
+}
+
+/*
 	var advertiseTestJournal = func() {
 		var spec = pb.JournalSpec{
-			Name:             "foo/bar",
-			Replication:      1,
-			FragmentLength:   1 << 16,
-			TransactionSize:  1 << 12,
-			CompressionCodec: pb.CompressionCodec_GZIP,
+			Name:        "foo/bar",
+			Replication: 1,
+			Fragment: pb.JournalSpec_Fragment{
+				Length:           1 << 16,
+				CompressionCodec: pb.CompressionCodec_GZIP,
+				RefreshInterval:  time.Second,
+			},
 			Labels: pb.LabelSet{
 				Labels: []pb.Label{
 					{Name: "label-key", Value: "label-value"},
@@ -155,66 +223,4 @@ func main() {
 	}
 	advertiseTestJournal()
 
-	// Advertise the configured BrokerSpec within Etcd, under our lease.
-	var advertiseSpec = func() {
-		if _, err = etcd.Put(ctx,
-			localKey,
-			cfg.Spec.MarshalString(),
-			clientv3.WithLease(lease.ID),
-		); err != nil {
-			log.WithField("err", err).Fatal("failed to write BrokerSpec to etcd")
-		}
-	}
-	advertiseSpec()
-
-	// Install a signal handler, which will zero our advertised JournalLimit.
-	// Upon seeing this, Allocator will work to discharge all of our assigned
-	// Items, and Serve will exit gracefully when none remain.
-	var signalCh = make(chan os.Signal, 1)
-	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
-
-	go func() {
-		var sig = <-signalCh
-		log.WithField("signal", sig).Info("caught signal")
-
-		// Write an updated advertisement of our spec, dropping the JournalLimit to zero.
-		cfg.Spec.JournalLimit = 0
-		advertiseSpec()
-	}()
-
-	var b = broker.NewRouter(ks, cfg.Spec.Id, etcd)
-
-	var grpcSrv = grpc.NewServer(grpc.KeepaliveParams(cfg.GRPC.KeepAlive))
-	pb.RegisterBrokerServer(grpcSrv, b)
-
-	var httpAPI = broker.NewHTTPGateway(b)
-
-	// Start serving over GRPC.
-	go func() {
-		if err := grpcSrv.Serve(grpcL); err != nil {
-			log.WithField("err", err).Fatal("grpcSrv.Serve failed")
-		}
-	}()
-	// Start serving over HTTP.
-	go func() {
-		if err := http.Serve(httpL, httpAPI); err != nil {
-			log.WithField("err", err).Fatal("http.Serve failed")
-		}
-	}()
-	// Start accepting connections over the listener.
-	go func() {
-		if err := lMux.Serve(); err != nil {
-			log.WithField("err", err).Fatal("lMux.Serve failed")
-		}
-	}()
-
-	var alloc = v3_allocator.Allocator{
-		KeySpace:      ks,
-		LocalKey:      localKey,
-		StateCallback: b.UpdateLocalItems,
-	}
-
-	if err = alloc.Serve(ctx, etcd); err != nil {
-		log.WithField("err", err).Fatal("Allocator.Serve exited with error")
-	}
-}
+*/

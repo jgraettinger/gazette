@@ -44,13 +44,17 @@ func (d Dialer) Dial(ctx context.Context, id pb.BrokerSpec_ID, route pb.Route) (
 	if v, ok := d.cache.Get(id); ok {
 		return v.(*grpc.ClientConn), nil
 	}
+	var conn, err = d.DialEndpoint(ctx, route.Endpoints[ind])
 
-	var conn, err = grpc.DialContext(ctx, route.Endpoints[ind].URL().Host,
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: time.Second * 30}),
-		grpc.WithInsecure(),
-	)
 	if err == nil {
 		d.cache.Add(id, conn)
 	}
 	return conn, err
+}
+
+func (d Dialer) DialEndpoint(ctx context.Context, ep pb.Endpoint) (*grpc.ClientConn, error) {
+	return grpc.DialContext(ctx, ep.URL().Host,
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: time.Second * 30}),
+		grpc.WithInsecure(),
+	)
 }
