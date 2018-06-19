@@ -104,10 +104,13 @@ func (m *AppendResponse) Validate() error {
 		return NewValidationError("expected Header")
 	} else if err = m.Header.Validate(); err != nil {
 		return ExtendContext(err, "Header")
-	} else if m.Commit == nil {
+	} else if m.Status == Status_OK && m.Commit == nil {
 		return NewValidationError("expected Commit")
-	} else if err = m.Commit.Validate(); err != nil {
-		return ExtendContext(err, "Commit")
+	}
+	if m.Commit != nil {
+		if err := m.Commit.Validate(); err != nil {
+			return ExtendContext(err, "Commit")
+		}
 	}
 	return nil
 }

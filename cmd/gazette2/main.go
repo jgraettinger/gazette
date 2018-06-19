@@ -177,7 +177,7 @@ func main() {
 
 	go must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
 	go must(serveHTTPGateway(&cfg, httpL, dialer), "gateway http.Serve failed")
-	go must(serveGRPC(&cfg, grpcL, &service), "grpc Serve failed")
+	go must(serveGRPC(&cfg, grpcL, service), "grpc Serve failed")
 	must(cMux.Serve(), "cMux.Serve failed")
 }
 

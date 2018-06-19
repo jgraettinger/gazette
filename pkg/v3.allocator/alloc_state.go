@@ -41,8 +41,9 @@ type State struct {
 // lock of the parent KeySpace must be obtained before each use.
 func NewObservedState(ks *keyspace.KeySpace, localKey string) *State {
 	var s = &State{
-		KS:       ks,
-		LocalKey: localKey,
+		KS:             ks,
+		LocalKey:       localKey,
+		LocalMemberInd: -1,
 	}
 	ks.Mu.Lock()
 	ks.Observers = append(ks.Observers, s.observe)

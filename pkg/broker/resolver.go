@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
@@ -155,7 +156,12 @@ func (r *resolver) observeKeySpace() {
 			next[name] = replica
 			delete(r.replicas, name)
 		} else {
-			next[name] = newReplica(name)
+			var replica = newReplica(name)
+			next[name] = replica
+
+			go replica.index.WatchStores(func() (*pb.JournalSpec, bool) {
+				return getJournalSpec(r.state.KS, name)
+			})
 		}
 	}
 	var prev = r.replicas
@@ -165,4 +171,14 @@ func (r *resolver) observeKeySpace() {
 		replica.cancel()
 	}
 	return
+}
+
+func getJournalSpec(ks *keyspace.KeySpace, journal pb.Journal) (*pb.JournalSpec, bool) {
+	defer ks.Mu.RUnlock()
+	ks.Mu.RLock()
+
+	if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
+		return item.ItemValue.(*pb.JournalSpec), true
+	}
+	return nil, false
 }
