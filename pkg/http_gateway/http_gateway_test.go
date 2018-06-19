@@ -96,7 +96,7 @@ func (s *HTTPSuite) TestWriteReadResponse(c *gc.C) {
 	c.Check(w.Header(), gc.DeepEquals, http.Header{
 		"Content-Range":            []string{"bytes 1024-9223372036854775807/9223372036854775807"},
 		"Location":                 []string{"http://broker/path/a/journal"},
-		"X-Fragment-Last-Modified": []string{"Sat, 23 May 1970 17:21:18 GMT"},
+		"X-Fragment-Last-Modified": []string{"Sat, 23 May 1970 21:21:18 GMT"},
 		"X-Fragment-Location":      []string{"http://host/path/to/fragment"},
 		"X-Fragment-Name":          []string{"00000000000003e8-00000000000005dc-0000000000002694000000000000000000000000.raw"},
 		"X-Route-Token":            []string{"brokers:<zone:\"a\" suffix:\"broker\" > endpoints:\"http://broker/path\" "},

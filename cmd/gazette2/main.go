@@ -2,12 +2,13 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"strconv"
+	"path"
 	"syscall"
 	"time"
 
@@ -44,7 +45,7 @@ type Config struct {
 		Level string
 	}
 	Etcd struct {
-		Endpoint string        // Address at which to reach Etcd.
+		Endpoint pb.Endpoint   // Address at which to reach Etcd.
 		Root     string        // Root path in Etcd of the service. Eg, "/gazette/cluster".
 		LeaseTTL time.Duration // TTL of established Etcd lease.
 	}
@@ -63,25 +64,88 @@ func (cfg Config) Validate() error {
 	}
 
 	if cfg.Metrics.Port == 0 {
-		return pb.NewValidationError("invalid metrics port: (%d; expected > 0)", cfg.Metrics.Port)
+		return pb.NewValidationError("invalid Metrics.Port: (%d; expected > 0)", cfg.Metrics.Port)
+	} else if cfg.Metrics.Path == "" {
+		return pb.NewValidationError("expected Metrics.Path")
+	} else if cfg.Log.Level == "" {
+		return pb.NewValidationError("expected Log.Level")
+	} else if err := cfg.Etcd.Endpoint.Validate(); err != nil {
+		return pb.ExtendContext(err, "Etcd.Endpoint")
+	} else if !path.IsAbs(cfg.Etcd.Root) {
+		return pb.NewValidationError("Etcd.Root not an absolute path: %s", cfg.Etcd.Root)
+	} else if cfg.Etcd.LeaseTTL <= time.Second {
+		return pb.NewValidationError("invalid Etcd.LeaseTTL (%s; expected >= %s)", cfg.Etcd.LeaseTTL, time.Second)
 	}
 
-	/*
-		if !path.IsAbs(cfg.Service.AllocatorRoot) {
-			return fmt.Errorf("Service.AllocatorRoot not an absolute path: %s", cfg.Service.AllocatorRoot)
-		} else if cfg.Service.RecoveryLogRoot == "" {
-			return fmt.Errorf("Service.RecoveryLogRoot not specified")
-		} else if cfg.Service.Workdir == "" {
-			return fmt.Errorf("Service.Workdir not specified")
-		} else if cfg.Service.LocalRouteKey == "" {
-			return fmt.Errorf("Service.LocalRouteKey not specified")
-		} else if cfg.Etcd.Endpoint == "" {
-			return fmt.Errorf("Etcd.Endpoint not specified")
-		} else if cfg.Gazette.Endpoint == "" {
-			return fmt.Errorf("Gazette.Endpoint not specified")
-		}
-	*/
 	return nil
+}
+
+func main() {
+	defer mainboilerplate.LogPanic()
+
+	var cfg Config
+	mainboilerplate.MustParseConfig(configFile, "gazette-config", &cfg)
+
+	prometheus.MustRegister(metrics.GazetteCollectors()...)
+	mainboilerplate.InitMetrics(fmt.Sprintf(":%d", cfg.Metrics.Port), cfg.Metrics.Path)
+	mainboilerplate.InitLog(cfg.Log.Level)
+
+	var etcd, session = buildEtcdSession(&cfg)
+	defer session.Close()
+
+	// Bind listeners before we advertise our endpoint.
+	var cMux, grpcL, httpL = buildListeners(&cfg)
+
+	var ks = broker.NewKeySpace(cfg.Etcd.Root)
+	var memberKey = v3_allocator.MemberKey(ks, cfg.Spec.Id.Zone, cfg.Spec.Id.Suffix)
+
+	announcement, err := v3_allocator.Announce(context.Background(),
+		etcd, memberKey, cfg.Spec.MarshalString(), session.Lease())
+	must(err, "failed to announce member key", "key", memberKey)
+
+	// Install a signal handler which zeros our advertised JournalLimit.
+	// Upon seeing this, Allocator will work to discharge all of our assigned
+	// Items, and Allocate will exit gracefully when none remain.
+	var signalCh = make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		var sig = <-signalCh
+		log.WithField("signal", sig).Info("caught signal")
+
+		// Write an updated advertisement of our spec, dropping the JournalLimit to zero.
+		cfg.Spec.JournalLimit = 0
+		if err := announcement.Update(context.Background(), cfg.Spec.MarshalString()); err != nil {
+			log.WithField("err", err).Error("failed to update member announcement")
+		}
+	}()
+
+	dialer, err := client.NewDialer(cfg.Caches.DialerConns)
+	must(err, "failed to create Dialer")
+
+	var state = v3_allocator.NewObservedState(ks, memberKey)
+	var service = broker.NewService(dialer, state)
+
+	must(ks.Load(context.Background(), etcd, announcement.Revision), "failed to load KeySpace")
+
+	go func() {
+		must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
+	}()
+	go func() {
+		must(serveHTTPGateway(&cfg, httpL, dialer), "gateway http.Serve failed")
+	}()
+	go func() {
+		must(serveGRPC(&cfg, grpcL, service), "grpc Serve failed")
+	}()
+	go func() {
+		must(cMux.Serve(), "cMux.Serve failed")
+	}()
+
+	v3_allocator.Allocate(v3_allocator.AllocateArgs{
+		Context: context.Background(),
+		Etcd:    etcd,
+		State:   state,
+	})
 }
 
 func buildListeners(cfg *Config) (mux cmux.CMux, grpc, http net.Listener) {
@@ -125,60 +189,6 @@ func serveGRPC(cfg *Config, l net.Listener, srv pb.BrokerServer) error {
 	pb.RegisterBrokerServer(grpcSrv, srv)
 
 	return grpcSrv.Serve(l)
-}
-
-func main() {
-	defer mainboilerplate.LogPanic()
-
-	var cfg Config
-	mainboilerplate.MustParseConfig(configFile, "gazette-config", &cfg)
-
-	prometheus.MustRegister(metrics.GazetteCollectors()...)
-	mainboilerplate.InitMetrics(strconv.Itoa(int(cfg.Metrics.Port)), cfg.Metrics.Path)
-	mainboilerplate.InitLog(cfg.Log.Level)
-
-	var etcd, session = buildEtcdSession(&cfg)
-	defer session.Close()
-
-	// Bind listeners before we advertise our endpoint.
-	var cMux, grpcL, httpL = buildListeners(&cfg)
-
-	var ks = broker.NewKeySpace(cfg.Etcd.Root)
-	var memberKey = v3_allocator.MemberKey(ks, cfg.Spec.Id.Zone, cfg.Spec.Id.Suffix)
-
-	announcement, err := v3_allocator.Announce(context.Background(),
-		etcd, memberKey, cfg.Spec.MarshalString(), session.Lease())
-	must(err, "failed to announce member key", "key", memberKey)
-
-	// Install a signal handler which zeros our advertised JournalLimit.
-	// Upon seeing this, Allocator will work to discharge all of our assigned
-	// Items, and Allocate will exit gracefully when none remain.
-	var signalCh = make(chan os.Signal, 1)
-	signal.Notify(signalCh, syscall.SIGTERM, syscall.SIGINT)
-
-	go func() {
-		var sig = <-signalCh
-		log.WithField("signal", sig).Info("caught signal")
-
-		// Write an updated advertisement of our spec, dropping the JournalLimit to zero.
-		cfg.Spec.JournalLimit = 0
-		if err := announcement.Update(context.Background(), cfg.Spec.MarshalString()); err != nil {
-			log.WithField("err", err).Error("failed to update member announcement")
-		}
-	}()
-
-	dialer, err := client.NewDialer(cfg.Caches.DialerConns)
-	must(err, "failed to create Dialer")
-
-	var state = v3_allocator.NewObservedState(ks, memberKey)
-	var service = broker.NewService(dialer, state)
-
-	must(ks.Load(context.Background(), etcd, announcement.Revision), "failed to load KeySpace")
-
-	go must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
-	go must(serveHTTPGateway(&cfg, httpL, dialer), "gateway http.Serve failed")
-	go must(serveGRPC(&cfg, grpcL, service), "grpc Serve failed")
-	must(cMux.Serve(), "cMux.Serve failed")
 }
 
 func must(err error, msg string, extra ...interface{}) {

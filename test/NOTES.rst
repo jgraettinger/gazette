@@ -1,9 +1,21 @@
 Notes on setting up and testing via Minikube
 ============================================
 
+
+Start minikube::
+  sudo minikube start --vm-driver=none --extra-config=apiserver.authorization-mode=RBAC
+
+Install Tiller::
+  kubectl create serviceaccount -n kube-system tiller
+  kubectl create clusterrolebinding tiller-binding --clusterrole=cluster-admin --serviceaccount kube-system:tiller
+  kubectl create clusterrolebinding fixDNS --clusterrole=cluster-admin --serviceaccount=kube-system:kube-dns
+
+  helm repo update
+  helm init --service-account tiller
+
 Bootstrap an Etcd cluster using `Etcd operator <https://coreos.com/blog/introducing-the-etcd-operator.html)>`_ ::
 
-  helm install stable/etcd-operator --name etcd-operator --set image.tag=v0.6.1
+  helm install stable/etcd-operator --name etcd-operator
   kubectl create -f test/etcd-cluster.yaml
 
 Start ``minio`` to provide an S3-compatible cloud filesystem. Use the following values::

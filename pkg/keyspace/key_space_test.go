@@ -163,9 +163,13 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 		},
 		{
 			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 15},
+			Events: []*clientv3.Event{},
+		},
+		{
+			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 16},
 			Events: []*clientv3.Event{
-				putEvent("/bbbb", "6666", 12, 15, 3),
-				putEvent("/eeee", "7777", 15, 15, 1),
+				putEvent("/bbbb", "6666", 12, 16, 3),
+				putEvent("/eeee", "7777", 16, 16, 1),
 			},
 		},
 	}

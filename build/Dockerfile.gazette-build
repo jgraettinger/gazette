@@ -1,6 +1,6 @@
-FROM liveramp/gazette-base:1.0.0 AS builder
+FROM liveramp/gazette-base:1.1.0 AS builder
 
-ENV DEP_VERSION=v0.3.2
+ENV DEP_VERSION=v0.4.1
 
 RUN curl -fsSL -o /usr/local/bin/dep \
     https://github.com/golang/dep/releases/download/${DEP_VERSION}/dep-linux-amd64 \

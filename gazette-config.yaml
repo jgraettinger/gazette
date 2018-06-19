@@ -1,0 +1,26 @@
+spec:
+  id:
+    Zone: local-zone
+    Suffix: broker-name
+  journalLimit: 100
+  endpoint: http://localhost:8080
+
+metrics:
+  port: 9000
+  path: /metrics
+log:
+  level: info
+
+etcd:
+  endpoint: http://10.97.101.189:2379
+  root: /gazette/cluster
+  leaseTTL: 10s
+
+grpc:
+  keepAlive:
+    maxConnectionIdle: 20s
+    time: 10s
+
+caches:
+  dialerConns: 10
+  httpGatewayRoutes: 10

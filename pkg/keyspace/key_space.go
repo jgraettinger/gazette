@@ -177,7 +177,9 @@ func (ks *KeySpace) WaitForRevision(ctx context.Context, revision int64) error {
 func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
 	var hdr etcdserverpb.ResponseHeader
 
-	for _, r := range responses {
+	for i := 0; i != len(responses); {
+		var r = responses[i]
+
 		if err := patchHeader(&hdr, r.Header, false); err != nil {
 			return err
 		}
@@ -185,7 +187,15 @@ func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
 		sort.Slice(r.Events, func(i, j int) bool {
 			return bytes.Compare(r.Events[i].Kv.Key, r.Events[j].Kv.Key) < 0
 		})
+
+		if len(r.Events) == 0 {
+			copy(responses[i:], responses[i+1:])
+			responses = responses[:len(responses)-1]
+		} else {
+			i++
+		}
 	}
+
 	// Heap WatchResponses on (Key, ModRevision) order of the first response Event.
 	var responseHeap = watchResponseHeap(responses)
 	heap.Init(&responseHeap)

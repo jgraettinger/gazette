@@ -69,7 +69,11 @@ func InitLog(level string) {
 // InitMetrics enables serving of metrics over the given port and path.
 func InitMetrics(port, path string) {
 	http.Handle(path, promhttp.Handler())
-	go http.ListenAndServe(port, nil)
+	go func() {
+		if err := http.ListenAndServe(port, nil); err != nil {
+			log.WithField("err", err).Fatal("failed to serve debug port")
+		}
+	}()
 }
 
 // LogPanic is intended to be a deferred call to log a panic at the end of the
