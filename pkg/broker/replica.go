@@ -38,7 +38,7 @@ func newReplica(journal pb.Journal) *replica {
 	r.spoolCh <- fragment.NewSpool(journal, struct {
 		*fragment.Index
 		*fragment.Persister
-	}{r.index, nil})
+	}{r.index, sharedPersister})
 
 	r.pipelineCh <- nil
 
@@ -143,46 +143,6 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer clie
 	return pln, 0, nil
 }
 
-/*
-	go r.index.WatchStores(func() (spec *pb.JournalSpec, ok bool) {
-		ks.Mu.RLock()
-		defer ks.Mu.RUnlock()
+var sharedPersister *fragment.Persister
 
-		if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
-			return item.ItemValue.(*pb.JournalSpec), true
-		}
-		return nil, false
-	})
-*/
-
-/*
-func (r *replica) maybeUpdateAssignmentRoute(etcd *clientv3.Client) {
-	// |announced| is the Route currently recorded by this replica's Assignment.
-	var announced = r.assignment.Decoded.(v3_allocator.Assignment).AssignmentValue.(*pb.Route)
-
-	if r.route.Equivalent(announced) {
-		return
-	}
-
-	// Copy |r.route|, stripping Endpoints (not required, but they're superfluous here).
-	var next = r.route.Copy()
-	next.Endpoints = nil
-
-	// Attempt to update the current Assignment value. Two update attempts can
-	// potentially race, if write transactions occur in close sequence and before
-	// the local KeySpace is updated.
-	go func(etcd *clientv3.Client, kv keyspace.KeyValue, next string) {
-		var key = string(kv.Raw.Key)
-
-		var _, err = etcd.Txn(context.Background()).If(
-			clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision),
-		).Then(
-			clientv3.OpPut(key, next, clientv3.WithIgnoreLease()),
-		).Commit()
-
-		if err != nil {
-			log.WithFields(log.Fields{"err": err, "key": key}).Warn("failed to update Assignment Route")
-		}
-	}(etcd, r.assignment, next.MarshalString())
-}
-*/
+func SetSharedPersister(p *fragment.Persister) { sharedPersister = p }

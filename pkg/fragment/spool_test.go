@@ -67,9 +67,10 @@ func (s *SpoolSuite) TestRejectRollBeforeCurrentEnd(c *gc.C) {
 	// Expect offsets prior to the current End (28) fail.
 	var resp, err = spool.Apply(&pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   17 + 11 - 1,
-			End:     17 + 11 - 1,
+			Journal:          "a/journal",
+			Begin:            17 + 11 - 1,
+			End:              17 + 11 - 1,
+			CompressionCodec: pb.CompressionCodec_NONE,
 		}})
 
 	c.Check(resp, gc.DeepEquals, pb.ReplicateResponse{
@@ -81,9 +82,10 @@ func (s *SpoolSuite) TestRejectRollBeforeCurrentEnd(c *gc.C) {
 	// Expect offsets beyond the current End succeed.
 	resp, err = spool.Apply(&pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   17 + 11 + 1,
-			End:     17 + 11 + 1,
+			Journal:          "a/journal",
+			Begin:            17 + 11 + 1,
+			End:              17 + 11 + 1,
+			CompressionCodec: pb.CompressionCodec_NONE,
 		}})
 	c.Check(resp, gc.DeepEquals, pb.ReplicateResponse{Status: pb.Status_OK})
 	c.Check(err, gc.IsNil)
@@ -100,10 +102,11 @@ func (s *SpoolSuite) TestRejectNextMismatch(c *gc.C) {
 	// Incorrect End offset.
 	resp, err = spool.Apply(&pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     5,
-			Sum:     pb.SHA1Sum{Part1: 0x8843d7f92416211d, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              5,
+			Sum:              pb.SHA1Sum{Part1: 0x8843d7f92416211d, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+			CompressionCodec: pb.CompressionCodec_NONE,
 		}})
 
 	c.Check(resp, gc.DeepEquals, pb.ReplicateResponse{
@@ -115,10 +118,11 @@ func (s *SpoolSuite) TestRejectNextMismatch(c *gc.C) {
 	// Incorrect SHA1 Sum.
 	resp, err = spool.Apply(&pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     6,
-			Sum:     pb.SHA1Sum{Part1: 0xFFFFFFFFFFFFFFFF, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              6,
+			Sum:              pb.SHA1Sum{Part1: 0xFFFFFFFFFFFFFFFF, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+			CompressionCodec: pb.CompressionCodec_NONE,
 		}})
 
 	c.Check(resp, gc.DeepEquals, pb.ReplicateResponse{
@@ -130,10 +134,11 @@ func (s *SpoolSuite) TestRejectNextMismatch(c *gc.C) {
 	// Correct Next Fragment.
 	resp, err = spool.Apply(&pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     6,
-			Sum:     pb.SHA1Sum{Part1: 0x8843d7f92416211d, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              6,
+			Sum:              pb.SHA1Sum{Part1: 0x8843d7f92416211d, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+			CompressionCodec: pb.CompressionCodec_NONE,
 		}})
 
 	c.Check(resp, gc.DeepEquals, pb.ReplicateResponse{Status: pb.Status_OK})

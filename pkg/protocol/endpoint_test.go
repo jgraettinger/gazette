@@ -13,9 +13,8 @@ func (s *EndpointSuite) TestValidation(c *gc.C) {
 	}{
 		{"http://host:port/path?query", ""}, // Success.
 		{":garbage: :garbage:", "parse .* missing protocol scheme"},
-		{"foobar://baz", "invalid scheme: foobar"},
 		{"/baz/bing", "not absolute: .*"},
-		{"http:///baz/bing", "http scheme missing host: .*"},
+		{"http:///baz/bing", "missing host: .*"},
 	}
 	for _, tc := range cases {
 		if tc.expect == "" {

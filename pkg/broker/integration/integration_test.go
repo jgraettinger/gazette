@@ -26,7 +26,7 @@ func (s *IntegrationSuite) TestBasicReadAndWrite(c *gc.C) {
 
 	var etcd, session = etcdSession(c)
 
-	var ks = broker.NewKeySpace("/gazette/cluster")
+	var ks = pb.NewKeySpace("/gazette/cluster")
 	c.Check(ks.Load(ctx, etcd, 0), gc.IsNil)
 	go ks.Watch(ctx, etcd)
 
@@ -138,7 +138,7 @@ func createTestJournal(c *gc.C, ks *keyspace.KeySpace, etcd *clientv3.Client) pb
 			CompressionCodec: pb.CompressionCodec_GZIP,
 			RefreshInterval:  time.Second,
 		},
-		Labels: pb.LabelSet{
+		LabelSet: pb.LabelSet{
 			Labels: []pb.Label{
 				{Name: "label-key", Value: "label-value"},
 				{Name: "topic", Value: "foo"},

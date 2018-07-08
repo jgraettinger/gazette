@@ -35,15 +35,7 @@ func (a *Appender) Write(p []byte) (n int, err error) {
 	}
 
 	// Lazy initialization: begin the Append RPC.
-	if a.stream == nil {
-		a.stream, err = a.client.Append(WithJournalHint(a.ctx, a.Request.Journal))
-
-		if err == nil {
-			err = a.stream.SendMsg(&a.Request)
-		}
-	}
-
-	if err != nil {
+	if err = a.lazyInit(); err != nil {
 		// Pass.
 	} else if err = a.stream.SendMsg(&pb.AppendRequest{Content: p}); err != nil {
 		// Pass.
@@ -63,8 +55,10 @@ func (a *Appender) Write(p []byte) (n int, err error) {
 // written content. If Close returns without an error, Append.Response
 // will hold the broker response.
 func (a *Appender) Close() (err error) {
-	// Send an empty chunk to signal commit of previously written content.
-	if err = a.stream.SendMsg(&pb.AppendRequest{}); err != nil {
+	// Send an empty chunk to signal commit of previously written content
+	if err = a.lazyInit(); err != nil {
+		return
+	} else if err = a.stream.SendMsg(new(pb.AppendRequest)); err != nil {
 		// Pass.
 	} else if err = a.stream.CloseSend(); err != nil {
 		// Pass.
@@ -88,6 +82,19 @@ func (a *Appender) Close() (err error) {
 
 // Abort the write, causing the broker to discard previously written content.
 func (a *Appender) Abort() {
-	// Abort is implied by sending EOF without a preceding empty chunk.
-	_, _ = a.stream.CloseAndRecv()
+	if a.stream != nil {
+		// Abort is implied by sending EOF without a preceding empty chunk.
+		_, _ = a.stream.CloseAndRecv()
+	}
+}
+
+func (a *Appender) lazyInit() (err error) {
+	if a.stream == nil {
+		a.stream, err = a.client.Append(WithJournalHint(a.ctx, a.Request.Journal))
+
+		if err == nil {
+			err = a.stream.SendMsg(&a.Request)
+		}
+	}
+	return
 }

@@ -145,9 +145,14 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 	var pln = rm.newPipeline(rm.header(0, 100))
 
 	var req = &pb.ReplicateRequest{
-		Header:      rm.header(1, 100),
-		Journal:     "a/journal",
-		Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 123, End: 123},
+		Header:  rm.header(1, 100),
+		Journal: "a/journal",
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            123,
+			End:              123,
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 		Acknowledge: true,
 	}
 	pln.scatter(req)
@@ -179,7 +184,12 @@ func (s *PipelineSuite) TestGatherSyncCases(c *gc.C) {
 	c.Check(pln.sendErr(), gc.IsNil)
 
 	// Again. This time peers return success.
-	req.Proposal = &pb.Fragment{Journal: "a/journal", Begin: 890, End: 890}
+	req.Proposal = &pb.Fragment{
+		Journal:          "a/journal",
+		Begin:            890,
+		End:              890,
+		CompressionCodec: pb.CompressionCodec_NONE,
+	}
 	pln.scatter(req)
 
 	_, _ = <-rm.brokerA.ReplReqCh, <-rm.brokerC.ReplReqCh
@@ -231,9 +241,15 @@ func (s *PipelineSuite) TestPipelineSync(c *gc.C) {
 	go func() {
 		// Read sync request.
 		c.Check(<-rm.brokerA.ReplReqCh, gc.DeepEquals, &pb.ReplicateRequest{
-			Journal:     "a/journal",
-			Header:      rm.header(0, 100),
-			Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 0, End: 123, Sum: pb.SHA1Sum{Part1: 999}},
+			Journal: "a/journal",
+			Header:  rm.header(0, 100),
+			Proposal: &pb.Fragment{
+				Journal:          "a/journal",
+				Begin:            0,
+				End:              123,
+				Sum:              pb.SHA1Sum{Part1: 999},
+				CompressionCodec: pb.CompressionCodec_NONE,
+			},
 			Acknowledge: true,
 		})
 		_ = <-rm.brokerC.ReplReqCh
@@ -250,9 +266,14 @@ func (s *PipelineSuite) TestPipelineSync(c *gc.C) {
 
 		// Next iteration. Expect proposal is updated to reflect largest offset.
 		c.Check(<-rm.brokerA.ReplReqCh, gc.DeepEquals, &pb.ReplicateRequest{
-			Journal:     "a/journal",
-			Header:      rm.header(0, 100),
-			Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 892, End: 892},
+			Journal: "a/journal",
+			Header:  rm.header(0, 100),
+			Proposal: &pb.Fragment{
+				Journal:          "a/journal",
+				Begin:            892,
+				End:              892,
+				CompressionCodec: pb.CompressionCodec_NONE,
+			},
 			Acknowledge: true,
 		})
 		_ = <-rm.brokerC.ReplReqCh

@@ -20,7 +20,8 @@ func (s *ReplicaSuite) TestSpoolAcquisition(c *gc.C) {
 	var spool, err = acquireSpool(ctx, r, false)
 	c.Check(err, gc.IsNil)
 	c.Check(spool.Fragment.Fragment, gc.DeepEquals, pb.Fragment{
-		Journal: "foobar",
+		Journal:          "foobar",
+		CompressionCodec: pb.CompressionCodec_NONE,
 	})
 
 	// A next attempt to acquire the Spool will block until the current instance is returned.
@@ -35,10 +36,11 @@ func (s *ReplicaSuite) TestSpoolAcquisition(c *gc.C) {
 	c.Check(err, gc.IsNil)
 
 	c.Check(spool.Fragment.Fragment, gc.DeepEquals, pb.Fragment{
-		Journal: "foobar",
-		Begin:   8,
-		End:     8,
-		Sum:     pb.SHA1Sum{Part1: 01234},
+		Journal:          "foobar",
+		Begin:            8,
+		End:              8,
+		Sum:              pb.SHA1Sum{Part1: 01234},
+		CompressionCodec: pb.CompressionCodec_NONE,
 	})
 	r.spoolCh <- spool
 
@@ -48,9 +50,10 @@ func (s *ReplicaSuite) TestSpoolAcquisition(c *gc.C) {
 	go func() {
 		var set, _ = fragment.Set{}.Add(fragment.Fragment{
 			Fragment: pb.Fragment{
-				Journal: "foobar",
-				Begin:   10,
-				End:     20,
+				Journal:          "foobar",
+				Begin:            10,
+				End:              20,
+				CompressionCodec: pb.CompressionCodec_NONE,
 			},
 		})
 		r.index.ReplaceRemote(set)
@@ -60,9 +63,10 @@ func (s *ReplicaSuite) TestSpoolAcquisition(c *gc.C) {
 	c.Check(err, gc.IsNil)
 
 	c.Check(spool.Fragment.Fragment, gc.DeepEquals, pb.Fragment{
-		Journal: "foobar",
-		Begin:   20,
-		End:     20,
+		Journal:          "foobar",
+		Begin:            20,
+		End:              20,
+		CompressionCodec: pb.CompressionCodec_NONE,
 	})
 
 	// Note |spool| is not returned. Cancel |ctx| in the background.
@@ -76,7 +80,7 @@ func (s *ReplicaSuite) TestPipelineAcquisition(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 	var dialer, _ = client.NewDialer(8)

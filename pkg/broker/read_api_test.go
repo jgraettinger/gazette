@@ -22,7 +22,7 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 	defer func(cs int) { chunkSize = cs }(chunkSize)
 	chunkSize = 5
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 
 	newTestJournal(c, ks, "a/journal", 2, broker.id)
@@ -49,10 +49,11 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 		Offset:    0,
 		WriteHead: 9,
 		Fragment: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     9,
-			Sum:     pb.SHA1SumOf("foobarbaz"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              9,
+			Sum:              pb.SHA1SumOf("foobarbaz"),
+			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 	})
 	expectReadResponse(c, stream, &pb.ReadResponse{
@@ -76,10 +77,11 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 		Offset:    9,
 		WriteHead: 13,
 		Fragment: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     13,
-			Sum:     pb.SHA1SumOf("foobarbazbing"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              13,
+			Sum:              pb.SHA1SumOf("foobarbazbing"),
+			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 	})
 	expectReadResponse(c, stream, &pb.ReadResponse{
@@ -97,7 +99,7 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 
 	newTestJournal(c, ks, "a/journal", 2, broker.id)
@@ -123,10 +125,11 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 		Offset:    3,
 		WriteHead: 8,
 		Fragment: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     8,
-			Sum:     pb.SHA1SumOf("feedbeef"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              8,
+			Sum:              pb.SHA1SumOf("feedbeef"),
+			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 	})
 	expectReadResponse(c, stream, &pb.ReadResponse{
@@ -163,10 +166,11 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 		Offset:    8,
 		WriteHead: 12,
 		Fragment: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     12,
-			Sum:     pb.SHA1SumOf("feedbeefbing"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              12,
+			Sum:              pb.SHA1SumOf("feedbeefbing"),
+			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 	})
 
@@ -179,7 +183,7 @@ func (s *ReadSuite) TestProxyCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 

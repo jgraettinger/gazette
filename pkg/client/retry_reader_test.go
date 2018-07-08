@@ -6,12 +6,11 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
-	"time"
 
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
+	gc "github.com/go-check/check"
 
 	"github.com/LiveRamp/gazette/pkg/broker/teststub"
-	gc "github.com/go-check/check"
 )
 
 type RetrySuite struct{}
@@ -35,7 +34,7 @@ func (s *RetrySuite) TestReaderRetries(c *gc.C) {
 		readFixture{content: "next read"},
 		readFixture{status: pb.Status_OFFSET_NOT_YET_AVAILABLE},
 
-		readFixture{content: "canceled read"},
+		readFixture{content: "xxxxyyyy"},
 	)
 
 	// Expect reads are retried through OFFSET_NOT_YET_AVAILABLE, which is surfaced to the caller.
@@ -51,12 +50,12 @@ func (s *RetrySuite) TestReaderRetries(c *gc.C) {
 	c.Check(rr.Offset(), gc.Equals, int64(100+13+9))
 
 	// Next read consumes some content, and is then canceled.
-	time.AfterFunc(time.Millisecond, rr.Cancel)
+	rr.Read(nil) // Prime first half of next read.
+	rr.Cancel()
 
 	b, err = ioutil.ReadAll(rr)
-	c.Check(string(b), gc.Equals, "canceled read")
+	c.Check(b, gc.Not(gc.HasLen), 0)
 	c.Check(err, gc.Equals, context.Canceled)
-	c.Check(rr.Offset(), gc.Equals, int64(100+13+9+13))
 }
 
 func (s *RetrySuite) TestSeeking(c *gc.C) {

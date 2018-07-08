@@ -13,6 +13,7 @@ import (
 
 	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	etcd "github.com/coreos/etcd/client"
+	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -87,6 +88,22 @@ func etcdClient() etcd.Client {
 		}
 	}
 	return lazyEtcdClient
+}
+
+func etcd3Client() *clientv3.Client {
+	if lazyEtcd3Client == nil {
+		var ep = viper.GetString("etcd.endpoint")
+		if ep == "" {
+			log.Fatal("etcd.endpoint not provided")
+		}
+
+		var err error
+		lazyEtcd3Client, err = clientv3.NewFromURL(ep)
+		if err != nil {
+			log.WithField("err", err).Fatal("building etcd3 client")
+		}
+	}
+	return lazyEtcd3Client
 }
 
 func gazetteClient() *gazette.Client {
@@ -203,6 +220,7 @@ var (
 	lazyCFS            cloudstore.FileSystem
 	lazyConsumerPlugin consumer.Consumer
 	lazyEtcdClient     etcd.Client
+	lazyEtcd3Client    *clientv3.Client
 	lazyGazetteClient  *gazette.Client
 	lazyWriteService   *gazette.WriteService
 

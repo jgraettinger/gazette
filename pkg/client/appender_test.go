@@ -32,7 +32,13 @@ func (s *AppenderSuite) TestCommitSuccess(c *gc.C) {
 		broker.AppendRespCh <- &pb.AppendResponse{
 			Status: pb.Status_OK,
 			Header: headerFixture,
-			Commit: &pb.Fragment{Journal: "a/journal", Begin: 100, End: 106, Sum: pb.SHA1SumOf("foobar")},
+			Commit: &pb.Fragment{
+				Journal:          "a/journal",
+				Begin:            100,
+				End:              106,
+				Sum:              pb.SHA1SumOf("foobar"),
+				CompressionCodec: pb.CompressionCodec_NONE,
+			},
 		}
 		broker.ErrCh <- nil
 	}()
@@ -119,7 +125,10 @@ func (s *AppenderSuite) TestBrokerCommitError(c *gc.C) {
 				broker.AppendRespCh <- &pb.AppendResponse{
 					Status: pb.Status_NOT_JOURNAL_PRIMARY_BROKER,
 					Header: headerFixture,
-					Commit: &pb.Fragment{Journal: "a/journal"},
+					Commit: &pb.Fragment{
+						Journal:          "a/journal",
+						CompressionCodec: pb.CompressionCodec_NONE,
+					},
 				}
 			},
 			err: `NOT_JOURNAL_PRIMARY_BROKER`,

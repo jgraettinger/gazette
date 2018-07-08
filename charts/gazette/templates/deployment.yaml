@@ -20,6 +20,9 @@ spec:
       volumes:
       - name: scratch
         emptyDir: {}
+      - name: config-volume
+        configMap:
+          name: {{ template "gazette.fullname" . }}
       containers:
       - name: {{ .Chart.Name }}
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -30,9 +33,8 @@ spec:
         - containerPort: {{ .Values.service.monitoringPort }}
           name: monitoring
         args: [
-          "/usr/local/bin/gazette",
-          "-cloudFS", "{{ .Values.cloudFS }}",
-          "-replicaCount", "2",
+          "/go/bin/gazette2",
+          "-config", "/etc/config/config.yaml",
         ]
         env:
         - name: RW_DIRECTORIES
@@ -46,9 +48,17 @@ spec:
           value: {{ .Values.aws.secretKey }}
         - name: AWS_DEFAULT_REGION
           value: {{ .Values.aws.defaultRegion }}
-        - name: ETCD_SERVICE_ENDPOINT
-          value: {{ .Values.etcd }}
         {{ end }}
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: SPEC_ID_SUFFIX
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: SPEC_ENDPOINT
+          value: "http://$(POD_IP):{{ .Values.service.port }}"
 #        livenessProbe:
 #          httpGet:
 #            path: /
@@ -62,6 +72,8 @@ spec:
         volumeMounts:
         - mountPath: /var/tmp
           name: scratch
+        - mountPath: /etc/config
+          name: config-volume
 {{- if .Values.podAntiAffinity }}
       affinity:
         podAntiAffinity:

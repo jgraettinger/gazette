@@ -98,7 +98,7 @@ func (s *HTTPSuite) TestWriteReadResponse(c *gc.C) {
 		"Location":                 []string{"http://broker/path/a/journal"},
 		"X-Fragment-Last-Modified": []string{"Sat, 23 May 1970 21:21:18 GMT"},
 		"X-Fragment-Location":      []string{"http://host/path/to/fragment"},
-		"X-Fragment-Name":          []string{"00000000000003e8-00000000000005dc-0000000000002694000000000000000000000000.raw"},
+		"X-Fragment-Name":          []string{"00000000000003e8-00000000000005dc-0000000000002694000000000000000000000000.sz"},
 		"X-Route-Token":            []string{"brokers:<zone:\"a\" suffix:\"broker\" > endpoints:\"http://broker/path\" "},
 		"X-Write-Head":             []string{"2048"},
 	})
@@ -189,11 +189,12 @@ var (
 		Offset:    1024,
 		WriteHead: 2048,
 		Fragment: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   1000,
-			End:     1500,
-			Sum:     pb.SHA1Sum{Part1: 9876},
-			ModTime: time.Unix(12345678, 0),
+			Journal:          "a/journal",
+			Begin:            1000,
+			End:              1500,
+			Sum:              pb.SHA1Sum{Part1: 9876},
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
+			ModTime:          time.Unix(12345678, 0),
 		},
 		FragmentUrl: "http://host/path/to/fragment",
 	}
@@ -210,10 +211,11 @@ var (
 			Etcd: pb.Header_Etcd{ClusterId: 12, MemberId: 34, Revision: 56, RaftTerm: 78},
 		},
 		Commit: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   100,
-			End:     200,
-			Sum:     pb.SHA1Sum{Part1: 9876},
+			Journal:          "a/journal",
+			Begin:            100,
+			End:              200,
+			Sum:              pb.SHA1Sum{Part1: 9876},
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 	}
 )

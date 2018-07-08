@@ -15,7 +15,7 @@ func (s *E2ESuite) TestReplicatedAppendAndRead(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 

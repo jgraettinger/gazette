@@ -53,6 +53,16 @@ func (kv KeyValues) Prefixed(prefix string) KeyValues {
 	return kv.Range(prefix, clientv3.GetPrefixRangeEnd(prefix))
 }
 
+// Copy returns a deep-copy of the KeyValues.
+func (kv KeyValues) Copy() KeyValues {
+	var out = make(KeyValues, len(kv))
+
+	for i, kv := range kv {
+		out[i] = kv
+	}
+	return out
+}
+
 // appendKeyValue attempts to decode and append the KeyValue to this KeyValues,
 // or returns a decoding error. The appended KeyValue must order after all other
 // keys, or appendKeyValue panics.

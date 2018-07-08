@@ -9,7 +9,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Persister
 type Persister struct {
 	qA, qB, qC []Spool
 	mu         sync.Mutex

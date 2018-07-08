@@ -92,6 +92,8 @@ func (m *AppendRequest) Validate() error {
 		}
 	} else if m.Header != nil {
 		return NewValidationError("unexpected Header")
+	} else if m.DoNotProxy {
+		return NewValidationError("unexpected DoNotProxy")
 	}
 	return nil
 }

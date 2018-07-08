@@ -15,7 +15,7 @@ func (s *ReplicateSuite) TestStreamAndCommit(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -25,9 +25,12 @@ func (s *ReplicateSuite) TestStreamAndCommit(c *gc.C) {
 
 	// Initial sync.
 	c.Check(stream.Send(&pb.ReplicateRequest{
-		Journal:     "a/journal",
-		Header:      &res.Header,
-		Proposal:    &pb.Fragment{Journal: "a/journal"},
+		Journal: "a/journal",
+		Header:  &res.Header,
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 		Acknowledge: true,
 	}), gc.IsNil)
 	expectReplResponse(c, stream, &pb.ReplicateResponse{Status: pb.Status_OK})
@@ -42,10 +45,11 @@ func (s *ReplicateSuite) TestStreamAndCommit(c *gc.C) {
 	// Commit.
 	c.Check(stream.Send(&pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     13,
-			Sum:     pb.SHA1SumOf("foobarbazbing"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              13,
+			Sum:              pb.SHA1SumOf("foobarbazbing"),
+			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 		Acknowledge: true,
 	}), gc.IsNil)
@@ -64,7 +68,7 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -73,9 +77,12 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 	var res, _ = broker.resolve(resolveArgs{ctx: ctx, journal: "does/not/exist"})
 
 	c.Check(stream.Send(&pb.ReplicateRequest{
-		Journal:     "does/not/exist",
-		Header:      &res.Header,
-		Proposal:    &pb.Fragment{Journal: "does/not/exist"},
+		Journal: "does/not/exist",
+		Header:  &res.Header,
+		Proposal: &pb.Fragment{
+			Journal:          "does/not/exist",
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 		Acknowledge: true,
 	}), gc.IsNil)
 
@@ -98,9 +105,12 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 	hdr.Etcd.Revision -= 1
 
 	c.Check(stream.Send(&pb.ReplicateRequest{
-		Journal:     "a/journal",
-		Header:      &hdr,
-		Proposal:    &pb.Fragment{Journal: "a/journal"},
+		Journal: "a/journal",
+		Header:  &hdr,
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 		Acknowledge: true,
 	}), gc.IsNil)
 
@@ -117,22 +127,35 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 	stream, _ = broker.MustClient().Replicate(ctx)
 
 	c.Check(stream.Send(&pb.ReplicateRequest{
-		Journal:     "a/journal",
-		Header:      &res.Header,
-		Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 1234, End: 5678},
+		Journal: "a/journal",
+		Header:  &res.Header,
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            1234,
+			End:              5678,
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 		Acknowledge: true,
 	}), gc.IsNil)
 
 	expectReplResponse(c, stream, &pb.ReplicateResponse{
-		Status:   pb.Status_FRAGMENT_MISMATCH,
-		Fragment: &pb.Fragment{Journal: "a/journal"},
+		Status: pb.Status_FRAGMENT_MISMATCH,
+		Fragment: &pb.Fragment{
+			Journal:          "a/journal",
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 	})
 
 	// |stream| remains open.
 
 	// Case: proposal is made without Acknowledge set, and fails to apply.
 	c.Check(stream.Send(&pb.ReplicateRequest{
-		Proposal:    &pb.Fragment{Journal: "a/journal", Begin: 1234, End: 5678},
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            1234,
+			End:              5678,
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 		Acknowledge: false,
 	}), gc.IsNil)
 

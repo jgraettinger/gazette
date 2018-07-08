@@ -86,6 +86,14 @@ func (s *KeyValuesSuite) TestPrefixCases(c *gc.C) {
 	}
 }
 
+func (s *KeyValuesSuite) TestCopy(c *gc.C) {
+	var kv = buildKeyValuesFixture(c)
+	var ckv = kv.Copy()
+
+	c.Check(kv, gc.DeepEquals, ckv)
+	c.Check(&kv[0], gc.Not(gc.Equals), &ckv[0])
+}
+
 func (s *KeyValuesSuite) TestUpdateTailCases(c *gc.C) {
 	var kv KeyValues
 

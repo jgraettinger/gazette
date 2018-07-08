@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+  name: {{ template "gazette.fullname" . }}
+data:
+  config.yaml: |
+    # YAML Configuration of the `gazette` service.
+
+    spec:
+      id: # Composite unique ID of this broker.
+        zone: {{ .Values.zone }} # Failure zone of the broker.
+        # Unique suffix of the broker. Typically, the pod name.
+        suffix:  # Provided by environment.
+      # Advertised endpoint URL of the broker, eg "gazette://host:port"
+      endpoint:  # Provided by environment.
+      # Advertised number of journals this broker may be assigned.
+      journalLimit: {{ .Values.journalLimit }}
+
+    metrics:
+      # Non-service port over which metrics, pprof, and other debugging is served.
+      port: {{ .Values.service.monitoringPort }}
+      path: /metrics
+    # Broker logging configuration.
+    log:
+      level: info
+    # Etcd client configuration.
+    etcd:
+      # Endpoint at which Etcd may be reached.
+      endpoint: "{{ .Values.etcd }}"
+      # Etcd prefix which roots the gazette cluster KeySpace.
+      root: /gazette/cluster
+      # Duration of the Etcd client lease which the broker should maintain.
+      # Smaller values require more Etcd lease update overhead, but ensures the
+      # cluster reacts quickly to failed brokers.
+      leaseTTL: "5m"
+    grpc:
+      # gRPC KeepAlive
+      keepalive:
+        time: "5m"
+    caches:
+      dialerConns: 100
+      httpGatewayRoutes: 100

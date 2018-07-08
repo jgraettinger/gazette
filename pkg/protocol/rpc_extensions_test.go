@@ -101,9 +101,10 @@ func (s *RPCSuite) TestReadResponseValidationCases(c *gc.C) {
 
 func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
 	var req = AppendRequest{
-		Header:  badHeaderFixture(),
-		Journal: "/bad",
-		Content: []byte("foo"),
+		Header:     badHeaderFixture(),
+		Journal:    "/bad",
+		DoNotProxy: true,
+		Content:    []byte("foo"),
 	}
 
 	c.Check(req.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
@@ -120,6 +121,8 @@ func (s *RPCSuite) TestAppendRequestValidationCases(c *gc.C) {
 
 	c.Check(req.Validate(), gc.ErrorMatches, `unexpected Header`)
 	req.Header = nil
+	c.Check(req.Validate(), gc.ErrorMatches, `unexpected DoNotProxy`)
+	req.DoNotProxy = false
 
 	c.Check(req.Validate(), gc.IsNil)
 
@@ -139,7 +142,7 @@ func (s *RPCSuite) TestAppendResponseValidationCases(c *gc.C) {
 	c.Check(resp.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
 	resp.Header.Etcd.ClusterId = 12
 	c.Check(resp.Validate(), gc.ErrorMatches, `expected Commit`)
-	resp.Commit = &Fragment{Journal: "/bad/name"}
+	resp.Commit = &Fragment{Journal: "/bad/name", CompressionCodec: CompressionCodec_NONE}
 	c.Check(resp.Validate(), gc.ErrorMatches, `Commit.Journal: cannot begin with '/' \(/bad/name\)`)
 	resp.Commit.Journal = "good/name"
 
@@ -161,7 +164,7 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 	c.Check(req.Validate(), gc.ErrorMatches, `Header.Etcd: invalid ClusterId .*`)
 	req.Header.Etcd.ClusterId = 12
 	c.Check(req.Validate(), gc.ErrorMatches, `expected Proposal with Journal`)
-	req.Proposal = &Fragment{Journal: "/bad/name"}
+	req.Proposal = &Fragment{Journal: "/bad/name", CompressionCodec: CompressionCodec_NONE}
 	c.Check(req.Validate(), gc.ErrorMatches, `Proposal.Journal: cannot begin with '/' \(/bad/name\)`)
 	req.Proposal.Journal = "other/journal"
 	c.Check(req.Validate(), gc.ErrorMatches, `Journal and Proposal.Journal mismatch \(journal vs other/journal\)`)
@@ -209,7 +212,7 @@ func (s *RPCSuite) TestReplicateRequestValidationCases(c *gc.C) {
 }
 
 func (s *RPCSuite) TestReplicateResponseValidationCases(c *gc.C) {
-	var frag = &Fragment{Journal: "/bad/name"}
+	var frag = &Fragment{Journal: "/bad/name", CompressionCodec: CompressionCodec_NONE}
 
 	var resp = ReplicateResponse{
 		Status:   9101,

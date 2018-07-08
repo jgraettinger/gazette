@@ -19,10 +19,6 @@ func newResolver(state *v3_allocator.State) *resolver {
 		state:    state,
 		replicas: make(map[pb.Journal]*replica),
 	}
-	state.KS.Mu.Lock()
-	state.KS.Observers = append(state.KS.Observers, r.observeKeySpace)
-	state.KS.Mu.Unlock()
-
 	return r
 }
 
@@ -144,26 +140,35 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	return
 }
 
-// observeKeySpace, by virtue of being a KeySpace.Observer, expects that the
-// KeySpace.Mu Lock is held.
-func (r *resolver) observeKeySpace() {
+func (r *resolver) updateResolutions(
+	onNewReplica func(pb.Journal, *replica),
+	onInconsistentPrimary func(pb.Journal, keyspace.KeyValues),
+) {
 	var next = make(map[pb.Journal]*replica, len(r.state.LocalItems))
 
 	for _, li := range r.state.LocalItems {
-		var name = pb.Journal(li.Item.Decoded.(v3_allocator.Item).ID)
+		var item = li.Item.Decoded.(v3_allocator.Item)
+		var assignment = li.Assignments[li.Index].Decoded.(v3_allocator.Assignment)
+		var name = pb.Journal(item.ID)
 
-		if replica, ok := r.replicas[name]; ok {
+		var replica *replica
+		var ok bool
+
+		if replica, ok = r.replicas[name]; ok {
 			next[name] = replica
 			delete(r.replicas, name)
 		} else {
-			var replica = newReplica(name)
+			replica = newReplica(name)
 			next[name] = replica
 
-			go replica.index.WatchStores(func() (*pb.JournalSpec, bool) {
-				return getJournalSpec(r.state.KS, name)
-			})
+			onNewReplica(name, replica)
+		}
+
+		if assignment.Slot == 0 && !item.IsConsistent(li.Assignments[li.Index], li.Assignments) {
+			onInconsistentPrimary(name, li.Assignments)
 		}
 	}
+
 	var prev = r.replicas
 	r.replicas = next
 

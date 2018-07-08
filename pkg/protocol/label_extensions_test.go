@@ -47,6 +47,96 @@ func (s *LabelSuite) TestSetValidationCases(c *gc.C) {
 	c.Check(set.Validate(), gc.ErrorMatches, `Labels not in unique, sorted order \(index 1; AAA <= CC\)`)
 }
 
+func (s *LabelSuite) TestUnion(c *gc.C) {
+	var sets = []LabelSet{
+		{Labels: []Label{
+			{Name: "bbb", Value: "value-one"},
+		}},
+		{Labels: []Label{
+			{Name: "bbb", Value: "skipped-value"},
+			{Name: "ccc", Value: "value-two"},
+		}},
+		{Labels: []Label{
+			{Name: "aaa", Value: "value-three"},
+			{Name: "bbb", Value: "skipped-value"},
+			{Name: "ddd", Value: "value-four"},
+		}},
+	}
+	c.Check(UnionLabelSets(sets...), gc.DeepEquals, LabelSet{
+		Labels: []Label{
+			{Name: "aaa", Value: "value-three"},
+			{Name: "bbb", Value: "value-one"},
+			{Name: "ccc", Value: "value-two"},
+			{Name: "ddd", Value: "value-four"},
+		}})
+}
+
+func (s *LabelSuite) TestIntersection(c *gc.C) {
+	var sets = []LabelSet{
+		{Labels: []Label{
+			{Name: "aaa", Value: "val"},
+			{Name: "bbb", Value: "val"},
+			{Name: "ccc", Value: "val"},
+			{Name: "ddd", Value: "val"},
+			{Name: "eee", Value: "val"},
+		}},
+		{Labels: []Label{
+			// Missing "aaa".
+			{Name: "bbb", Value: "val"},
+			{Name: "ccc", Value: "val"},
+			{Name: "ddd", Value: "val"},
+			{Name: "eee", Value: "val"},
+		}},
+		{Labels: []Label{
+			{Name: "aaa", Value: "val"},
+			{Name: "bbb", Value: "val"},
+			{Name: "ccc", Value: "val"},
+			{Name: "ddd", Value: "val"},
+			// Missing "eee".
+		}},
+		{Labels: []Label{
+			{Name: "aaa", Value: "val"},
+			{Name: "bbb", Value: "val"},
+			{Name: "ccc", Value: "other"}, // Mismatch.
+			{Name: "ddd", Value: "val"},
+			{Name: "eee", Value: "val"},
+		}},
+	}
+	c.Check(IntersectLabelSets(sets...), gc.DeepEquals, LabelSet{
+		Labels: []Label{
+			{Name: "bbb", Value: "val"},
+			{Name: "ddd", Value: "val"},
+		}})
+}
+
+func (s *LabelSuite) TestSubtraction(c *gc.C) {
+	c.Check(SubtractLabelSet(
+		LabelSet{
+			Labels: []Label{
+				{Name: "aaa", Value: "val"},
+				{Name: "bbb", Value: "val"},
+				{Name: "ccc", Value: "val"},
+				{Name: "ddd", Value: "val"},
+				{Name: "eee", Value: "val"},
+			},
+		},
+		LabelSet{
+			Labels: []Label{
+				{Name: "aaa", Value: "val"},
+				{Name: "bbb", Value: "other"}, // Mismatch.
+				{Name: "ccc", Value: "val"},
+				// Missing "ddd".
+				{Name: "eee", Value: "val"},
+			},
+		},
+	), gc.DeepEquals, LabelSet{
+		Labels: []Label{
+			{Name: "bbb", Value: "val"},
+			{Name: "ddd", Value: "val"},
+		},
+	})
+}
+
 func (s *LabelSuite) TestSelectorValidationCases(c *gc.C) {
 	var sel = LabelSelector{
 		Include: LabelSet{

@@ -39,7 +39,7 @@ func (m *JournalSpec) Validate() error {
 	} else if m.Replication < 1 || m.Replication > maxJournalReplication {
 		return NewValidationError("invalid Replication (%d; expected 1 <= Replication <= %d)",
 			m.Replication, maxJournalReplication)
-	} else if err = m.Labels.Validate(); err != nil {
+	} else if err = m.LabelSet.Validate(); err != nil {
 		return ExtendContext(err, "Labels")
 	} else if err = m.Fragment.Validate(); err != nil {
 		return ExtendContext(err, "Fragment")
@@ -98,10 +98,97 @@ func (m *JournalSpec) IsConsistent(_ keyspace.KeyValue, assignments keyspace.Key
 	return true
 }
 
+// UnionJournalSpecs returns a JournalSpec combining all non-zero-valued fields
+// across |a| and |b|. Where both |a| and |b| provide a non-zero value for
+// a field, the value of |a| is retained.
+func UnionJournalSpecs(a, b JournalSpec) JournalSpec {
+	if a.Replication == 0 {
+		a.Replication = b.Replication
+	}
+	a.LabelSet = UnionLabelSets(b.LabelSet, a.LabelSet)
+
+	if a.Fragment.Length == 0 {
+		a.Fragment.Length = b.Fragment.Length
+	}
+	if a.Fragment.CompressionCodec == CompressionCodec_INVALID {
+		a.Fragment.CompressionCodec = b.Fragment.CompressionCodec
+	}
+	if a.Fragment.Stores == nil {
+		a.Fragment.Stores = b.Fragment.Stores
+	}
+	if a.Fragment.RefreshInterval == 0 {
+		a.Fragment.RefreshInterval = b.Fragment.RefreshInterval
+	}
+	if a.Fragment.Retention == 0 {
+		a.Fragment.Retention = b.Fragment.Retention
+	}
+	if a.ReadOnly == false {
+		a.ReadOnly = b.ReadOnly
+	}
+	return a
+}
+
+// IntersectJournalSpecs returns a JournalSpec having a non-zero-valued field
+// for each field value which is shared between |a| and |b|.
+func IntersectJournalSpecs(a, b JournalSpec) JournalSpec {
+	if a.Replication != b.Replication {
+		a.Replication = 0
+	}
+	a.LabelSet = IntersectLabelSets(a.LabelSet, b.LabelSet)
+
+	if a.Fragment.Length != b.Fragment.Length {
+		a.Fragment.Length = 0
+	}
+	if a.Fragment.CompressionCodec != b.Fragment.CompressionCodec {
+		a.Fragment.CompressionCodec = CompressionCodec_INVALID
+	}
+	if !fragmentStoresEq(a.Fragment.Stores, b.Fragment.Stores) {
+		a.Fragment.Stores = nil
+	}
+	if a.Fragment.RefreshInterval != b.Fragment.RefreshInterval {
+		a.Fragment.RefreshInterval = 0
+	}
+	if a.Fragment.Retention != b.Fragment.Retention {
+		a.Fragment.Retention = 0
+	}
+	if a.ReadOnly != b.ReadOnly {
+		a.ReadOnly = false
+	}
+	return a
+}
+
+// SubtractJournalSpecs returns a JournalSpec derived from |a| but having a
+// zero-valued field for each field which is matched by |b|.
+func SubtractJournalSpecs(a, b JournalSpec) JournalSpec {
+	if a.Replication == b.Replication {
+		a.Replication = 0
+	}
+	a.LabelSet = SubtractLabelSet(a.LabelSet, b.LabelSet)
+
+	if a.Fragment.Length == b.Fragment.Length {
+		a.Fragment.Length = 0
+	}
+	if a.Fragment.CompressionCodec == b.Fragment.CompressionCodec {
+		a.Fragment.CompressionCodec = CompressionCodec_INVALID
+	}
+	if fragmentStoresEq(a.Fragment.Stores, b.Fragment.Stores) {
+		a.Fragment.Stores = nil
+	}
+	if a.Fragment.RefreshInterval == b.Fragment.RefreshInterval {
+		a.Fragment.RefreshInterval = 0
+	}
+	if a.Fragment.Retention == b.Fragment.Retention {
+		a.Fragment.Retention = 0
+	}
+	if a.ReadOnly == b.ReadOnly {
+		a.ReadOnly = false
+	}
+	return a
+}
+
 const (
 	minJournalNameLen, maxJournalNameLen   = 4, 512
 	maxJournalReplication                  = 5
 	minRefreshInterval, maxRefreshInterval = time.Second, time.Hour * 24
 	minFragmentLen, maxFragmentLen         = 1 << 10, 1 << 34 // 1024 => 17,179,869,184
-	minTxnLen, maxTxnLen                   = 1 << 10, 1 << 30 // 1,024 => 1,073,741,824
 )

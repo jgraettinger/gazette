@@ -15,7 +15,7 @@ func (s *ResolverSuite) TestResolutionCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -104,7 +104,7 @@ func (s *ResolverSuite) TestFutureRevisionCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 
 	// Case: Request a resolution, passing along a proxyHeader fixture which
@@ -152,7 +152,7 @@ func (s *ResolverSuite) TestSanityChecks(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 
 	var hdr = pb.Header{

@@ -37,7 +37,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 		Name:        "a/journal",
 		Replication: 3,
 
-		Labels: LabelSet{
+		LabelSet: LabelSet{
 			Labels: []Label{
 				{"foo", "bar"},
 				{"name", "value"},
@@ -66,9 +66,9 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 	c.Check(spec.Validate(), gc.ErrorMatches, `invalid Replication \(1024; .*`)
 	spec.Replication = 3
 
-	spec.Labels.Labels[0].Name = "xxx xxx"
+	spec.Labels[0].Name = "xxx xxx"
 	c.Check(spec.Validate(), gc.ErrorMatches, `Labels.Labels\[0\].Name: not base64 alphabet \(xxx xxx\)`)
-	spec.Labels.Labels[0].Name = "aaaa"
+	spec.Labels[0].Name = "aaaa"
 
 	spec.Fragment.Length = 0
 	c.Check(spec.Validate(), gc.ErrorMatches, `Fragment: invalid Length \(0; expected 1024 <= length <= \d+\)`)
@@ -129,6 +129,40 @@ func (s *JournalSuite) TestConsistencyCases(c *gc.C) {
 
 	routes[1].Brokers = routes[0].Brokers
 	c.Check(spec.IsConsistent(keyspace.KeyValue{}, assignments), gc.Equals, true)
+}
+
+func (s *JournalSuite) TestSetOperations(c *gc.C) {
+	var model = JournalSpec{
+		Replication: 3,
+		LabelSet: LabelSet{
+			Labels: []Label{
+				{Name: "aaa", Value: "val"},
+				{Name: "bbb", Value: "val"},
+				{Name: "ccc", Value: "val"},
+			},
+		},
+		Fragment: JournalSpec_Fragment{
+			Length:           1024,
+			CompressionCodec: CompressionCodec_SNAPPY,
+			Stores: []FragmentStore{
+				"s3://bucket",
+			},
+			RefreshInterval: time.Minute,
+			Retention:       time.Hour,
+		},
+		ReadOnly: true,
+	}
+
+	c.Check(UnionJournalSpecs(JournalSpec{}, model), gc.DeepEquals, model)
+	c.Check(UnionJournalSpecs(model, JournalSpec{}), gc.DeepEquals, model)
+
+	c.Check(IntersectJournalSpecs(model, model), gc.DeepEquals, model)
+	c.Check(IntersectJournalSpecs(model, JournalSpec{}), gc.DeepEquals, JournalSpec{})
+	c.Check(IntersectJournalSpecs(JournalSpec{}, model), gc.DeepEquals, JournalSpec{})
+
+	c.Check(SubtractJournalSpecs(model, model), gc.DeepEquals, JournalSpec{})
+	c.Check(SubtractJournalSpecs(model, JournalSpec{}), gc.DeepEquals, model)
+	c.Check(SubtractJournalSpecs(JournalSpec{}, model), gc.DeepEquals, JournalSpec{})
 }
 
 var _ = gc.Suite(&JournalSuite{})

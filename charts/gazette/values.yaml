@@ -37,12 +37,13 @@ resources: {}
   #  memory: 128Mi
 strategy: {}
 terminationGracePeriodSeconds: 21600
-etcd: "etcd-cluster-client:2379"
+etcd: "http://etcd-cluster-client:2379"
 
-# Use the default Minio access key & secret key fixtures.
-cloudFS: "s3://"
-aws:
-  endpoint: "http://minio-minio-svc:9000"
+zone: "local"
+journalLimit: 100
+
+aws: # Use the default Minio access key & secret key fixtures.
+  endpoint: "http://minio:9000"
   accessKeyID: AKIAIOSFODNN7EXAMPLE
   secretKey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
   defaultRegion: us-east-1

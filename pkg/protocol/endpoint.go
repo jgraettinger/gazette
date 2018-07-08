@@ -33,15 +33,8 @@ func (ep Endpoint) parse() (*url.URL, error) {
 		return nil, &ValidationError{Err: err}
 	} else if !url.IsAbs() {
 		return nil, NewValidationError("not absolute: %s", ep)
-	}
-
-	switch url.Scheme {
-	case "http":
-		if url.Host == "" {
-			return nil, NewValidationError("http scheme missing host: %s", ep)
-		}
-	default:
-		return nil, NewValidationError("invalid scheme: %s", url.Scheme)
+	} else if url.Host == "" {
+		return nil, NewValidationError("missing host: %s", ep)
 	}
 	return url, nil
 }

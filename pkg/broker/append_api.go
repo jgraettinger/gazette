@@ -30,7 +30,7 @@ func (s *Service) Append(stream pb.Broker_AppendServer) error {
 		res, err = s.resolver.resolve(resolveArgs{
 			ctx:                   stream.Context(),
 			journal:               req.Journal,
-			mayProxy:              true,
+			mayProxy:              !req.DoNotProxy,
 			requirePrimary:        true,
 			requireFullAssignment: true,
 			minEtcdRevision:       rev,
@@ -182,9 +182,10 @@ func beginAppending(pln *pipeline, spec pb.JournalSpec_Fragment) appender {
 		spec: spec,
 
 		reqFragment: &pb.Fragment{
-			Journal: pln.spool.Fragment.Journal,
-			Begin:   pln.spool.Fragment.End,
-			End:     pln.spool.Fragment.End,
+			Journal:          pln.spool.Fragment.Journal,
+			Begin:            pln.spool.Fragment.End,
+			End:              pln.spool.Fragment.End,
+			CompressionCodec: pln.spool.Fragment.CompressionCodec,
 		},
 		reqSummer: sha1.New(),
 	}
@@ -258,6 +259,7 @@ func updateProposal(cur pb.Fragment, spec pb.JournalSpec_Fragment) (pb.Fragment,
 
 	var next = cur
 	next.Begin = next.End
+	next.Sum = pb.SHA1Sum{}
 	next.CompressionCodec = spec.CompressionCodec
 
 	if len(spec.Stores) != 0 {

@@ -53,7 +53,10 @@ type SpoolObserver interface {
 // NewSpool returns an empty Spool of |journal|.
 func NewSpool(journal pb.Journal, observer SpoolObserver) Spool {
 	return Spool{
-		Fragment: Fragment{Fragment: pb.Fragment{Journal: journal}},
+		Fragment: Fragment{Fragment: pb.Fragment{
+			Journal:          journal,
+			CompressionCodec: pb.CompressionCodec_NONE,
+		}},
 		summer:   sha1.New(),
 		sumState: zeroedSHA1State,
 		observer: observer,

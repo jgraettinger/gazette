@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/LiveRamp/gazette/pkg/client"
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	"github.com/LiveRamp/gazette/pkg/http_gateway"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
@@ -35,35 +36,44 @@ var configFile = flag.String("config", "", "Path to configuration file. "+
 	"Defaults to `gazette-config.{toml|yaml|json}` in the current working directory.")
 
 type Config struct {
+	// BrokerSpec to advertise within the Gazette cluster.
 	Spec pb.BrokerSpec
-
+	// Metrics collection and reporting configuration.
 	Metrics struct {
 		Port uint16
 		Path string
 	}
+	// Logging configuration.
 	Log struct {
 		Level string
 	}
+	// Etcd client configuration.
 	Etcd struct {
 		Endpoint pb.Endpoint   // Address at which to reach Etcd.
 		Root     string        // Root path in Etcd of the service. Eg, "/gazette/cluster".
 		LeaseTTL time.Duration // TTL of established Etcd lease.
 	}
+	// gRPC server configuration.
 	GRPC struct {
 		KeepAlive keepalive.ServerParameters
 	}
+	// Cache configuration for LRU caches used by the broker.
 	Caches struct {
-		DialerConns       int
+		// Number of gRPC peer connections to cache. Caching of peer connections
+		// reduces latency by amortizing initial gRPC connection setup time.
+		DialerConns int
+		// Number of journal routes the HTTP Gateway should cache. Caching enables
+		// requests to be directly dispatched against the current broker, rather
+		// than being proxied through the local gRPC server.
 		HTTPGatewayRoutes int
 	}
 }
 
+// Validate returns an error if the Config is not well-formed.
 func (cfg Config) Validate() error {
 	if err := cfg.Spec.Validate(); err != nil {
 		return pb.ExtendContext(err, "Spec")
-	}
-
-	if cfg.Metrics.Port == 0 {
+	} else if cfg.Metrics.Port == 0 {
 		return pb.NewValidationError("invalid Metrics.Port: (%d; expected > 0)", cfg.Metrics.Port)
 	} else if cfg.Metrics.Path == "" {
 		return pb.NewValidationError("expected Metrics.Path")
@@ -74,14 +84,21 @@ func (cfg Config) Validate() error {
 	} else if !path.IsAbs(cfg.Etcd.Root) {
 		return pb.NewValidationError("Etcd.Root not an absolute path: %s", cfg.Etcd.Root)
 	} else if cfg.Etcd.LeaseTTL <= time.Second {
-		return pb.NewValidationError("invalid Etcd.LeaseTTL (%s; expected >= %s)", cfg.Etcd.LeaseTTL, time.Second)
+		return pb.NewValidationError("invalid Etcd.LeaseTTL (%s; expected >= %s)",
+			cfg.Etcd.LeaseTTL, time.Second)
+	} else if cfg.Caches.DialerConns <= 0 {
+		return pb.NewValidationError("invalid Caches.DialerConns (%d; expected >= 0)",
+			cfg.Caches.DialerConns)
+	} else if cfg.Caches.HTTPGatewayRoutes <= 0 {
+		return pb.NewValidationError("invalid Caches.HTTPGatewayRoutes (%d; expected >= 0)",
+			cfg.Caches.HTTPGatewayRoutes)
 	}
-
 	return nil
 }
 
 func main() {
 	defer mainboilerplate.LogPanic()
+	grpc.EnableTracing = true
 
 	var cfg Config
 	mainboilerplate.MustParseConfig(configFile, "gazette-config", &cfg)
@@ -96,7 +113,7 @@ func main() {
 	// Bind listeners before we advertise our endpoint.
 	var cMux, grpcL, httpL = buildListeners(&cfg)
 
-	var ks = broker.NewKeySpace(cfg.Etcd.Root)
+	var ks = pb.NewKeySpace(cfg.Etcd.Root)
 	var memberKey = v3_allocator.MemberKey(ks, cfg.Spec.Id.Zone, cfg.Spec.Id.Suffix)
 
 	announcement, err := v3_allocator.Announce(context.Background(),
@@ -125,6 +142,10 @@ func main() {
 
 	var state = v3_allocator.NewObservedState(ks, memberKey)
 	var service = broker.NewService(dialer, state)
+	var persister = fragment.NewPersister()
+	broker.SetSharedPersister(persister)
+
+	go persister.Serve()
 
 	must(ks.Load(context.Background(), etcd, announcement.Revision), "failed to load KeySpace")
 
@@ -141,11 +162,15 @@ func main() {
 		must(cMux.Serve(), "cMux.Serve failed")
 	}()
 
-	v3_allocator.Allocate(v3_allocator.AllocateArgs{
+	if err = v3_allocator.Allocate(v3_allocator.AllocateArgs{
 		Context: context.Background(),
 		Etcd:    etcd,
 		State:   state,
-	})
+	}); err != nil {
+		log.WithField("err", err).Error("Allocate failed")
+	}
+
+	persister.Finish()
 }
 
 func buildListeners(cfg *Config) (mux cmux.CMux, grpc, http net.Listener) {

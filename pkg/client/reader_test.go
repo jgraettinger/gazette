@@ -316,7 +316,12 @@ func (f readFixture) serve(c *gc.C, broker *teststub.Broker) {
 		Header:    headerFixture,
 		Offset:    req.Offset,
 		WriteHead: 1024,
-		Fragment:  &pb.Fragment{Journal: "a/journal", Begin: 0, End: 1024},
+		Fragment: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              1024,
+			CompressionCodec: pb.CompressionCodec_NONE,
+		},
 	}
 
 	if f.status != pb.Status_OK && len(f.content) == 0 {

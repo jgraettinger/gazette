@@ -121,7 +121,7 @@ func CompressionCodecFromExtension(ext string) (CompressionCodec, error) {
 
 // Validate returns an error if the CompressionCodec is not well-formed.
 func (m CompressionCodec) Validate() error {
-	if _, ok := CompressionCodec_name[int32(m)]; !ok {
+	if _, ok := CompressionCodec_name[int32(m)]; !ok || m == CompressionCodec_INVALID {
 		return NewValidationError("invalid value (%s)", m)
 	}
 	return nil
@@ -142,5 +142,27 @@ func (m CompressionCodec) ToExtension() string {
 		return "" // TODO(johnny): Switch to ".gzod" when v2 broker fully released.
 	default:
 		panic("invalid CompressionCodec")
+	}
+}
+
+func (m CompressionCodec) MarshalYAML() (interface{}, error) {
+	return m.String(), nil
+}
+
+func (m *CompressionCodec) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var str string
+
+	if err := unmarshal(&str); err != nil {
+		return err
+	}
+	if tag, ok := CompressionCodec_value[str]; !ok {
+		var names []string
+		for n := range CompressionCodec_value {
+			names = append(names, n)
+		}
+		return fmt.Errorf("%q is not a valid CompressionCodec (options are %q)", str, names)
+	} else {
+		*m = CompressionCodec(tag)
+		return nil
 	}
 }

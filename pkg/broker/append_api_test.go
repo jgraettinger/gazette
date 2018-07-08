@@ -17,7 +17,7 @@ func (s *AppendSuite) TestSingleAppend(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -41,10 +41,10 @@ func (s *AppendSuite) TestSingleAppend(c *gc.C) {
 	c.Check(<-peer.ReplReqCh, gc.DeepEquals, &pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
 			Journal:          "a/journal",
-			CompressionCodec: pb.CompressionCodec_SNAPPY,
 			Begin:            0,
 			End:              6,
 			Sum:              pb.SHA1SumOf("foobar"),
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 		Acknowledge: true,
 	})
@@ -58,10 +58,11 @@ func (s *AppendSuite) TestSingleAppend(c *gc.C) {
 		Status: pb.Status_OK,
 		Header: &res.Header,
 		Commit: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     6,
-			Sum:     pb.SHA1SumOf("foobar"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              6,
+			Sum:              pb.SHA1SumOf("foobar"),
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 	})
 }
@@ -70,7 +71,7 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -93,10 +94,10 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 	c.Check(<-peer.ReplReqCh, gc.DeepEquals, &pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
 			Journal:          "a/journal",
-			CompressionCodec: pb.CompressionCodec_SNAPPY,
 			Begin:            0,
 			End:              3,
 			Sum:              pb.SHA1SumOf("foo"),
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 		Acknowledge: true,
 	})
@@ -113,10 +114,10 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 	c.Check(<-peer.ReplReqCh, gc.DeepEquals, &pb.ReplicateRequest{
 		Proposal: &pb.Fragment{
 			Journal:          "a/journal",
-			CompressionCodec: pb.CompressionCodec_SNAPPY,
 			Begin:            0,
 			End:              9,
 			Sum:              pb.SHA1SumOf("foobarbaz"),
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 		Acknowledge: true,
 	})
@@ -130,10 +131,11 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 		Status: pb.Status_OK,
 		Header: &res.Header,
 		Commit: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   0,
-			End:     3,
-			Sum:     pb.SHA1SumOf("foo"),
+			Journal:          "a/journal",
+			Begin:            0,
+			End:              3,
+			Sum:              pb.SHA1SumOf("foo"),
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 	})
 
@@ -146,10 +148,11 @@ func (s *AppendSuite) TestPipelinedAppends(c *gc.C) {
 		Status: pb.Status_OK,
 		Header: &res.Header,
 		Commit: &pb.Fragment{
-			Journal: "a/journal",
-			Begin:   3,
-			End:     9,
-			Sum:     pb.SHA1SumOf("barbaz"),
+			Journal:          "a/journal",
+			Begin:            3,
+			End:              9,
+			Sum:              pb.SHA1SumOf("barbaz"),
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
 		},
 	})
 }
@@ -158,7 +161,7 @@ func (s *AppendSuite) TestRollbackCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
@@ -218,7 +221,7 @@ func (s *AppendSuite) TestRequestErrorCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -267,7 +270,7 @@ func (s *AppendSuite) TestProxyCases(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	var ks = NewKeySpace("/root")
+	var ks = pb.NewKeySpace("/root")
 	var broker = newTestBroker(c, ctx, ks, pb.BrokerSpec_ID{"local", "broker"})
 	var peer = newMockBroker(c, ctx, ks, pb.BrokerSpec_ID{"peer", "broker"})
 
@@ -335,9 +338,10 @@ func (s *AppendSuite) TestAppenderCases(c *gc.C) {
 	var rm = newReplicationMock(c)
 	defer rm.cancel()
 
-	// Tweak Spool fixture to have a non-zero size.
+	// Tweak Spool fixture to have a non-zero size & sum.
 	var spool = <-rm.spoolCh
 	spool.Fragment.End = 24
+	spool.Fragment.Sum = pb.SHA1Sum{Part1: 1234}
 	rm.spoolCh <- spool
 	var pln = rm.newPipeline(rm.header(0, 100))
 
@@ -394,10 +398,11 @@ func (s *AppendSuite) TestAppenderCases(c *gc.C) {
 	c.Check(req, gc.DeepEquals, &pb.ReplicateRequest{Proposal: expect, Acknowledge: true})
 
 	c.Check(appender.reqFragment, gc.DeepEquals, &pb.Fragment{
-		Journal: "a/journal",
-		Begin:   24,
-		End:     30,
-		Sum:     pb.SHA1Sum{Part1: 0x8843d7f92416211d, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+		Journal:          "a/journal",
+		Begin:            24,
+		End:              30,
+		Sum:              pb.SHA1Sum{Part1: 0x8843d7f92416211d, Part2: 0xe9ebb963ff4ce281, Part3: 0x25932878},
+		CompressionCodec: pb.CompressionCodec_SNAPPY,
 	})
 	c.Check(appender.reqErr, gc.IsNil)
 
@@ -457,7 +462,8 @@ func expectPipelineSync(c *gc.C, peer *testBroker, hdr pb.Header) {
 		Journal: "a/journal",
 		Header:  boxHeaderBroker(hdr, peer.id),
 		Proposal: &pb.Fragment{
-			Journal: "a/journal",
+			Journal:          "a/journal",
+			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 		Acknowledge: true,
 	})

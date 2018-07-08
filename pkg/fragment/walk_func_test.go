@@ -21,11 +21,12 @@ func (s *WalkFuncSuite) TestPathWalkFuncAdapater(c *gc.C) {
 	}, "/strip-prefix/", "", "rename/from/", "foo/")
 
 	var expect = protocol.Fragment{
-		Journal: "foo/bar",
-		Begin:   11112222,
-		End:     33334444,
-		Sum:     protocol.SHA1Sum{Part1: 111, Part2: 222, Part3: 333},
-		ModTime: time.Unix(12345, 0),
+		Journal:          "foo/bar",
+		Begin:            11112222,
+		End:              33334444,
+		Sum:              protocol.SHA1Sum{Part1: 111, Part2: 222, Part3: 333},
+		CompressionCodec: protocol.CompressionCodec_SNAPPY,
+		ModTime:          time.Unix(12345, 0),
 	}
 
 	// Expect a Fragment is parsed...

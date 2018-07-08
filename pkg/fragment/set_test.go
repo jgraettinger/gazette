@@ -335,10 +335,12 @@ func (s *SetSuite) TestIssue97Regression(c *gc.C) {
 		"000000007af92e59-000000007af92e59-0000000000000000000000000000000000000000.raw")
 	set, _ = set.Add(Fragment{Fragment: f})
 
+	const none = protocol.CompressionCodec_NONE
+
 	c.Check(set, gc.DeepEquals, Set{
-		{Fragment: protocol.Fragment{Journal: "a/journal", Begin: 0, End: 0x400a8d41}},
-		{Fragment: protocol.Fragment{Journal: "a/journal", Begin: 0x400a8d41, End: 0x7af92e59}},
-		{Fragment: protocol.Fragment{Journal: "a/journal", Begin: 0x595722d7, End: 0x7af92fb4}},
+		{Fragment: protocol.Fragment{Journal: "a/journal", Begin: 0, End: 0x400a8d41, CompressionCodec: none}},
+		{Fragment: protocol.Fragment{Journal: "a/journal", Begin: 0x400a8d41, End: 0x7af92e59, CompressionCodec: none}},
+		{Fragment: protocol.Fragment{Journal: "a/journal", Begin: 0x595722d7, End: 0x7af92fb4, CompressionCodec: none}},
 	})
 }
 

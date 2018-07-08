@@ -74,8 +74,8 @@ func newTestJournal(c *gc.C, ks *keyspace.KeySpace, journal pb.Journal, replicat
 			Replication: replication,
 			Fragment: pb.JournalSpec_Fragment{
 				Length:           1024,
-				CompressionCodec: pb.CompressionCodec_SNAPPY,
 				RefreshInterval:  time.Second,
+				CompressionCodec: pb.CompressionCodec_SNAPPY,
 			},
 		}).MarshalString())
 
