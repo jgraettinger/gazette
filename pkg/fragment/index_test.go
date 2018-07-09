@@ -181,10 +181,10 @@ func (s *IndexSuite) TestBlockedContextCancelled(c *gc.C) {
 	c.Check(err, gc.Equals, context.Canceled)
 }
 
-func (s *IndexSuite) TestWatchStores(c *gc.C) {
-	var path1, err = ioutil.TempDir("", "IndexSuite.TestWatchingStores")
+func (s *IndexSuite) TestWalkStores(c *gc.C) {
+	var path1, err = ioutil.TempDir("", "IndexSuite.TestWalkStores")
 	c.Assert(err, gc.IsNil)
-	path2, err := ioutil.TempDir("", "IndexSuite.TestWatchingStores")
+	path2, err := ioutil.TempDir("", "IndexSuite.TestWalkStores")
 	c.Assert(err, gc.IsNil)
 
 	var paths = []string{
@@ -202,83 +202,35 @@ func (s *IndexSuite) TestWatchStores(c *gc.C) {
 		c.Assert(ioutil.WriteFile(path, []byte("data"), 0600), gc.IsNil)
 	}
 
-	var ctx, cancel = context.WithCancel(context.Background())
+	var ctx = context.Background()
 	var ind = NewIndex(ctx)
+	var set Set
 
-	var cases = []func() *pb.JournalSpec{
-		func() *pb.JournalSpec {
-			// Return a Spec which will fail to enumerate, with a quick retry interval.
-			return &pb.JournalSpec{
-				Name: "a/journal",
-				Fragment: pb.JournalSpec_Fragment{
-					Stores: []pb.FragmentStore{
-						pb.FragmentStore("file:///path/does/not/exist"),
-					},
-					RefreshInterval: time.Millisecond,
-				},
-			}
-		},
+	set, err = WalkAllStores(ctx, "a/journal", []pb.FragmentStore{
+		pb.FragmentStore("file:///path/does/not/exist"),
+	})
+	c.Check(err, gc.NotNil)
+	c.Check(set, gc.DeepEquals, Set{})
 
-		func() *pb.JournalSpec {
-			// Expect first remote load does not signal.
-			var timeoutCtx, _ = context.WithTimeout(context.Background(), time.Microsecond)
-			c.Check(ind.WaitForFirstRemoteLoad(timeoutCtx), gc.Equals, context.DeadlineExceeded)
+	// Gather fixture Fragments from |path1|.
+	set, err = WalkAllStores(ctx, "a/journal", []pb.FragmentStore{
+		pb.FragmentStore("file://" + filepath.ToSlash(path1)),
+	})
+	c.Check(err, gc.IsNil)
+	ind.ReplaceRemote(set)
 
-			// Return a Spec which gathers fixture Fragments from |path1|.
-			return &pb.JournalSpec{
-				Name: "a/journal",
-				Fragment: pb.JournalSpec_Fragment{
-					Stores: []pb.FragmentStore{
-						pb.FragmentStore("file://" + filepath.ToSlash(path1)),
-					},
-					RefreshInterval: time.Millisecond,
-				},
-			}
-		},
-
-		func() *pb.JournalSpec {
-			// Expect first remote load has completed.
-			c.Check(ind.WaitForFirstRemoteLoad(context.Background()), gc.IsNil)
-
-			// Return nil (!ok). Expect the watch will exit.
-			return nil
-		},
-	}
-
-	var getSpec = func() (*pb.JournalSpec, bool) {
-		var spec = cases[0]()
-		cases = cases[1:]
-		return spec, spec != nil
-	}
-
-	ind.WatchStores(getSpec)
-	c.Check(cases, gc.HasLen, 0) // Expect all cases ran.
+	// Expect first remote load has completed.
+	c.Check(ind.WaitForFirstRemoteLoad(context.Background()), gc.IsNil)
 
 	c.Check(ind.set, gc.HasLen, 3)
 	c.Check(ind.EndOffset(), gc.Equals, int64(0x255))
 
-	cases = []func() *pb.JournalSpec{
-		func() *pb.JournalSpec {
-			cancel()
-
-			// Return a Spec which gathers fixture Fragments from |path2| as well
-			// as |path1|, and with with a long RefreshInterval. Expect watch exists
-			// anyway after its first iteration, because we cancelled its context.
-			return &pb.JournalSpec{
-				Name: "a/journal",
-				Fragment: pb.JournalSpec_Fragment{
-					Stores: []pb.FragmentStore{
-						pb.FragmentStore("file://" + filepath.ToSlash(path1)),
-						pb.FragmentStore("file://" + filepath.ToSlash(path2)),
-					},
-					RefreshInterval: time.Minute,
-				},
-			}
-		},
-	}
-
-	ind.WatchStores(getSpec)
-	c.Check(cases, gc.HasLen, 0) // Expect the case ran.
+	set, err = WalkAllStores(ctx, "a/journal", []pb.FragmentStore{
+		pb.FragmentStore("file://" + filepath.ToSlash(path1)),
+		pb.FragmentStore("file://" + filepath.ToSlash(path2)),
+	})
+	c.Check(err, gc.IsNil)
+	ind.ReplaceRemote(set)
 
 	c.Check(ind.set, gc.HasLen, 4) // Combined Fragments are reflected.
 	c.Check(ind.EndOffset(), gc.Equals, int64(0x555))

@@ -25,7 +25,7 @@ type testBroker struct {
 
 func newTestBroker(c *gc.C, ctx context.Context, ks *keyspace.KeySpace, id pb.BrokerSpec_ID) *testBroker {
 	var state = v3_allocator.NewObservedState(ks, v3_allocator.MemberKey(ks, id.Zone, id.Suffix))
-	var resolver = newResolver(state)
+	var resolver = newResolver(state, func(*replica) {})
 
 	var dialer, err = client.NewDialer(16)
 	c.Assert(err, gc.IsNil)

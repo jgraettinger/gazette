@@ -6,8 +6,6 @@ import (
 	"sync"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-
 	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -18,6 +16,7 @@ const (
 	offsetJumpAgeThreshold = 6 * time.Hour
 )
 
+// Index maintains a queryable index of local and remote journal Fragments.
 type Index struct {
 	ctx         context.Context // Context over the lifetime of the Index.
 	set         Set             // All Fragments of the index (local and remote).
@@ -106,7 +105,7 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadRespon
 	}
 }
 
-// endOffset returns the last (largest) End offset in the index.
+// EndOffset returns the last (largest) End offset in the index.
 func (fi *Index) EndOffset() int64 {
 	defer fi.mu.RUnlock()
 	fi.mu.RLock()
@@ -171,34 +170,6 @@ func (fi *Index) wakeBlockedQueries() {
 // GetSpecFunc returns a JournalSpec if available, or returns false.
 type GetSpecFunc func() (spec *pb.JournalSpec, ok bool)
 
-// WatchStores periodically invokes |getSpec| to obtain a current JournalSpec,
-// queries its configured remote fragment stores at the configured cadence for
-// their Fragment listings, and updates the Index accordingly. It closes
-// |signalCh| after the first successful load, and exits if |getSpec| returns
-// !ok or if the Index context is cancelled.
-func (fi *Index) WatchStores(getSpec GetSpecFunc) {
-	for {
-		var spec, ok = getSpec()
-		if !ok {
-			return
-		}
-		var set, err = walkAllStores(fi.ctx, spec.Name, spec.Fragment.Stores)
-
-		if err != nil {
-			log.WithFields(log.Fields{"err": err, "name": spec.Name}).Warn("failed to load remote index")
-		} else {
-			fi.ReplaceRemote(set)
-		}
-
-		select {
-		case <-time.After(spec.Fragment.RefreshInterval):
-			// Pass.
-		case <-fi.ctx.Done():
-			return
-		}
-	}
-}
-
 // WaitForFirstRemoteLoad blocks until WatchStores has completed a first load
 // of configured remote Fragment stores, or the context is cancelled.
 func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {
@@ -212,9 +183,9 @@ func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {
 	}
 }
 
-// walkAllStores enumerates Fragments from each of |stores| into the returned Set,
+// WalkAllStores enumerates Fragments from each of |stores| into the returned Set,
 // or returns an encountered error.
-func walkAllStores(_ context.Context, name pb.Journal, stores []pb.FragmentStore) (Set, error) {
+func WalkAllStores(_ context.Context, name pb.Journal, stores []pb.FragmentStore) (Set, error) {
 	var set Set
 
 	for _, store := range stores {

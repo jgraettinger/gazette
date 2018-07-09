@@ -4,21 +4,27 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 type resolver struct {
-	state    *v3_allocator.State
-	replicas map[pb.Journal]*replica
+	state        *v3_allocator.State
+	replicas     map[pb.Journal]*replica
+	onNewReplica func(*replica)
 }
 
-func newResolver(state *v3_allocator.State) *resolver {
+func newResolver(state *v3_allocator.State, onNewReplica func(*replica)) *resolver {
 	var r = &resolver{
-		state:    state,
-		replicas: make(map[pb.Journal]*replica),
+		state:        state,
+		replicas:     make(map[pb.Journal]*replica),
+		onNewReplica: onNewReplica,
 	}
+
+	state.KS.Mu.Lock()
+	state.KS.Observers = append(state.KS.Observers, r.updateResolutions)
+	state.KS.Mu.Unlock()
+
 	return r
 }
 
@@ -140,10 +146,9 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	return
 }
 
-func (r *resolver) updateResolutions(
-	onNewReplica func(pb.Journal, *replica),
-	onInconsistentPrimary func(pb.Journal, keyspace.KeyValues),
-) {
+// updateResolutions, by virtue of being a KeySpace.Observer, expects that the
+// KeySpace.Mu Lock is held.
+func (r *resolver) updateResolutions() {
 	var next = make(map[pb.Journal]*replica, len(r.state.LocalItems))
 
 	for _, li := range r.state.LocalItems {
@@ -151,39 +156,33 @@ func (r *resolver) updateResolutions(
 		var assignment = li.Assignments[li.Index].Decoded.(v3_allocator.Assignment)
 		var name = pb.Journal(item.ID)
 
-		var replica *replica
+		var rep *replica
 		var ok bool
 
-		if replica, ok = r.replicas[name]; ok {
-			next[name] = replica
+		if rep, ok = r.replicas[name]; ok {
+			next[name] = rep
 			delete(r.replicas, name)
 		} else {
-			replica = newReplica(name)
-			next[name] = replica
+			rep = newReplica(name)
+			next[name] = rep
 
-			onNewReplica(name, replica)
+			r.onNewReplica(rep)
 		}
 
 		if assignment.Slot == 0 && !item.IsConsistent(li.Assignments[li.Index], li.Assignments) {
-			onInconsistentPrimary(name, li.Assignments)
+			// Signal the replica's maintenance loop that the journal should be
+			// "pulsed", which is done by attempting a zero-length write transaction
+			// and, on successful completion, updating Etcd-backed assignments with
+			// the resulting route topology (bringing them to consistency).
+			signalPulse(rep)
 		}
 	}
 
 	var prev = r.replicas
 	r.replicas = next
 
-	for _, replica := range prev {
-		replica.cancel()
+	for _, rep := range prev {
+		rep.cancel()
 	}
 	return
-}
-
-func getJournalSpec(ks *keyspace.KeySpace, journal pb.Journal) (*pb.JournalSpec, bool) {
-	defer ks.Mu.RUnlock()
-	ks.Mu.RLock()
-
-	if item, ok := v3_allocator.LookupItem(ks, journal.String()); ok {
-		return item.ItemValue.(*pb.JournalSpec), true
-	}
-	return nil, false
 }

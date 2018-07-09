@@ -7,7 +7,7 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-// Append adapts an Append RPC to the io.WriteCloser interface. Its usages should
+// Appender adapts an Append RPC to the io.WriteCloser interface. Its usages should
 // should be limited to cases where the full and complete buffer to append is
 // already available and can be immediately dispatched as, by design, an in-
 // progress RPC prevents the broker from serving other Append RPCs concurrently.
@@ -20,6 +20,7 @@ type Appender struct {
 	stream pb.Broker_AppendClient // Server stream.
 }
 
+// NewAppender builds and returns a new Appender.
 func NewAppender(ctx context.Context, client pb.BrokerClient, req pb.AppendRequest) *Appender {
 	var a = &Appender{
 		Request: req,
