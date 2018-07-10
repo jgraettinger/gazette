@@ -83,7 +83,7 @@ func (fs localFs) Close() error {
 }
 
 func (fs localFs) Walk(root string, walkFn filepath.WalkFunc) error {
-	var joined = filepath.Join(string(fs.Dir), root)
+	var joined = filepath.Join(string(fs.Dir), filepath.FromSlash(root))
 	return filepath.Walk(joined, func(path string, info os.FileInfo, err error) error {
 		// Per cloudstore convention, do not return directories, only files. However,
 		// do not return SkipDir; recurse into the directory.
@@ -98,7 +98,7 @@ func (fs localFs) Walk(root string, walkFn filepath.WalkFunc) error {
 			// Never return "." or ".." as they are not real directories.
 			return nil
 		} else {
-			return walkFn(rel, info, err)
+			return walkFn(filepath.ToSlash(rel), info, err)
 		}
 	})
 }

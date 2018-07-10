@@ -139,9 +139,11 @@ func main() {
 
 	dialer, err := client.NewDialer(cfg.Caches.DialerConns)
 	must(err, "failed to create Dialer")
+	loopback, err := dialer.DialEndpoint(context.Background(), cfg.Spec.Endpoint)
+	must(err, "failed to dial local broker")
 
 	var state = v3_allocator.NewObservedState(ks, memberKey)
-	var service = broker.NewService(dialer, state)
+	var service = broker.NewService(state, dialer, pb.NewBrokerClient(loopback), etcd)
 	var persister = fragment.NewPersister()
 	broker.SetSharedPersister(persister)
 

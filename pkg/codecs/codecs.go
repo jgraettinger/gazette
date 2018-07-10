@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/ioutil"
 
-	"github.com/DataDog/zstd"
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/gzip"
 
@@ -30,7 +29,7 @@ func NewCodecReader(r io.Reader, codec pb.CompressionCodec) (Decompressor, error
 	case pb.CompressionCodec_SNAPPY:
 		return ioutil.NopCloser(snappy.NewReader(r)), nil
 	case pb.CompressionCodec_ZSTANDARD:
-		return zstd.NewReader(r), nil
+		return zstdNewReader(r), nil
 	default:
 		return nil, fmt.Errorf("unsupported codec %s", codec.String())
 	}
@@ -45,7 +44,7 @@ func NewCodecWriter(w io.Writer, codec pb.CompressionCodec) (Compressor, error) 
 	case pb.CompressionCodec_SNAPPY:
 		return snappy.NewBufferedWriter(w), nil
 	case pb.CompressionCodec_ZSTANDARD:
-		return zstd.NewWriter(w), nil
+		return zstdNewWriter(w), nil
 	default:
 		return nil, fmt.Errorf("unsupported codec %s", codec.String())
 	}
@@ -54,3 +53,8 @@ func NewCodecWriter(w io.Writer, codec pb.CompressionCodec) (Compressor, error) 
 type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
+
+var (
+	zstdNewReader = func(io.Reader) io.ReadCloser { panic("ZSTANDARD was not enabled at compile time") }
+	zstdNewWriter = func(io.Writer) io.WriteCloser { panic("ZSTANDARD was not enabled at compile time") }
+)

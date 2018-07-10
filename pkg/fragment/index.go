@@ -167,9 +167,6 @@ func (fi *Index) wakeBlockedQueries() {
 	fi.condCh = make(chan struct{})
 }
 
-// GetSpecFunc returns a JournalSpec if available, or returns false.
-type GetSpecFunc func() (spec *pb.JournalSpec, ok bool)
-
 // WaitForFirstRemoteLoad blocks until WatchStores has completed a first load
 // of configured remote Fragment stores, or the context is cancelled.
 func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {

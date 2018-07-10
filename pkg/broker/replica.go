@@ -3,16 +3,16 @@ package broker
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/LiveRamp/gazette/pkg/client"
+	"github.com/LiveRamp/gazette/pkg/fragment"
 	"github.com/LiveRamp/gazette/pkg/keyspace"
+	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/LiveRamp/gazette/pkg/fragment"
-	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 type replica struct {
@@ -27,9 +27,11 @@ type replica struct {
 	spoolCh chan fragment.Spool
 	// pipelineCh synchronizes access to the single pipeline of the replica.
 	pipelineCh chan *pipeline
-	// pulseCh is signaled on Etcd updates when the journal is determined
-	// to be 1) a primary replica of the local broker, and 2) to have inconsistent
-	// assignments in Etcd.
+	// pulseCh is signaled on KeySpace updates when 1) the replica is primary
+	// for the journal and 2) current assignments in Etcd are inconsistent.
+	// A signal indicates the journal should be "pulsed" by performing a zero-
+	// length append and (if successful) updating Etcd assignments with the
+	// resulting route.
 	pulseCh chan struct{}
 }
 
@@ -43,6 +45,7 @@ func newReplica(journal pb.Journal) *replica {
 		index:      fragment.NewIndex(ctx),
 		spoolCh:    make(chan fragment.Spool, 1),
 		pipelineCh: make(chan *pipeline, 1),
+		pulseCh:    make(chan struct{}),
 	}
 
 	r.spoolCh <- fragment.NewSpool(journal, struct {
@@ -155,148 +158,108 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer clie
 
 // maintenanceLoop performs periodic tasks of the replica, notably:
 //  * Refreshing its remote fragment listings from configured stores.
-//  * When primary, "pulsing" the journal to ensure its liveness, and the
-//    consistency of Etcd-backed assignment routes.
-func maintenanceLoop(r *replica, state *v3_allocator.State, dialer client.Dialer, etcd clientv3.KV) {
-	var ks = state.KS
+//  * "Pulsing" the journal to ensure its liveness, and the
+//    consistency of allocator assignment values stored in Etcd.
+func maintenanceLoop(r *replica, ks *keyspace.KeySpace, lo pb.BrokerClient, etcd clientv3.KV) {
 	var refreshTimer = time.NewTimer(0)
-	var pulseTimer = time.NewTimer(0)
+	var pulseTicker = time.NewTicker(pulseInterval)
 
-	defer ks.Mu.RUnlock()
-	ks.Mu.RLock()
+	defer refreshTimer.Stop()
+	defer pulseTicker.Stop()
 
 	for {
-		var refresh, pulse time.Time
-
-		// Wait until:
-		//  * Replica context is cancelled.
-		//  * Refresh or pulse timer interval elapses.
-		//  * We're signaled to pulse the journal, ASAP.
-		ks.Mu.RUnlock()
 		select {
 		case <-r.ctx.Done():
-		case refresh = <-refreshTimer.C:
-		case pulse = <-pulseTimer.C:
+			return // replica is cancelled. We're done here.
+
+		case <-refreshTimer.C:
+			// Begin a background refresh of remote replica fragments. When done,
+			// restart |refreshTimer| with the current refresh interval.
+			go func() {
+				refreshTimer.Reset(refreshFragments(r, ks))
+			}()
+			continue
+
+		case <-pulseTicker.C:
 		case <-r.pulseCh:
-			pulse = time.Now()
-		}
-		ks.Mu.RLock()
-
-		if r.ctx.Err() != nil {
-			return // Context has completed.
+			// Begin a synchronous pulse of the journal.
 		}
 
-		// Fetch current journal spec from the KeySpace.
-		var item, ok = v3_allocator.LookupItem(ks, r.journal.String())
-
-		if !ok || state.LocalMemberInd == -1 {
-			// JournalSpec or local BrokerSpec is not present in the KeySpace.
-			<-r.ctx.Done() // Expect context will be cancelled imminently.
-			return
-		}
-
-		if !refresh.IsZero() {
-			// Begin an async refresh of the journal's configured remote fragment stores.
-			var spec = item.ItemValue.(*pb.JournalSpec)
-			var subctx, _ = context.WithTimeout(r.ctx, 2*spec.Fragment.RefreshInterval)
-			go refreshFragments(subctx, spec, r.index)
-
-			refreshTimer.Reset(spec.Fragment.RefreshInterval)
-
-		} else if !pulse.IsZero() {
-			// Begin an async "pulse" of the journal, which performs a zero-length
-			// write and, on success, updates Etcd assignments with the current Route.
-
-			var assignments = ks.Prefixed(v3_allocator.ItemAssignmentsPrefix(ks, r.journal.String())).Copy()
-			var member = ks.KeyValues[state.LocalMemberInd].Decoded.(v3_allocator.Member)
-			var localID = member.MemberValue.(*pb.BrokerSpec).Id
-
-			var rt pb.Route
-			rt.Init(assignments)
-			rt.AttachEndpoints(ks)
-
-			if rt.Primary != -1 && rt.Brokers[rt.Primary] == localID {
-				// Pulse only if we are the current journal primary.
-				var subctx, _ = context.WithTimeout(r.ctx, 2*pulseInterval)
-				go pulseJournal(subctx, r.journal, rt, localID, assignments, dialer, etcd)
-			}
-
-			pulseTimer.Reset(pulseInterval)
-		}
+		var ctx, _ = context.WithTimeout(r.ctx, pulseInterval)
+		pulseJournal(ctx, r.journal, ks, lo, etcd)
 	}
 }
 
-// signalPulse attempts to signal the replica maintenance loop that it should
-// pulse the journal.
-func signalPulse(r *replica) {
-	select {
-	case r.pulseCh <- struct{}{}:
-	default:
-		// Pass (non-blocking).
-	}
-}
-
-func pulseJournal(ctx context.Context, name pb.Journal, rt pb.Route, localID pb.BrokerSpec_ID, assignments keyspace.KeyValues, dialer client.Dialer, etcd clientv3.KV) {
-	var conn, err = dialer.Dial(ctx, localID, rt)
-	if err != nil {
-		log.WithFields(log.Fields{"err": err, "journal": name}).Error("failed to dial local broker")
-		return
-	}
-
-	var app = client.NewAppender(ctx, pb.NewBrokerClient(conn), pb.AppendRequest{
-		Journal:    name,
-		DoNotProxy: true,
+func pulseJournal(ctx context.Context, journal pb.Journal, ks *keyspace.KeySpace, lo pb.BrokerClient, etcd clientv3.KV) {
+	var app = client.NewAppender(ctx, lo, pb.AppendRequest{
+		Journal: journal,
 	})
-	if err = app.Close(); err != nil {
+	if err := app.Close(); err != nil {
 		log.WithFields(log.Fields{
-			"journal": name,
+			"journal": journal,
 			"err":     err,
-			"resp":    app.Response.String(),
-		}).Warn("pulse commit failed")
+			"resp":    app.Response,
+		}).Warn("pulse append failed")
 		return
 	}
+
+	ks.Mu.RLock()
+	var assignments = ks.Prefixed(v3_allocator.ItemAssignmentsPrefix(ks, journal.String())).Copy()
+	ks.Mu.RUnlock()
+
+	// Check that the response Route is equivalent to current |assignments|. It
+	// may not be, if this pulse happened to race a concurrent allocator update.
+	var rt pb.Route
+	rt.Init(assignments)
 
 	if !rt.Equivalent(&app.Response.Header.Route) {
 		log.WithFields(log.Fields{
-			"journal": name,
+			"journal": journal,
 			"rt":      rt.String(),
-			"resp":    app.Response.String(),
-		}).Warn("pulse Route differs")
+			"resp":    app.Response,
+		}).Warn("pulse Route differs") // TODO(johnny): Use Debug (accepted race condition).
 		return
 	}
 
-	// Strip |rt| Endpoints (they're not needed when marshalling |rt| as an assignment value).
-	rt.Endpoints = nil
-	var rtStr = rt.MarshalString()
-
+	// Construct an Etcd transaction which asserts |assignments| are unchanged
+	// and updates non-equivalent values to the |rt| Route serialization,
+	// bringing them to a state of advertised consistency.
 	var cmp []clientv3.Cmp
 	var ops []clientv3.Op
+	var value = rt.MarshalString()
 
 	for _, kv := range assignments {
 		var key = string(kv.Raw.Key)
+
+		if !rt.Equivalent(kv.Decoded.(v3_allocator.Assignment).AssignmentValue.(*pb.Route)) {
+			ops = append(ops, clientv3.OpPut(key, value, clientv3.WithIgnoreLease()))
+		}
 		cmp = append(cmp, clientv3.Compare(clientv3.ModRevision(key), "=", kv.Raw.ModRevision))
-		ops = append(ops, clientv3.OpPut(key, rtStr, clientv3.WithIgnoreLease()))
 	}
 
-	var resp *clientv3.TxnResponse
-	resp, err = etcd.Txn(context.Background()).If(cmp...).Then(ops...).Commit()
-
-	if err == nil && !resp.Succeeded {
-		err = fmt.Errorf("transaction failed")
-	}
-	if err != nil {
-		log.WithFields(log.Fields{
-			"journal": name,
-			"err":     err,
-		}).Warn("failed to update assignments")
+	if len(ops) == 0 {
+		// Trivial success. No |assignment| values need to be updated.
+	} else if resp, err := etcd.Txn(ctx).If(cmp...).Then(ops...).Commit(); err != nil {
+		log.WithField("err", err).Warn("etcd txn failed")
+	} else if !resp.Succeeded {
+		log.WithField("journal", journal).Warn("etcd txn did not apply") // TODO(johnny): Debug.
 	}
 }
 
-func refreshFragments(ctx context.Context, spec *pb.JournalSpec, fi *fragment.Index) {
-	var set, err = fragment.WalkAllStores(ctx, spec.Name, spec.Fragment.Stores)
+func refreshFragments(r *replica, ks *keyspace.KeySpace) time.Duration {
+	ks.Mu.RLock()
+	var item, ok = v3_allocator.LookupItem(ks, r.journal.String())
+	ks.Mu.RUnlock()
 
-	if err != nil {
-		fi.ReplaceRemote(set)
+	if !ok {
+		return math.MaxInt64
+	}
+
+	var spec = item.ItemValue.(*pb.JournalSpec)
+	var set, err = fragment.WalkAllStores(r.ctx, spec.Name, spec.Fragment.Stores)
+
+	if err == nil {
+		r.index.ReplaceRemote(set)
 	} else {
 		log.WithFields(log.Fields{
 			"name":     spec.Name,
@@ -304,11 +267,13 @@ func refreshFragments(ctx context.Context, spec *pb.JournalSpec, fi *fragment.In
 			"interval": spec.Fragment.RefreshInterval,
 		}).Warn("failed to refresh remote fragments (will retry)")
 	}
+	return spec.Fragment.RefreshInterval
 }
 
 var (
-	pulseInterval   = time.Minute
+	pulseInterval   = time.Second * 10
 	sharedPersister *fragment.Persister
 )
 
+// SetSharedPersister sets the Persister instance used by the `broker` package.
 func SetSharedPersister(p *fragment.Persister) { sharedPersister = p }

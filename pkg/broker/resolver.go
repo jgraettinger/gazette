@@ -170,11 +170,12 @@ func (r *resolver) updateResolutions() {
 		}
 
 		if assignment.Slot == 0 && !item.IsConsistent(li.Assignments[li.Index], li.Assignments) {
-			// Signal the replica's maintenance loop that the journal should be
-			// "pulsed", which is done by attempting a zero-length write transaction
-			// and, on successful completion, updating Etcd-backed assignments with
-			// the resulting route topology (bringing them to consistency).
-			signalPulse(rep)
+			// Attempt to signal the replica's maintenance loop that the
+			// journal should be pulsed.
+			select {
+			case rep.pulseCh <- struct{}{}:
+			default: // Pass (non-blocking).
+			}
 		}
 	}
 
