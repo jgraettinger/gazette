@@ -1,4 +1,4 @@
-// Package allocator implements a distributed algorithm for assigning a number
+// Package v3_allocator implements a distributed algorithm for assigning a number
 // of Items across a number of Members, where each Member runs an instance of
 // the Allocator. Items and Members may come and go over time; each may have
 // constraints on desired replication and assignment limits which must be

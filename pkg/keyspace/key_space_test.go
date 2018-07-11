@@ -174,6 +174,36 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 		},
 	}
 	c.Check(ks.Apply(resp...), gc.IsNil)
+
+	// A ProgressNotify WatchResponse moves the Revision forward.
+	c.Check(ks.Apply(clientv3.WatchResponse{
+		Header: epb.ResponseHeader{ClusterId: 9999, Revision: 20},
+		Events: []*clientv3.Event{},
+	}), gc.IsNil)
+	c.Check(ks.Header.Revision, gc.Equals, int64(20))
+
+	// However, as a special case and unlike any other WatchResponse,
+	// a ProgressNotify is not *required* to increase the revision.
+	c.Check(ks.Apply(clientv3.WatchResponse{
+		Header: epb.ResponseHeader{ClusterId: 9999, Revision: 20},
+		Events: []*clientv3.Event{},
+	}), gc.IsNil)
+
+	// It's possible such a WatchResponse is queued & processed with
+	// a mutation which follows. This works as expected.
+	c.Check(ks.Apply(
+		clientv3.WatchResponse{
+			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 20},
+			Events: []*clientv3.Event{},
+		},
+		clientv3.WatchResponse{
+			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 21},
+			Events: []*clientv3.Event{
+				putEvent("/ffff", "8888", 21, 21, 1),
+			},
+		},
+	), gc.IsNil)
+
 	verifyDecodedKeyValues(c, ks.KeyValues,
 		map[string]int{
 			"/some/key":  101,
@@ -183,6 +213,7 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 			"/bbbb": 6666,
 			"/cccc": 4444,
 			"/eeee": 7777,
+			"/ffff": 8888,
 		})
 }
 

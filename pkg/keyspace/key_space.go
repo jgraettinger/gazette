@@ -176,24 +176,16 @@ func (ks *KeySpace) WaitForRevision(ctx context.Context, revision int64) error {
 // concurrent calls to Apply are not made.
 func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
 	var hdr etcdserverpb.ResponseHeader
+	var wr clientv3.WatchResponse
 
-	for i := 0; i != len(responses); {
-		var r = responses[i]
-
-		if err := patchHeader(&hdr, r.Header, false); err != nil {
+	for _, wr = range responses {
+		if err := patchHeader(&hdr, wr.Header, false); err != nil {
 			return err
 		}
 		// Order events of each WatchResponse on key order (they already share ModRevision).
-		sort.Slice(r.Events, func(i, j int) bool {
-			return bytes.Compare(r.Events[i].Kv.Key, r.Events[j].Kv.Key) < 0
+		sort.Slice(wr.Events, func(i, j int) bool {
+			return bytes.Compare(wr.Events[i].Kv.Key, wr.Events[j].Kv.Key) < 0
 		})
-
-		if len(r.Events) == 0 {
-			copy(responses[i:], responses[i+1:])
-			responses = responses[:len(responses)-1]
-		} else {
-			i++
-		}
 	}
 
 	// Heap WatchResponses on (Key, ModRevision) order of the first response Event.
@@ -206,8 +198,10 @@ func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
 	var current, next = ks.KeyValues, ks.next
 
 	for responseHeap.Len() != 0 {
+		if wr = heap.Pop(&responseHeap).(clientv3.WatchResponse); len(wr.Events) == 0 {
+			continue
+		}
 		// wr.Events[0] is the next Event in the overall sequence ordered on (Key, ModRevision).
-		var wr = heap.Pop(&responseHeap).(clientv3.WatchResponse)
 
 		// Find the |ind| of this key in |current|. Copy and append all preceding
 		// keys to |next|, through a current value for this key. Then step |current|
@@ -224,16 +218,24 @@ func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
 			log.WithFields(log.Fields{"err": err, "event": wr.Events[0].Kv.String()}).
 				Error("inconsistent watched key/value event")
 		}
-		// Pop wr.Events[0], and re-queue |wr| if events remain in this WatchResponse.
-		if wr.Events = wr.Events[1:]; len(wr.Events) != 0 {
-			heap.Push(&responseHeap, wr)
-		}
+
+		// Pop wr.Events[0], and re-order the next Event in the heap.
+		wr.Events = wr.Events[1:]
+		heap.Push(&responseHeap, wr)
 	}
 	next = append(next, current...) // Append any left-over elements in |current|.
 
-	// Critical section: patch updated header, and swap out rebuilt KeyValues.
+	// Critical section: patch updated header, swap out rebuilt KeyValues, and notify observers.
 	ks.Mu.Lock()
-	var err = patchHeader(&ks.Header, hdr, false)
+
+	// We require that Revision be strictly increasing, with one exception:
+	// an idle Etcd cluster will send occasional ProgressNotify WatchResponses
+	// even if no Etcd mutations have occurred since the last WatchResponse.
+	var expectSameRevision = len(responses) == 1 &&
+		responses[0].IsProgressNotify() &&
+		ks.Header.Revision == hdr.Revision
+
+	var err = patchHeader(&ks.Header, hdr, expectSameRevision)
 	if err == nil {
 		ks.KeyValues, ks.next = next, ks.KeyValues[:0]
 		ks.onUpdate()
@@ -285,10 +287,17 @@ func (h *watchResponseHeap) Push(x interface{}) { *h = append(*h, x.(clientv3.Wa
 
 // Less orders on ascending key, and for the same key, ascending ModRevision.
 func (h watchResponseHeap) Less(i, j int) bool {
-	if c := bytes.Compare(h[i].Events[0].Kv.Key, h[j].Events[0].Kv.Key); c != 0 {
+	if li, lj := len(h[i].Events), len(h[j].Events); li == 0 && lj == 0 {
+		return false
+	} else if li == 0 {
+		return true
+	} else if lj == 0 {
+		return false
+	} else if c := bytes.Compare(h[i].Events[0].Kv.Key, h[j].Events[0].Kv.Key); c != 0 {
 		return c < 0
+	} else {
+		return h[i].Events[0].Kv.ModRevision < h[j].Events[0].Kv.ModRevision
 	}
-	return h[i].Events[0].Kv.ModRevision < h[j].Events[0].Kv.ModRevision
 }
 
 func (h *watchResponseHeap) Pop() interface{} {

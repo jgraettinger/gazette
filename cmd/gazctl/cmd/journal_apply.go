@@ -5,14 +5,14 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/LiveRamp/gazette/pkg/protocol"
-	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
+	"github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/protocol/journalspace"
+	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
 var journalApplyCmd = &cobra.Command{

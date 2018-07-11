@@ -6,7 +6,7 @@ import (
 	"github.com/coreos/etcd/mvcc/mvccpb"
 )
 
-// NewBrokerKeySpace returns a KeySpace suitable for use with an Allocator.
+// NewKeySpace returns a KeySpace suitable for use with an Allocator.
 // It decodes allocator Items as JournalSpec messages, Members as BrokerSpecs,
 // and Assignments as Routes.
 func NewKeySpace(prefix string) *keyspace.KeySpace {
@@ -45,9 +45,11 @@ func (d decoder) DecodeMember(zone, suffix string, raw *mvccpb.KeyValue) (v3_all
 }
 
 func (d decoder) DecodeAssignment(itemID, memberZone, memberSuffix string, slot int, raw *mvccpb.KeyValue) (v3_allocator.AssignmentValue, error) {
-	var s = &Route{Primary: -1}
+	var s = new(Route)
 
-	if err := s.Unmarshal(raw.Value); err != nil {
+	if len(raw.Value) == 0 {
+		s.Init(nil)
+	} else if err := s.Unmarshal(raw.Value); err != nil {
 		return nil, err
 	} else if err = s.Validate(); err != nil {
 		return nil, err

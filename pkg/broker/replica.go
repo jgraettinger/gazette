@@ -45,7 +45,7 @@ func newReplica(journal pb.Journal) *replica {
 		index:      fragment.NewIndex(ctx),
 		spoolCh:    make(chan fragment.Spool, 1),
 		pipelineCh: make(chan *pipeline, 1),
-		pulseCh:    make(chan struct{}),
+		pulseCh:    make(chan struct{}, 1),
 	}
 
 	r.spoolCh <- fragment.NewSpool(journal, struct {

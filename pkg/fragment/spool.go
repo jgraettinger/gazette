@@ -76,7 +76,13 @@ func (s *Spool) Apply(r *pb.ReplicateRequest) (pb.ReplicateResponse, error) {
 func (s *Spool) Next() pb.Fragment {
 	var f = s.Fragment.Fragment
 	f.End += s.delta
-	f.Sum = pb.SHA1SumFromDigest(s.summer.Sum(nil))
+
+	// Empty fragments are special-cased to have Sum of zero (as technically, SHA1('') != <zero>).
+	if f.Begin == f.End {
+		f.Sum = pb.SHA1Sum{}
+	} else {
+		f.Sum = pb.SHA1SumFromDigest(s.summer.Sum(nil))
+	}
 	return f
 }
 
@@ -137,7 +143,7 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 	}
 
 	// Case 2? Apply the |delta| bytes spooled since last commit.
-	if s.Next() == *r.Proposal {
+	if next := s.Next(); next == *r.Proposal {
 
 		if s.compressor != nil {
 			// Build a reader over the new content, and run it through the Compressor.
@@ -150,8 +156,7 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 			}
 		}
 
-		s.Fragment.End += s.delta
-		s.Fragment.Sum = pb.SHA1SumFromDigest(s.summer.Sum(nil))
+		s.Fragment.Fragment = next
 		s.observer.SpoolCommit(s.Fragment)
 
 		s.delta = 0

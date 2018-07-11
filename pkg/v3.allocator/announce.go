@@ -26,22 +26,24 @@ func Announce(ctx context.Context, etcd *clientv3.Client, key, value string, lea
 		if err == nil && resp.Succeeded == false {
 			err = fmt.Errorf("key exists")
 		}
-		if err != nil {
-			log.WithFields(log.Fields{"err": err, "key": key}).
-				Warn("failed to announce key (will retry)")
 
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Second * 10):
-				// Pass.
-			}
+		if err == nil {
+			return &Announcement{
+				Key:      key,
+				Revision: resp.Header.Revision,
+				etcd:     etcd,
+			}, nil
 		}
-		return &Announcement{
-			Key:      key,
-			Revision: resp.Header.Revision,
-			etcd:     etcd,
-		}, nil
+
+		log.WithFields(log.Fields{"err": err, "key": key}).
+			Warn("failed to announce key (will retry)")
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(announceConflictRetryInterval):
+			// Pass.
+		}
 	}
 }
 
@@ -59,3 +61,5 @@ func (a *Announcement) Update(ctx context.Context, value string) error {
 	}
 	return err
 }
+
+var announceConflictRetryInterval = time.Second * 10

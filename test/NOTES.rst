@@ -3,9 +3,11 @@ Notes on setting up and testing via Minikube
 
 
 Start minikube::
+
   sudo minikube start --vm-driver=none --extra-config=apiserver.authorization-mode=RBAC
 
 Install Tiller::
+
   kubectl create serviceaccount -n kube-system tiller
   kubectl create clusterrolebinding tiller-binding --clusterrole=cluster-admin --serviceaccount kube-system:tiller
   kubectl create clusterrolebinding fixDNS --clusterrole=cluster-admin --serviceaccount=kube-system:kube-dns
@@ -43,24 +45,20 @@ Start the ``word-count`` application::
 
   helm install charts/examples/word-count --name word-count
 
-Determine the Gazette service cluster IP::
+Port-forward a Gazette pod endpoint to localhost::
 
-  export GAZETTE=$(kubectl get svc gazette-gazette -o jsonpath={.spec.clusterIP}):8081
+  alias gazette_pod="kubectl get pod -l app=gazette -o jsonpath={.items[0].metadata.name}"
+  kubectl port-forward $(gazette_pod) 8081:8081
 
-On first run, create the word-count journals::
+Create the example journals::
 
-  curl -v -X POST http://$GAZETTE/examples/word-count/sentences
-  curl -v -X POST http://$GAZETTE/examples/word-count/counts
+  gazctl journal apply -s test/journalspace.yaml
 
 Begin a long-lived read of output counts::
 
-  curl -L -v "http://$GAZETTE/examples/word-count/counts?block=true&offset=-1"
+  curl -L -v "http://localhost:8081/examples/word-count/counts?block=true&offset=-1"
 
-Load a bunch of data into the input sentences journal. Note that depending on
-the broker the request is routed to, you may get a "401 Gone" response, which is
-informing you that another broker is currently responsible for the journal. You
-may wish to update URL below to the specific broker indicated by the
-returned ``Location:`` header::
+Load a bunch of data into the input sentences journal::
 
-  curl -v -X PUT http://$GAZETTE/examples/word-count/sentences --data-binary @a_tale_of_two_citites.txt
+  curl -v -X PUT http://localhost:8081/examples/word-count/sentences --data-binary @a_tale_of_two_citites.txt
 

@@ -160,7 +160,7 @@ func (s *State) debugLog() {
 		"Assignments":    len(s.Assignments),
 		"ItemSlots":      s.ItemSlots,
 		"Items":          len(s.Items),
-		"LocalItems":     la,
+		"LocalItems":     len(la),
 		"LocalKey":       s.LocalKey,
 		"LocalMemberInd": s.LocalMemberInd,
 		"MemberSlots":    s.MemberSlots,

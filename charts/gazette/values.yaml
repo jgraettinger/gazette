@@ -1,7 +1,7 @@
 # Default values for gazette.
 # This is a YAML-formatted file.
 
-replicaCount: 3
+replicaCount: 2
 image:
   repository: gazette
   tag: latest

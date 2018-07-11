@@ -113,6 +113,9 @@ func (s *JournalSuite) TestConsistencyCases(c *gc.C) {
 		assignments = append(assignments, keyspace.KeyValue{
 			Decoded: v3_allocator.Assignment{
 				AssignmentValue: &routes[i],
+				MemberSuffix:    routes[0].Brokers[i].Suffix,
+				MemberZone:      routes[0].Brokers[i].Zone,
+				Slot:            i,
 			},
 		})
 	}

@@ -173,6 +173,7 @@ func main() {
 	}
 
 	persister.Finish()
+	log.Info("goodbye")
 }
 
 func buildListeners(cfg *Config) (mux cmux.CMux, grpc, http net.Listener) {

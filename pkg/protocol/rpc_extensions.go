@@ -67,7 +67,7 @@ func (m *ReadResponse) Validate() error {
 			}
 		}
 	} else {
-		if m.Offset != 0 {
+		if m.Status == Status_OK && m.Offset != 0 {
 			return NewValidationError("unexpected Offset without Fragment or Content (%d)", m.Offset)
 		} else if m.FragmentUrl != "" {
 			return NewValidationError("unexpected FragmentUrl without Fragment (%s)", m.FragmentUrl)

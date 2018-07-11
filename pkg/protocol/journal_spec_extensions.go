@@ -84,14 +84,14 @@ func (m *JournalSpec) MarshalString() string {
 // v3_allocator.ItemValue implementation.
 func (m *JournalSpec) DesiredReplication() int { return int(m.Replication) }
 
-// IsConsistent returns true if all |assignments| agree on the current Route.
-// |assignments| must not be empty or IsConsistent panics.
+// IsConsistent returns true if the Route stored under each of |assignments|
+// agrees with the Route implied by the |assignments| keys.
 func (m *JournalSpec) IsConsistent(_ keyspace.KeyValue, assignments keyspace.KeyValues) bool {
-	var r1 = assignments[0].Decoded.(v3_allocator.Assignment).AssignmentValue.(*Route)
+	var rt Route
+	rt.Init(assignments)
 
-	for _, a := range assignments[1:] {
-		var r2 = a.Decoded.(v3_allocator.Assignment).AssignmentValue.(*Route)
-		if !r1.Equivalent(r2) {
+	for _, a := range assignments {
+		if !rt.Equivalent(a.Decoded.(v3_allocator.Assignment).AssignmentValue.(*Route)) {
 			return false
 		}
 	}

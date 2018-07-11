@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/LiveRamp/gazette/pkg/keyspace"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
@@ -169,7 +170,7 @@ func (r *resolver) updateResolutions() {
 			r.onNewReplica(rep)
 		}
 
-		if assignment.Slot == 0 && !item.IsConsistent(li.Assignments[li.Index], li.Assignments) {
+		if assignment.Slot == 0 && !item.IsConsistent(keyspace.KeyValue{}, li.Assignments) {
 			// Attempt to signal the replica's maintenance loop that the
 			// journal should be pulsed.
 			select {

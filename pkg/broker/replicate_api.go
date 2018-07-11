@@ -52,7 +52,7 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 	spool, err = serveReplicate(stream, req, spool)
 	res.replica.spoolCh <- spool // Release ownership of Spool.
 
-	if err != nil {
+	if err != nil && stream.Context().Err() == nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Replicate")
 	}
 	return err

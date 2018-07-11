@@ -35,7 +35,7 @@ func (d Dialer) Dial(ctx context.Context, id pb.BrokerSpec_ID, route pb.Route) (
 
 	if ind == len(route.Brokers) {
 		return nil, fmt.Errorf("no such Broker in Route (id: %s, route: %s)", id.String(), route.String())
-	} else if len(route.Endpoints) != len(route.Brokers) {
+	} else if len(route.Endpoints) != len(route.Brokers) || route.Endpoints[ind] == "" {
 		return nil, fmt.Errorf("missing Route Endpoints (id: %s, route: %s)", id.String(), route.String())
 	}
 

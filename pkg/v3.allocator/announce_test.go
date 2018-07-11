@@ -46,7 +46,14 @@ func (s *AnnounceSuite) TestAnnounceConflict(c *gc.C) {
 	_, err = Announce(ctx, client, key, "val-other", session.Lease())
 	c.Check(err, gc.IsNil)
 
-	time.AfterFunc(10*time.Millisecond, cancel)
+	// Temporarily set the retry interval to a very short duration.
+	defer func(d time.Duration) {
+		announceConflictRetryInterval = d
+	}(announceConflictRetryInterval)
+
+	// Expect that Announce retries until the context is cancelled.
+	announceConflictRetryInterval = time.Millisecond
+	time.AfterFunc(10*announceConflictRetryInterval, cancel)
 
 	_, err = Announce(ctx, client, key, "val-other", session.Lease())
 	c.Check(err, gc.Equals, context.Canceled)

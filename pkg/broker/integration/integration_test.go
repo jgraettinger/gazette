@@ -84,6 +84,7 @@ type testBroker struct {
 	key          string
 	state        *v3_allocator.State
 	srv          *teststub.Server
+	svc          broker.Service
 	announcement *v3_allocator.Announcement
 	stopped      chan struct{}
 }
@@ -98,7 +99,8 @@ func (s *testBroker) start(c *gc.C, ctx context.Context, ks *keyspace.KeySpace, 
 
 	s.key = v3_allocator.MemberKey(ks, s.spec.Id.Zone, s.spec.Id.Suffix)
 	s.state = v3_allocator.NewObservedState(ks, s.key)
-	s.srv = teststub.NewServer(c, ctx, broker.NewService(dialer, s.state))
+	s.srv = teststub.NewServer(c, ctx, &s.svc)
+	s.svc = *broker.NewService(s.state, dialer, s.srv.MustClient(), etcd)
 	s.spec.Endpoint = s.srv.Endpoint()
 
 	s.announcement, err = v3_allocator.Announce(context.Background(),

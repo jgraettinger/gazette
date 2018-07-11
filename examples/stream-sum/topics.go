@@ -69,7 +69,7 @@ func init() {
 	Chunks.Framing = topic.JsonFraming
 	Chunks.GetMessage = func() topic.Message { return new(Chunk) }
 	Chunks.PutMessage = func(m topic.Message) {}
-	Chunks.Partitions = topic.EnumeratePartitions(Chunks.Name, 8)
+	Chunks.Partitions = topic.EnumeratePartitions(Chunks.Name, 1)
 	Chunks.MappedPartition = topic.ModuloPartitionMapping(Chunks.Partitions,
 		func(m topic.Message, b []byte) []byte {
 			return append(b, m.(*Chunk).ID[:]...)

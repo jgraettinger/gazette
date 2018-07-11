@@ -14,6 +14,58 @@ import (
 
 type SpoolSuite struct{}
 
+func (s *SpoolSuite) TestNextCases(c *gc.C) {
+	var obv testSpoolObserver
+	var spool = NewSpool("a/journal", &obv)
+
+	// Case: Newly-initialized spool.
+	c.Check(spool.Next(), gc.DeepEquals, pb.Fragment{
+		Journal:          "a/journal",
+		CompressionCodec: pb.CompressionCodec_NONE,
+	})
+
+	// Case: Zero-length fragment.
+	var resp, _ = spool.Apply(&pb.ReplicateRequest{
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			Begin:            100,
+			End:              100,
+			CompressionCodec: pb.CompressionCodec_SNAPPY,
+			BackingStore:     "s3://a-bucket",
+		}})
+	c.Check(resp.Status, gc.Equals, pb.Status_OK)
+
+	c.Check(spool.Next(), gc.DeepEquals, pb.Fragment{
+		Journal:          "a/journal",
+		Begin:            100,
+		End:              100,
+		CompressionCodec: pb.CompressionCodec_SNAPPY,
+		BackingStore:     "s3://a-bucket",
+	})
+
+	// Case: Fragment with applied content, ready to be committed.
+	var _, err = spool.Apply(&pb.ReplicateRequest{
+		Content:      []byte("some"),
+		ContentDelta: 0,
+	})
+	c.Check(err, gc.IsNil)
+
+	_, err = spool.Apply(&pb.ReplicateRequest{
+		Content:      []byte(" content"),
+		ContentDelta: 4,
+	})
+	c.Check(err, gc.IsNil)
+
+	c.Check(spool.Next(), gc.DeepEquals, pb.Fragment{
+		Journal:          "a/journal",
+		Begin:            100,
+		End:              112,
+		Sum:              pb.SHA1SumOf("some content"),
+		CompressionCodec: pb.CompressionCodec_SNAPPY,
+		BackingStore:     "s3://a-bucket",
+	})
+}
+
 func (s *SpoolSuite) TestNoCompression(c *gc.C) {
 	var obv testSpoolObserver
 	var spool = NewSpool("a/journal", &obv)
