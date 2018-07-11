@@ -275,6 +275,16 @@ func (pln *pipeline) recvErr() error {
 	return nil
 }
 
+// String is used to provide debugging output of a pipeline in a request trace.
+func (pln *pipeline) String() string {
+	if pln == nil {
+		return "<nil>"
+	} else if pln.readThroughRev != 0 {
+		return fmt.Sprintf("readThroughRev<%d>", pln.readThroughRev)
+	}
+	return fmt.Sprintf("pipeline<%s>", &pln.Header)
+}
+
 func boxHeaderBroker(hdr pb.Header, id pb.BrokerSpec_ID) *pb.Header {
 	var out = new(pb.Header)
 	*out = hdr

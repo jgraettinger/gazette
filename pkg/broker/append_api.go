@@ -106,6 +106,7 @@ func serveAppend(stream grpc.Stream, pln *pipeline, spec *pb.JournalSpec, releas
 	var appender = beginAppending(pln, spec.Fragment)
 	for appender.onRecv(req, stream.RecvMsg(req)) {
 	}
+	addTrace(stream.Context(), "read client EOF => %s", appender)
 
 	var plnSendErr = pln.sendErr()
 	var waitFor, closeAfter = pln.barrier()
@@ -127,6 +128,7 @@ func serveAppend(stream grpc.Stream, pln *pipeline, spec *pb.JournalSpec, releas
 	// completes, we have sole ownership of the _receive_ side of |pln|.
 	<-waitFor
 	defer func() { close(closeAfter) }()
+	addTrace(stream.Context(), "<-waitFor => struct{}")
 
 	// We expect an acknowledgement from each peer. If we encountered a send
 	// error, we also expect an EOF from remaining non-broken peers.
@@ -248,6 +250,12 @@ func (a *appender) onRecv(req *pb.AppendRequest, err error) bool {
 		Acknowledge: true,
 	})
 	return false
+}
+
+// String returns a debugging representation of the appender.
+func (a *appender) String() string {
+	return fmt.Sprintf("appender<reqCommit: %t, reqErr: %s, reqFragment: %s>",
+		a.reqCommit, a.reqErr, a.reqFragment.String())
 }
 
 func updateProposal(cur pb.Fragment, spec pb.JournalSpec_Fragment) (pb.Fragment, bool) {

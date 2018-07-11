@@ -3,6 +3,7 @@ package fragment
 import (
 	"crypto/sha1"
 	"encoding"
+	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
@@ -127,6 +128,12 @@ func (s *Spool) CodecReader() io.ReadCloser {
 	}()
 
 	return pr
+}
+
+// String returns a debugging representation of the Spool.
+func (s *Spool) String() string {
+	return fmt.Sprintf("Spool<Fragment: %s, Primary: %t, delta: %d>",
+		s.Fragment.String(), s.Primary, s.delta)
 }
 
 func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {

@@ -91,6 +91,7 @@ func acquireSpool(ctx context.Context, r *replica, waitForRemoteLoad bool) (spoo
 		}
 	}
 
+	addTrace(ctx, "<-replica.spoolCh => %s", spool)
 	return
 }
 
@@ -105,6 +106,7 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer clie
 	case pln = <-r.pipelineCh:
 		// Pass.
 	}
+	addTrace(ctx, "<-replica.pipelineCh => %s", pln)
 
 	// Is |pln| is a placeholder indicating the need to read through a revision, which we've since read through?
 	if pln != nil && pln.readThroughRev != 0 && pln.readThroughRev <= hdr.Etcd.Revision {
@@ -135,6 +137,8 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer clie
 	var err error
 
 	if pln == nil {
+		addTrace(ctx, " ... must build new pipeline")
+
 		// We must construct a new pipeline.
 		var spool fragment.Spool
 		spool, err = acquireSpool(ctx, r, true)
@@ -143,6 +147,7 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer clie
 			pln = newPipeline(r.ctx, hdr, spool, r.spoolCh, dialer)
 			err = pln.synchronize()
 		}
+		addTrace(ctx, "newPipeline() => %s, %s", pln, err)
 	}
 
 	if err != nil {

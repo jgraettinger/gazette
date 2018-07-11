@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/trace"
+
 	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -74,17 +76,23 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadRespon
 			resp.WriteHead = fi.set.EndOffset()
 			resp.Fragment = new(pb.Fragment)
 			*resp.Fragment = fi.set[ind].Fragment
+
+			addTrace(ctx, "Index.Query(%s) => %s, localFile: %t", req, resp, fi.set[ind].File)
 			return resp, fi.set[ind].File, nil
 		}
 
 		if !req.Block {
 			resp.Status = pb.Status_OFFSET_NOT_YET_AVAILABLE
 			resp.WriteHead = fi.set.EndOffset()
+
+			addTrace(ctx, "Index.Query(%s) => %s", req, resp)
 			return resp, nil, nil
 		}
 
 		var condCh = fi.condCh
 		var err error
+
+		addTrace(ctx, " ... stalled in Index.Query(%s)", req)
 
 		// Wait for |condCh| to signal, or for the request |ctx| or Index
 		// Context to be cancelled.
@@ -173,6 +181,14 @@ func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {
 	select {
 	case <-fi.firstLoadCh:
 		return nil
+	default:
+	}
+
+	addTrace(ctx, " ... stalled in Index.WaitForFirstRemoteLoad()")
+
+	select {
+	case <-fi.firstLoadCh:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-fi.ctx.Done():
@@ -208,3 +224,9 @@ func WalkAllStores(_ context.Context, name pb.Journal, stores []pb.FragmentStore
 }
 
 var timeNow = time.Now
+
+func addTrace(ctx context.Context, format string, args ...interface{}) {
+	if tr, ok := trace.FromContext(ctx); ok {
+		tr.LazyPrintf(format, args...)
+	}
+}

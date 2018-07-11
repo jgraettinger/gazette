@@ -89,9 +89,14 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	}
 
 	if args.minEtcdRevision > ks.Header.Revision {
+		addTrace(args.ctx, " ... at revision %d, but want at least %d",
+			ks.Header.Revision, args.minEtcdRevision)
+
 		if err = ks.WaitForRevision(args.ctx, args.minEtcdRevision); err != nil {
 			return
 		}
+		addTrace(args.ctx, "WaitForRevision(%d) => %d",
+			args.minEtcdRevision, ks.Header.Revision)
 	}
 	res.Etcd = pb.FromEtcdResponseHeader(ks.Header)
 
@@ -143,6 +148,9 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	if res.status != pb.Status_OK {
 		res.BrokerId = local.Id
 	}
+
+	addTrace(args.ctx, "resolve(%s) => %s, local: %t, header: %s",
+		args.journal, res.status, res.replica != nil, res.Header)
 
 	return
 }

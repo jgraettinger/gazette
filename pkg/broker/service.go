@@ -1,7 +1,10 @@
 package broker
 
 import (
+	"context"
+
 	"github.com/coreos/etcd/clientv3"
+	"golang.org/x/net/trace"
 
 	"github.com/LiveRamp/gazette/pkg/client"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
@@ -19,5 +22,11 @@ func NewService(state *v3_allocator.State, dialer client.Dialer, lo pb.BrokerCli
 		resolver: newResolver(state, func(r *replica) {
 			go maintenanceLoop(r, state.KS, lo, etcd)
 		}),
+	}
+}
+
+func addTrace(ctx context.Context, format string, args ...interface{}) {
+	if tr, ok := trace.FromContext(ctx); ok {
+		tr.LazyPrintf(format, args...)
 	}
 }
