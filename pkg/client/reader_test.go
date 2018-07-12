@@ -28,7 +28,7 @@ func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
 	var ctx = context.Background()
 
 	// Case: read entire fragment.
-	var rc, err = OpenFragmentURL(ctx, frag.Begin, frag, url)
+	var rc, err = OpenFragmentURL(ctx, frag, frag.Begin, url)
 	c.Check(err, gc.IsNil)
 
 	b, err := ioutil.ReadAll(rc)
@@ -36,7 +36,7 @@ func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
 	c.Check(string(b), gc.Equals, "XXXXXhello, world!!!")
 
 	// Case: read a portion of the fragment.
-	rc, err = OpenFragmentURL(ctx, frag.Begin+5, frag, url)
+	rc, err = OpenFragmentURL(ctx, frag, frag.Begin+5, url)
 	c.Check(err, gc.IsNil)
 
 	b, err = ioutil.ReadAll(rc)
@@ -45,7 +45,7 @@ func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
 
 	// Case: stream ends before Fragment.End.
 	frag.End += 1
-	rc, err = OpenFragmentURL(ctx, frag.Begin+5, frag, url)
+	rc, err = OpenFragmentURL(ctx, frag, frag.Begin+5, url)
 	c.Check(err, gc.IsNil)
 
 	b, err = ioutil.ReadAll(rc)
@@ -54,7 +54,7 @@ func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
 
 	// Case: stream continues after Fragment.End.
 	frag.End -= 4
-	rc, err = OpenFragmentURL(ctx, frag.Begin+5, frag, url)
+	rc, err = OpenFragmentURL(ctx, frag, frag.Begin+5, url)
 	c.Check(err, gc.IsNil)
 
 	b, err = ioutil.ReadAll(rc)
@@ -63,8 +63,8 @@ func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
 
 	// Case: decompression fails.
 	frag.CompressionCodec = pb.CompressionCodec_SNAPPY
-	rc, err = OpenFragmentURL(ctx, frag.Begin+5, frag, url)
-	c.Check(err, gc.ErrorMatches, `error seeking fragment \(snappy: corrupt input.*`)
+	rc, err = OpenFragmentURL(ctx, frag, frag.Begin+5, url)
+	c.Check(err, gc.ErrorMatches, `snappy: corrupt input`)
 }
 
 func (s *ReaderSuite) TestReaderCases(c *gc.C) {

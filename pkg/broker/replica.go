@@ -129,7 +129,7 @@ func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer clie
 			pln = newPipeline(r.ctx, hdr, spool, r.spoolCh, dialer)
 			err = pln.synchronize()
 		}
-		addTrace(ctx, "newPipeline() => %s, err: %s", pln, err)
+		addTrace(ctx, "newPipeline() => %s, err: %v", pln, err)
 	}
 
 	if err != nil {

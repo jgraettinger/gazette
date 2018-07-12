@@ -1,11 +1,8 @@
 package fragment
 
 import (
-	"fmt"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
 
 	log "github.com/sirupsen/logrus"
 
@@ -13,26 +10,13 @@ import (
 )
 
 // WalkFuncAdapter builds and returns a filepath.WalkFunc which parses encountered
-// files as Fragments, and passes each to the provided |callback|. Prefix |rewrites|
-// may be included, as pairs of "from", "to" prefixes which are applied in order. For
-// example, NewWalkFuncAdapter(cb, "/from/", "/foo/to/", "/foo/", "/") would rewrite
-// path "/from/bar" => "/to/bar".
-func WalkFuncAdapter(callback func(protocol.Fragment) error, rewrites ...string) filepath.WalkFunc {
-	if len(rewrites)%2 != 0 {
-		panic(fmt.Sprintf("invalid odd-length rewrites: %#v", rewrites))
-	}
-
+// files as Fragments, and passes each to the provided |callback|.
+func WalkFuncAdapter(store protocol.FragmentStore, callback func(protocol.Fragment) error) filepath.WalkFunc {
 	return func(fpath string, finfo os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		} else if finfo.IsDir() {
 			return nil
-		}
-
-		for i := 0; i != len(rewrites); i += 2 {
-			if strings.HasPrefix(fpath, rewrites[i]) {
-				fpath = path.Join(rewrites[i+1], fpath[len(rewrites[i]):])
-			}
 		}
 
 		fragment, err := protocol.ParseContentPath(fpath)
@@ -44,6 +28,7 @@ func WalkFuncAdapter(callback func(protocol.Fragment) error, rewrites ...string)
 			return nil
 		}
 		fragment.ModTime = finfo.ModTime()
+		fragment.BackingStore = store
 
 		return callback(fragment)
 	}

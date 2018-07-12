@@ -111,8 +111,8 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 
 	// If the frame preceding EOF provided a fragment URL, open it directly.
 	if r.Response.Status == pb.Status_OK && r.Response.FragmentUrl != "" {
-		if r.direct, err = OpenFragmentURL(r.ctx, r.Request.Offset,
-			*r.Response.Fragment, r.Response.FragmentUrl); err == nil {
+		if r.direct, err = OpenFragmentURL(r.ctx, *r.Response.Fragment,
+			r.Request.Offset, r.Response.FragmentUrl); err == nil {
 			n, err = r.Read(p) // Recurse to attempt read against opened |r.direct|.
 		}
 		return
@@ -163,7 +163,7 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 
 // OpenFragmentURL directly opens |fragment|, which must be available at URL
 // |url|, and returns a ReadCloser which has been pre-seeked to |offset|.
-func OpenFragmentURL(ctx context.Context, offset int64, fragment pb.Fragment, url string) (io.ReadCloser, error) {
+func OpenFragmentURL(ctx context.Context, fragment pb.Fragment, offset int64, url string) (io.ReadCloser, error) {
 	var req, err = http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -191,16 +191,21 @@ func OpenFragmentURL(ctx context.Context, offset int64, fragment pb.Fragment, ur
 		resp.Body.Close()
 		return nil, fmt.Errorf("!OK fetching (%s, %q)", resp.Status, url)
 	}
+	return NewFragmentReader(resp.Body, fragment, offset)
+}
 
-	decomp, err := codecs.NewCodecReader(resp.Body, fragment.CompressionCodec)
+// NewFragmentReader wraps |r|, which is a reader of the remote Fragment,
+// with its appropriate decompressor and pre-seeks to the desired |offset|.
+func NewFragmentReader(r io.ReadCloser, fragment pb.Fragment, offset int64) (io.ReadCloser, error) {
+	var decomp, err = codecs.NewCodecReader(r, fragment.CompressionCodec)
 	if err != nil {
-		resp.Body.Close()
-		return nil, fmt.Errorf("building decompressor (%s, %q)", err, url)
+		r.Close()
+		return nil, err
 	}
 
 	var fr = &fragReader{
 		decomp:   decomp,
-		raw:      resp.Body,
+		raw:      r,
 		fragment: fragment,
 	}
 
@@ -208,7 +213,7 @@ func OpenFragmentURL(ctx context.Context, offset int64, fragment pb.Fragment, ur
 	var delta = offset - fragment.Begin
 	if _, err := io.CopyN(ioutil.Discard, fr, delta); err != nil {
 		fr.Close()
-		return nil, fmt.Errorf("error seeking fragment (%s, %q)", err, url)
+		return nil, err
 	}
 	return fr, nil
 }

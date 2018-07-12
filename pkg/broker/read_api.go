@@ -5,10 +5,11 @@ import (
 	"io"
 	"io/ioutil"
 
-	"github.com/LiveRamp/gazette/pkg/client"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
+	"github.com/LiveRamp/gazette/pkg/client"
+	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -103,10 +104,13 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 			reader = ioutil.NopCloser(io.NewSectionReader(
 				file, resp.Offset-resp.Fragment.Begin, resp.Fragment.End-resp.Offset))
 		} else {
-			// if reader, err = fragment.Store.Open(*resp.Fragment, resp.Offset); err != nil {
-			//return err
-			// }
-			panic("not yet implemented")
+			if fs, err := cloudstore.NewFileSystem(nil, string(resp.Fragment.BackingStore)); err != nil {
+				return err
+			} else if file, err := fs.Open(resp.Fragment.ContentPath()); err != nil {
+				return err
+			} else if reader, err = client.NewFragmentReader(file, *resp.Fragment, resp.Offset); err != nil {
+				return err
+			}
 		}
 
 		// Don't send metadata other than Offset in chunks 2..N of the Fragment.

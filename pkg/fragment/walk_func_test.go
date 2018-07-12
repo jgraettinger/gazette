@@ -15,10 +15,10 @@ type WalkFuncSuite struct{}
 func (s *WalkFuncSuite) TestPathWalkFuncAdapater(c *gc.C) {
 	var out []protocol.Fragment
 
-	var f = WalkFuncAdapter(func(frag protocol.Fragment) error {
+	var f = WalkFuncAdapter("http://example/store", func(frag protocol.Fragment) error {
 		out = append(out, frag)
 		return nil
-	}, "/strip-prefix/", "", "rename/from/", "foo/")
+	})
 
 	var expect = protocol.Fragment{
 		Journal:          "foo/bar",
@@ -26,23 +26,21 @@ func (s *WalkFuncSuite) TestPathWalkFuncAdapater(c *gc.C) {
 		End:              33334444,
 		Sum:              protocol.SHA1Sum{Part1: 111, Part2: 222, Part3: 333},
 		CompressionCodec: protocol.CompressionCodec_SNAPPY,
+		BackingStore:     "http://example/store",
 		ModTime:          time.Unix(12345, 0),
 	}
 
-	// Expect a Fragment is parsed...
-	c.Check(f("foo/bar/"+expect.ContentName(), mockFinfo{size: 123}, nil), gc.IsNil)
-	// ... and that any matched path re-writes are applied to produce the Journal.
-	c.Check(f("/strip-prefix/rename/from/bar/"+expect.ContentName(), mockFinfo{size: 123}, nil), gc.IsNil)
-
-	c.Check(out, gc.DeepEquals, []protocol.Fragment{expect, expect})
+	// Expect a regular Fragment is parsed.
+	c.Check(f(expect.ContentPath(), mockFinfo{size: 123}, nil), gc.IsNil)
+	c.Check(out, gc.DeepEquals, []protocol.Fragment{expect})
 	out = out[:0]
 
 	// Directory files are ignored.
-	c.Check(f("a/path/"+expect.ContentName(), mockFinfo{isDir: true, size: 123}, nil), gc.IsNil)
+	c.Check(f(expect.ContentPath(), mockFinfo{isDir: true, size: 123}, nil), gc.IsNil)
 	// As are zero-length fragments.
-	c.Check(f("a/path/"+expect.ContentName(), mockFinfo{size: 0}, nil), gc.IsNil)
+	c.Check(f(expect.ContentPath(), mockFinfo{size: 0}, nil), gc.IsNil)
 	// And errors are passed through.
-	c.Check(f("a/path/"+expect.ContentName(), mockFinfo{size: 123}, errors.New("err!")), gc.ErrorMatches, "err!")
+	c.Check(f(expect.ContentPath(), mockFinfo{size: 123}, errors.New("err!")), gc.ErrorMatches, "err!")
 
 	c.Check(out, gc.DeepEquals, []protocol.Fragment{}) // Verify ignored fragments were in fact ignored.
 }
