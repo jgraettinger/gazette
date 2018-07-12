@@ -1,7 +1,7 @@
 name: "examples/"
 replication: 2
 fragment:
-  length: 1024
+  length: 1048576
   compression_codec: SNAPPY
   stores:
     - s3://examples/fragments

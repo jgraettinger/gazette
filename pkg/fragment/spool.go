@@ -73,6 +73,17 @@ func (s *Spool) Apply(r *pb.ReplicateRequest) (pb.ReplicateResponse, error) {
 	}
 }
 
+// MustApply applies the ReplicateRequest, and panics if a !OK status is returned
+// or error occurs. MustApply is a convenience for cases such as rollbacks, where
+// the request is derived from the Spool itself and cannot reasonably fail.
+func (s *Spool) MustApply(r *pb.ReplicateRequest) {
+	if resp, err := s.Apply(r); err != nil {
+		panic(err.Error())
+	} else if resp.Status != pb.Status_OK {
+		panic(resp.Status.String())
+	}
+}
+
 // Next returns the next Fragment which can be committed by the Spool.
 func (s *Spool) Next() pb.Fragment {
 	var f = s.Fragment.Fragment
@@ -131,16 +142,30 @@ func (s *Spool) CodecReader() io.ReadCloser {
 }
 
 // String returns a debugging representation of the Spool.
-func (s *Spool) String() string {
+func (s Spool) String() string {
 	return fmt.Sprintf("Spool<Fragment: %s, Primary: %t, delta: %d>",
 		s.Fragment.String(), s.Primary, s.delta)
 }
 
 func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
-	// There are three allowed commit cases:
+	// There are three commit cases which can succeed:
 	//  1) Exact commit of current fragment.
 	//  2) Exact commit of current fragment, extended by |delta|.
 	//  3) Trivial commit of an empty Fragment at or beyond the current Fragment.End.
+	//
+	// One important error case is also handled: if the proposed Fragment is non-
+	// empty but beyond our current Fragment.End, we still return a
+	// FRAGMENT_MISMATCH but first roll to an empty Spool at the advertised End.
+	// This case happens, eg, when a new peer is introduced to a route and must
+	// "catch up" with recently written content. On receiving the MISMATCH error
+	// the primary replica will restart the pipeline with an empty Proposal at
+	// that offset, which this peer can now participate in.
+	//
+	// The case can also happen on recovery from network partitions, where some
+	// replicas believe a commit occurred and others don't (note the Append
+	// RPC itself will have failed in this case, forcing the client to retry).
+	// Progress is made by agreeing to proceed from a new, empty Spool starting
+	// at the maximal offset observed from any replica.
 
 	// Case 1? "Undo" any partial content, by rolling back |delta| and |summer|.
 	if s.Fragment.Fragment == *r.Proposal {
@@ -191,6 +216,30 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 			observer: s.observer,
 		}
 		return pb.ReplicateResponse{Status: pb.Status_OK}
+	}
+
+	// Is the Proposal.End beyond our own extents? Roll to that offset.
+	if r.Proposal.Journal == s.Fragment.Journal && r.Proposal.End > s.Fragment.End+s.delta {
+
+		s.finalizeCompressor(false)
+		if s.ContentLength() != 0 {
+			s.observer.SpoolComplete(*s)
+		}
+		*s = Spool{
+			Fragment: Fragment{
+				Fragment: pb.Fragment{
+					Journal:          r.Proposal.Journal,
+					Begin:            r.Proposal.End,
+					End:              r.Proposal.End,
+					CompressionCodec: r.Proposal.CompressionCodec,
+					BackingStore:     r.Proposal.BackingStore,
+				},
+			},
+			Primary:  s.Primary,
+			summer:   sha1.New(),
+			sumState: zeroedSHA1State,
+			observer: s.observer,
+		}
 	}
 
 	return pb.ReplicateResponse{

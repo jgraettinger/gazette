@@ -20,20 +20,20 @@ const (
 
 // Index maintains a queryable index of local and remote journal Fragments.
 type Index struct {
-	ctx         context.Context // Context over the lifetime of the Index.
-	set         Set             // All Fragments of the index (local and remote).
-	local       Set             // Local Fragments only (having non-nil File).
-	condCh      chan struct{}   // Notifies blocked queries that |set| was updated.
-	firstLoadCh chan struct{}   // Notifies that the first remote index load has completed.
-	mu          sync.RWMutex    // Guards |set| and |condCh|.
+	ctx            context.Context // Context over the lifetime of the Index.
+	set            Set             // All Fragments of the index (local and remote).
+	local          Set             // Local Fragments only (having non-nil File).
+	condCh         chan struct{}   // Notifies blocked queries that |set| was updated.
+	firstRefreshCh chan struct{}   // Notifies that the first remote index load has completed.
+	mu             sync.RWMutex    // Guards |set| and |condCh|.
 }
 
 // NewIndex returns a new, empty Index.
 func NewIndex(ctx context.Context) *Index {
 	return &Index{
-		ctx:         ctx,
-		condCh:      make(chan struct{}),
-		firstLoadCh: make(chan struct{}),
+		ctx:            ctx,
+		condCh:         make(chan struct{}),
+		firstRefreshCh: make(chan struct{}),
 	}
 }
 
@@ -158,10 +158,10 @@ func (fi *Index) ReplaceRemote(set Set) {
 	fi.wakeBlockedQueries()
 
 	select {
-	case <-fi.firstLoadCh:
+	case <-fi.firstRefreshCh:
 		// Already closed.
 	default:
-		close(fi.firstLoadCh)
+		close(fi.firstRefreshCh)
 	}
 }
 
@@ -175,19 +175,19 @@ func (fi *Index) wakeBlockedQueries() {
 	fi.condCh = make(chan struct{})
 }
 
-// WaitForFirstRemoteLoad blocks until WatchStores has completed a first load
-// of configured remote Fragment stores, or the context is cancelled.
-func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {
+// WaitForFirstRemoteRefresh blocks until ReplaceRemote has been called at least
+// one time, or until the context is cancelled.
+func (fi *Index) WaitForFirstRemoteRefresh(ctx context.Context) error {
 	select {
-	case <-fi.firstLoadCh:
+	case <-fi.firstRefreshCh:
 		return nil
 	default:
 	}
 
-	addTrace(ctx, " ... stalled in Index.WaitForFirstRemoteLoad()")
+	addTrace(ctx, " ... stalled in Index.WaitForFirstRemoteRefresh()")
 
 	select {
-	case <-fi.firstLoadCh:
+	case <-fi.firstRefreshCh:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -195,6 +195,9 @@ func (fi *Index) WaitForFirstRemoteLoad(ctx context.Context) error {
 		return fi.ctx.Err()
 	}
 }
+
+// FirstRemoteRefresh returns a channel which is closed on the first call to ReplaceRemote.
+func (fi *Index) FirstRemoteRefresh() <-chan struct{} { return fi.firstRefreshCh }
 
 // WalkAllStores enumerates Fragments from each of |stores| into the returned Set,
 // or returns an encountered error.

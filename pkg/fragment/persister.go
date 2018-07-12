@@ -21,7 +21,9 @@ func NewPersister() *Persister {
 }
 
 func (p *Persister) SpoolComplete(spool Spool) {
-	if spool.Primary {
+	if spool.ContentLength() == 0 || spool.BackingStore == "" {
+		// Cannot persist this Spool.
+	} else if spool.Primary {
 		// Attempt to immediately persist the Spool.
 		go func() {
 			if err := copySpoolToStore(spool); err != nil {

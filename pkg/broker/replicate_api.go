@@ -48,11 +48,13 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 	if spool, err = acquireSpool(stream.Context(), res.replica, false); err != nil {
 		return err
 	}
-
 	spool, err = serveReplicate(stream, req, spool)
-	res.replica.spoolCh <- spool // Release ownership of Spool.
 
-	if err != nil && stream.Context().Err() == nil {
+	// Roll-back any uncommitted content, and release ownership of Spool.
+	spool.MustApply(&pb.ReplicateRequest{Proposal: &spool.Fragment.Fragment})
+	res.replica.spoolCh <- spool
+
+	if err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Replicate")
 	}
 	return err

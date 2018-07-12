@@ -142,6 +142,8 @@ func (s *ReplicateSuite) TestErrorCases(c *gc.C) {
 		Status: pb.Status_FRAGMENT_MISMATCH,
 		Fragment: &pb.Fragment{
 			Journal:          "a/journal",
+			Begin:            5678, // Spool is rolled forward.
+			End:              5678,
 			CompressionCodec: pb.CompressionCodec_NONE,
 		},
 	})

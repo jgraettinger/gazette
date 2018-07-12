@@ -126,9 +126,13 @@ func serveAppend(stream grpc.Stream, pln *pipeline, spec *pb.JournalSpec, releas
 	// next to receive. Similarly, defer a close to signal to RPCs pipelined
 	// after this one, that they may in turn read their responses. When this
 	// completes, we have sole ownership of the _receive_ side of |pln|.
-	<-waitFor
+	select {
+	case <-waitFor:
+	default:
+		addTrace(stream.Context(), " ... stalled in <-waitFor read barrier")
+		<-waitFor
+	}
 	defer func() { close(closeAfter) }()
-	addTrace(stream.Context(), "<-waitFor => struct{}")
 
 	// We expect an acknowledgement from each peer. If we encountered a send
 	// error, we also expect an EOF from remaining non-broken peers.
@@ -253,8 +257,8 @@ func (a *appender) onRecv(req *pb.AppendRequest, err error) bool {
 }
 
 // String returns a debugging representation of the appender.
-func (a *appender) String() string {
-	return fmt.Sprintf("appender<reqCommit: %t, reqErr: %s, reqFragment: %s>",
+func (a appender) String() string {
+	return fmt.Sprintf("appender<reqCommit: %t, reqErr: %v, reqFragment: %s>",
 		a.reqCommit, a.reqErr, a.reqFragment.String())
 }
 

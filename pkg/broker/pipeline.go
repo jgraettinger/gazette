@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/LiveRamp/gazette/pkg/client"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -85,8 +86,7 @@ func (pln *pipeline) synchronize() error {
 		}
 
 		if err != nil {
-			pln.closeSend()
-			pln.gatherEOF()
+			pln.shutdown(true)
 			return err
 		}
 
@@ -104,8 +104,7 @@ func (pln *pipeline) synchronize() error {
 			// pipeline, and set its |readThroughRev| as an indication to other RPCs
 			// of the revision which must first be read through before attempting
 			// another pipeline.
-			pln.closeSend()
-			pln.gatherEOF()
+			pln.shutdown(false)
 			pln.readThroughRev = readThroughRev
 		}
 		return nil
@@ -125,11 +124,28 @@ func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 	}
 	if i := pln.Route.Primary; pln.sendErrs[i] == nil {
 		var resp pb.ReplicateResponse
-		resp, pln.sendErrs[i] = pln.spool.Apply(r)
 
-		if resp.Status != pb.Status_OK {
-			// Must never happen, since proposals are derived from local Spool Fragment.
+		// Map an error, which can occur due to a write failure, into a |sendErr|.
+		// Status !OK is returned only on proposal mismatch, which cannot happen
+		// here as all proposals are derived from the Spool itself.
+		if resp, pln.sendErrs[i] = pln.spool.Apply(r); resp.Status != pb.Status_OK {
 			panic(resp.String())
+		}
+	}
+}
+
+// closeSend closes the send-side of all replica connections.
+func (pln *pipeline) closeSend() {
+	// Apply a Spool commit which rolls back any partial content.
+	pln.spool.MustApply(&pb.ReplicateRequest{
+		Proposal: &pln.spool.Fragment.Fragment,
+	})
+	pln.spool.Primary = false
+	pln.returnCh <- pln.spool // Release ownership of Spool.
+
+	for i, s := range pln.streams {
+		if s != nil && pln.sendErrs[i] == nil {
+			pln.sendErrs[i] = s.CloseSend()
 		}
 	}
 }
@@ -157,26 +173,6 @@ func (pln *pipeline) barrier() (waitFor <-chan struct{}, closeAfter chan<- struc
 	waitFor, pln.readBarrierCh = pln.readBarrierCh, make(chan struct{})
 	closeAfter = pln.readBarrierCh
 	return
-}
-
-// closeSend closes the send-side of all replica connections. If |release|,
-// this goroutine's lock on the pipeline is released, allowing a new pipeline
-// to be constructed. The caller must wait for |waitFor| before gathering EOF
-// responses from peers.
-func (pln *pipeline) closeSend() {
-	// Apply a Spool commit which rolls back any partial content.
-	pln.spool.Apply(&pb.ReplicateRequest{
-		Proposal: &pln.spool.Fragment.Fragment,
-	})
-
-	pln.spool.Primary = false
-	pln.returnCh <- pln.spool // Release ownership of Spool.
-
-	for i, s := range pln.streams {
-		if s != nil && pln.sendErrs[i] == nil {
-			pln.sendErrs[i] = s.CloseSend()
-		}
-	}
 }
 
 // gather synchronously receives a ReplicateResponse from all replicas.
@@ -222,8 +218,7 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 					readThroughRev = resp.Header.Etcd.Revision
 				}
 			} else {
-				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE: %s (remote) vs %s (local)",
-					resp.Header, &pln.Header)
+				pln.recvErrs[i] = fmt.Errorf("unexpected WRONG_ROUTE: %s", resp.Header)
 			}
 
 		case pb.Status_FRAGMENT_MISMATCH:
@@ -235,8 +230,7 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 					rollToOffset = resp.Fragment.End
 				}
 			} else {
-				pln.recvErrs[i] = fmt.Errorf("unexpected FRAGMENT_MISMATCH: %s (remote) vs %s (local)",
-					resp.Fragment, &pln.spool.Fragment.Fragment)
+				pln.recvErrs[i] = fmt.Errorf("unexpected FRAGMENT_MISMATCH: %s", resp.Fragment)
 			}
 
 		default:
@@ -250,16 +244,16 @@ func (pln *pipeline) gatherSync(proposal pb.Fragment) (rollToOffset, readThrough
 // An unexpected received message is treated as an error.
 func (pln *pipeline) gatherEOF() {
 	for i, s := range pln.streams {
-		if s == nil || pln.recvErrs[i] != nil {
+		if s == nil {
 			continue
 		}
 		var msg, err = s.Recv()
 
 		if err == io.EOF {
 			// Pass.
-		} else if err != nil {
+		} else if pln.recvErrs[i] == nil && err != nil {
 			pln.recvErrs[i] = err
-		} else {
+		} else if pln.recvErrs[i] == nil && err == nil {
 			pln.recvErrs[i] = fmt.Errorf("unexpected response: %s", msg.String())
 		}
 	}
@@ -275,6 +269,21 @@ func (pln *pipeline) recvErr() error {
 	return nil
 }
 
+// shutdown performs a graceful, blocking shutdown of the pipeline.
+func (pln *pipeline) shutdown(expectErr bool) {
+	var waitFor, closeAfter = pln.barrier()
+
+	if pln.closeSend(); !expectErr && pln.sendErr() != nil {
+		log.WithField("err", pln.sendErr()).Warn("tearing down pipeline: failed to closeSend")
+	}
+	<-waitFor
+
+	if pln.gatherEOF(); !expectErr && pln.recvErr() != nil {
+		log.WithField("err", pln.recvErr()).Warn("tearing down pipeline: failed to gatherEOF")
+	}
+	close(closeAfter)
+}
+
 // String is used to provide debugging output of a pipeline in a request trace.
 func (pln *pipeline) String() string {
 	if pln == nil {
@@ -282,7 +291,7 @@ func (pln *pipeline) String() string {
 	} else if pln.readThroughRev != 0 {
 		return fmt.Sprintf("readThroughRev<%d>", pln.readThroughRev)
 	}
-	return fmt.Sprintf("pipeline<%s>", &pln.Header)
+	return fmt.Sprintf("pipeline<header: %s, spool: %s>", &pln.Header, pln.spool.String())
 }
 
 func boxHeaderBroker(hdr pb.Header, id pb.BrokerSpec_ID) *pb.Header {

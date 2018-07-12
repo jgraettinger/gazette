@@ -40,8 +40,8 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 	c.Assert(err, gc.IsNil)
 	c.Check(stream.CloseSend(), gc.IsNil)
 
-	spool.Apply(&pb.ReplicateRequest{Content: []byte("foobarbaz")})
-	spool.Apply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
+	spool.MustApply(&pb.ReplicateRequest{Content: []byte("foobarbaz")})
+	spool.MustApply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
 
 	expectReadResponse(c, stream, &pb.ReadResponse{
 		Status:    pb.Status_OK,
@@ -69,8 +69,8 @@ func (s *ReadSuite) TestStreaming(c *gc.C) {
 
 	// Commit more content. Expect the committed Fragment metadata is sent,
 	// along with new commit content.
-	spool.Apply(&pb.ReplicateRequest{Content: []byte("bing")})
-	spool.Apply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
+	spool.MustApply(&pb.ReplicateRequest{Content: []byte("bing")})
+	spool.MustApply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
 
 	expectReadResponse(c, stream, &pb.ReadResponse{
 		Status:    pb.Status_OK,
@@ -107,8 +107,8 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 	var spool, err = acquireSpool(ctx, res.replica, false)
 	c.Check(err, gc.IsNil)
 
-	spool.Apply(&pb.ReplicateRequest{Content: []byte("feedbeef")})
-	spool.Apply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
+	spool.MustApply(&pb.ReplicateRequest{Content: []byte("feedbeef")})
+	spool.MustApply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
 
 	stream, err := broker.MustClient().Read(ctx, &pb.ReadRequest{
 		Journal:      "a/journal",
@@ -157,8 +157,8 @@ func (s *ReadSuite) TestMetadataAndNonBlocking(c *gc.C) {
 	c.Check(stream.CloseSend(), gc.IsNil)
 
 	// Commit more content, unblocking our metadata request.
-	spool.Apply(&pb.ReplicateRequest{Content: []byte("bing")})
-	spool.Apply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
+	spool.MustApply(&pb.ReplicateRequest{Content: []byte("bing")})
+	spool.MustApply(&pb.ReplicateRequest{Proposal: boxFragment(spool.Next())})
 
 	expectReadResponse(c, stream, &pb.ReadResponse{
 		Status:    pb.Status_OK,

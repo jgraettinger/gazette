@@ -220,7 +220,7 @@ func (s *IndexSuite) TestWalkStores(c *gc.C) {
 	ind.ReplaceRemote(set)
 
 	// Expect first remote load has completed.
-	c.Check(ind.WaitForFirstRemoteLoad(context.Background()), gc.IsNil)
+	c.Check(ind.WaitForFirstRemoteRefresh(context.Background()), gc.IsNil)
 
 	c.Check(ind.set, gc.HasLen, 3)
 	c.Check(ind.EndOffset(), gc.Equals, int64(0x255))

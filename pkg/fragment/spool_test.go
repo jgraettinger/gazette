@@ -143,6 +143,67 @@ func (s *SpoolSuite) TestRejectRollBeforeCurrentEnd(c *gc.C) {
 	c.Check(err, gc.IsNil)
 }
 
+func (s *SpoolSuite) TestMismatchButRollForwardCases(c *gc.C) {
+	var obv testSpoolObserver
+	var spool = NewSpool("a/journal", &obv)
+
+	// Setup: |spool| has 4 committed bytes, plus 4 uncommitted bytes.
+	spool.MustApply(&pb.ReplicateRequest{
+		Proposal: &pb.Fragment{
+			Journal:          "a/journal",
+			CompressionCodec: pb.CompressionCodec_GZIP,
+			BackingStore:     "s3://a-bucket",
+		},
+	})
+	spool.MustApply(&pb.ReplicateRequest{Content: []byte("abcd")})
+	var proposal = spool.Next()
+	spool.MustApply(&pb.ReplicateRequest{Proposal: &proposal})
+	spool.MustApply(&pb.ReplicateRequest{Content: []byte("efgh")})
+
+	// Case 1: Apply a mismatched proposal which is within current spool bounds.
+	// Expect the spool doesn't roll forward.
+	proposal.Begin = 1 // Cause proposal to mismatch.
+	proposal.End = 8   // At spool.End + spool.delta.
+
+	var resp, _ = spool.Apply(&pb.ReplicateRequest{Proposal: &proposal})
+	c.Check(resp.Status, gc.Equals, pb.Status_FRAGMENT_MISMATCH)
+	c.Check(spool.Begin, gc.Equals, int64(0))
+	c.Check(obv.completes, gc.HasLen, 0)
+
+	// Case 2: Again, but this time the proposal is beyond current bounds.
+	// Expect a MISMATCH is still returned, but the spool rolls forward.
+	proposal.End = 9
+
+	resp, _ = spool.Apply(&pb.ReplicateRequest{Proposal: &proposal})
+	c.Check(resp.Status, gc.Equals, pb.Status_FRAGMENT_MISMATCH)
+	c.Check(spool.Begin, gc.Equals, int64(9))
+	c.Check(spool.End, gc.Equals, int64(9))
+	c.Check(spool.delta, gc.Equals, int64(0))
+
+	c.Check(obv.completes, gc.HasLen, 1)
+	c.Check(contentString(c, obv.completes[0], pb.CompressionCodec_GZIP),
+		gc.Equals, "abcd")
+
+	// Case 3: Spool is empty, and sees a proposal within current bounds.
+	// Expect it remains unchanged.
+	proposal.End = 8
+
+	resp, _ = spool.Apply(&pb.ReplicateRequest{Proposal: &proposal})
+	c.Check(resp.Status, gc.Equals, pb.Status_FRAGMENT_MISMATCH)
+	c.Check(spool.End, gc.Equals, int64(9))
+
+	// Case 4: Spool is empty, but rolls due to a proposal beyond current bounds.
+	// It's not treated as a completion, because the spool is empty.
+	proposal.End = 11
+
+	resp, _ = spool.Apply(&pb.ReplicateRequest{Proposal: &proposal})
+	c.Check(resp.Status, gc.Equals, pb.Status_FRAGMENT_MISMATCH)
+	c.Check(spool.Begin, gc.Equals, int64(11))
+	c.Check(spool.End, gc.Equals, int64(11))
+
+	c.Check(obv.completes, gc.HasLen, 1) // Unchanged.
+}
+
 func (s *SpoolSuite) TestRejectNextMismatch(c *gc.C) {
 	var obv testSpoolObserver
 	var spool = NewSpool("a/journal", &obv)

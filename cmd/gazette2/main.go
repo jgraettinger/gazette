@@ -79,7 +79,7 @@ func (cfg Config) Validate() error {
 		return pb.NewValidationError("expected Metrics.Path")
 	} else if cfg.Log.Level == "" {
 		return pb.NewValidationError("expected Log.Level")
-	} else if err := cfg.Etcd.Endpoint.Validate(); err != nil {
+	} else if err = cfg.Etcd.Endpoint.Validate(); err != nil {
 		return pb.ExtendContext(err, "Etcd.Endpoint")
 	} else if !path.IsAbs(cfg.Etcd.Root) {
 		return pb.NewValidationError("Etcd.Root not an absolute path: %s", cfg.Etcd.Root)
@@ -177,9 +177,12 @@ func main() {
 }
 
 func buildListeners(cfg *Config) (mux cmux.CMux, grpc, http net.Listener) {
-	// Bind the specified listener. Use cmux to multiplex both HTTP and gRPC
+	// Bind the specified endpoint port. Use cmux to multiplex both HTTP and gRPC
 	// sessions over the same port.
-	var raw, err = net.Listen("tcp", cfg.Spec.Endpoint.URL().Host)
+	var _, port, err = net.SplitHostPort(cfg.Spec.Endpoint.URL().Host)
+	must(err, "endpoint URL Host not in network [host:port] form")
+
+	raw, err := net.Listen("tcp", ":"+port)
 	must(err, "failed to bind listener")
 
 	log.WithField("endpoint", cfg.Spec.Endpoint).Info("listening on endpoint")

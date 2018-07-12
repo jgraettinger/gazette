@@ -150,7 +150,7 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	}
 
 	addTrace(args.ctx, "resolve(%s) => %s, local: %t, header: %s",
-		args.journal, res.status, res.replica != nil, res.Header)
+		args.journal, res.status, res.replica != nil, &res.Header)
 
 	return
 }
@@ -179,10 +179,9 @@ func (r *resolver) updateResolutions() {
 		}
 
 		if assignment.Slot == 0 && !item.IsConsistent(keyspace.KeyValue{}, li.Assignments) {
-			// Attempt to signal the replica's maintenance loop that the
-			// journal should be pulsed.
+			// Attempt to signal maintenanceLoop that the journal should be pulsed.
 			select {
-			case rep.pulseCh <- struct{}{}:
+			case rep.signalMaintenanceCh <- struct{}{}:
 			default: // Pass (non-blocking).
 			}
 		}
@@ -192,7 +191,8 @@ func (r *resolver) updateResolutions() {
 	r.replicas = next
 
 	for _, rep := range prev {
-		rep.cancel()
+		// Signal maintenanceLoop to stop the replica.
+		close(rep.signalMaintenanceCh)
 	}
 	return
 }
