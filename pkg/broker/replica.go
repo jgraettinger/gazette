@@ -281,8 +281,13 @@ func pulseJournal(ctx context.Context, journal pb.Journal, ks *keyspace.KeySpace
 		// Trivial success. No |assignment| values need to be updated.
 	} else if resp, err := etcd.Txn(ctx).If(cmp...).Then(ops...).Commit(); err != nil {
 		log.WithField("err", err).Warn("etcd txn failed")
-	} else if !resp.Succeeded {
-		log.WithField("journal", journal).Warn("etcd txn did not apply") // TODO(johnny): Debug.
+	} else {
+		if !resp.Succeeded {
+			log.WithField("journal", journal).Warn("etcd txn did not apply") // TODO(johnny): Debug.
+		}
+		// Wait for KeySpace to reflect our txn. This prevents closely
+		// successive pulseJournals calls from racing one another.
+		ks.WaitForRevision(ctx, resp.Header.Revision)
 	}
 }
 

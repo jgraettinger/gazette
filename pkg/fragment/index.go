@@ -38,11 +38,11 @@ func NewIndex(ctx context.Context) *Index {
 }
 
 // Query the Index for a Fragment matching the ReadRequest.
-func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (pb.ReadResponse, *os.File, error) {
+func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadResponse, *os.File, error) {
 	defer fi.mu.RUnlock()
 	fi.mu.RLock()
 
-	var resp = pb.ReadResponse{
+	var resp = &pb.ReadResponse{
 		Offset: req.Offset,
 	}
 
@@ -77,7 +77,7 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (pb.ReadRespons
 			resp.Fragment = new(pb.Fragment)
 			*resp.Fragment = fi.set[ind].Fragment
 
-			addTrace(ctx, "Index.Query(%s) => %s, localFile: %t", req, &resp, fi.set[ind].File != nil)
+			addTrace(ctx, "Index.Query(%s) => %s, localFile: %t", req, resp, fi.set[ind].File != nil)
 			return resp, fi.set[ind].File, nil
 		}
 
