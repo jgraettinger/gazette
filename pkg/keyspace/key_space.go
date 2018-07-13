@@ -66,6 +66,16 @@ func NewKeySpace(prefix string, decoder KeyValueDecoder) *KeySpace {
 // Load loads a snapshot of the prefixed KeySpace at revision |rev|,
 // or if |rev| is zero, at the current revision.
 func (ks *KeySpace) Load(ctx context.Context, client *clientv3.Client, rev int64) error {
+	if rev == 0 {
+		// Resolve a current Revision. Note |rev| of zero is also interpreted by
+		// SyncBase as "use a recent revision", which we would use instead except
+		// there's no way to extract what that Revision actually was...
+		if resp, err := client.Get(ctx, "a-key-we-don't-expect-to-exist"); err != nil {
+			return err
+		} else {
+			rev = resp.Header.Revision
+		}
+	}
 	defer ks.Mu.Unlock()
 	ks.Mu.Lock()
 
@@ -96,6 +106,10 @@ func (ks *KeySpace) Load(ctx context.Context, client *clientv3.Client, rev int64
 			}
 		}
 	}
+	// Response headers reference the *current* Revision of the store, not of our
+	// requested Revision (which may now be in the past). Maintain our Header
+	// as the effective Revision of the KeySpace.
+	ks.Header.Revision = rev
 
 	ks.onUpdate()
 	return nil
@@ -182,8 +196,9 @@ func (ks *KeySpace) Apply(responses ...clientv3.WatchResponse) error {
 		if err := patchHeader(&hdr, wr.Header, false); err != nil {
 			return err
 		}
-		// Order events of each WatchResponse on key order (they already share ModRevision).
-		sort.Slice(wr.Events, func(i, j int) bool {
+		// Events are already ordered on ascending ModRevision. Order on key, while
+		// preserving relative ModRevision order of events of the same key.
+		sort.SliceStable(wr.Events, func(i, j int) bool {
 			return bytes.Compare(wr.Events[i].Kv.Key, wr.Events[j].Kv.Key) < 0
 		})
 	}

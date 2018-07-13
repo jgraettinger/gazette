@@ -283,11 +283,13 @@ func pulseJournal(ctx context.Context, journal pb.Journal, ks *keyspace.KeySpace
 		log.WithField("err", err).Warn("etcd txn failed")
 	} else {
 		if !resp.Succeeded {
-			log.WithField("journal", journal).Warn("etcd txn did not apply") // TODO(johnny): Debug.
+			log.WithField("journal", journal).Warn("etcd txn did not succeed") // TODO(johnny): Debug.
 		}
 		// Wait for KeySpace to reflect our txn. This prevents closely
 		// successive pulseJournals calls from racing one another.
+		ks.Mu.RLock()
 		ks.WaitForRevision(ctx, resp.Header.Revision)
+		ks.Mu.RUnlock()
 	}
 }
 
@@ -316,7 +318,7 @@ func refreshFragments(r *replica, ks *keyspace.KeySpace) time.Duration {
 }
 
 var (
-	pulseInterval   = time.Minute * 30
+	pulseInterval   = time.Minute
 	sharedPersister *fragment.Persister
 )
 

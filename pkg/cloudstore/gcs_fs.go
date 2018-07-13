@@ -347,6 +347,9 @@ type gcsFile struct {
 	err error
 }
 
+func (f *gcsFile) SetContentEncoding(ce string) { f.writer.ContentEncoding = ce }
+func (f *gcsFile) SetContentType(ct string)     { f.writer.ContentType = ct }
+
 // File interface method.
 func (f *gcsFile) Read(p []byte) (int, error) {
 	if f.lazyReader {

@@ -12,5 +12,5 @@ gazette:
   endpoint: "http://gazette-gazette:8081"
 chunker:
   numJobs: 1
-  numStreams: 1000
+  numStreams: -1
   chunksPerStream: 100

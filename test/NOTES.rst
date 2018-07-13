@@ -2,15 +2,15 @@ Notes on setting up and testing via Minikube
 ============================================
 
 
-Start minikube::
+Start minikube on Linux (alternatively: use Docker for Mac / Windows with Kubernetes)::
 
   sudo minikube start --vm-driver=none --extra-config=apiserver.authorization-mode=RBAC
-
-Install Tiller::
 
   kubectl create serviceaccount -n kube-system tiller
   kubectl create clusterrolebinding tiller-binding --clusterrole=cluster-admin --serviceaccount kube-system:tiller
   kubectl create clusterrolebinding fixDNS --clusterrole=cluster-admin --serviceaccount=kube-system:kube-dns
+
+Install Tiller::
 
   helm repo update
   helm init --service-account tiller

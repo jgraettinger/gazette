@@ -59,14 +59,9 @@ spec:
               fieldPath: metadata.name
         - name: SPEC_ENDPOINT
           value: "http://$(POD_IP):{{ .Values.service.port }}"
-#        livenessProbe:
-#          httpGet:
-#            path: /
-#            port: {{ .Values.service.port }}
-#        readinessProbe:
-#          httpGet:
-#            path: /
-#            port: {{ .Values.service.monitoringPort }}
+        readinessProbe:
+          tcpSocket:
+            port: {{ .Values.service.port }}
         resources:
 {{ toYaml .Values.resources | indent 10 }}
         volumeMounts:

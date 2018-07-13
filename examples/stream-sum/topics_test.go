@@ -56,14 +56,14 @@ func (s *TopicsSuite) TestUpdateSumCases(c *gc.C) {
 }
 
 func (s *TopicsSuite) TestPartitionMappingWithFixtures(c *gc.C) {
-	c.Check(Chunks.Partitions(), gc.HasLen, 8)
+	c.Check(Chunks.Partitions(), gc.HasLen, 1)
 	c.Check(Sums.Partitions(), gc.HasLen, 1)
 
 	var chunk = Chunks.GetMessage().(*Chunk)
 	copy(chunk.ID[:], "feedbeeffeedbeef")
 
 	// Expect Chunks are stably mapped on Chunk.ID.
-	c.Check(Chunks.MappedPartition(chunk), gc.Equals, journal.Name("examples/stream-sum/chunks/part-005"))
+	c.Check(Chunks.MappedPartition(chunk), gc.Equals, journal.Name("examples/stream-sum/chunks/part-000"))
 
 	// Expect Sums map to a single journal.
 	var sum = Sums.GetMessage().(*Sum)

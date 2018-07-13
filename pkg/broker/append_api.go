@@ -98,13 +98,11 @@ func proxyAppend(stream grpc.Stream, req *pb.AppendRequest, hdr *pb.Header, dial
 }
 
 // serveAppend evaluates a client's Append RPC against the local coordinated pipeline.
-func serveAppend(stream grpc.Stream, pln *pipeline, spec *pb.JournalSpec, releaseCh chan<- *pipeline) error {
-	var req = new(pb.AppendRequest)
-
+func serveAppend(stream pb.Broker_AppendServer, pln *pipeline, spec *pb.JournalSpec, releaseCh chan<- *pipeline) error {
 	// We start with sole ownership of the _send_ side of the pipeline.
 	// Forward the client's content through the pipeline.
 	var appender = beginAppending(pln, spec.Fragment)
-	for appender.onRecv(req, stream.RecvMsg(req)) {
+	for appender.onRecv(stream.Recv()) {
 	}
 	addTrace(stream.Context(), "read client EOF => %s", appender)
 

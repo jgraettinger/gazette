@@ -40,7 +40,9 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 		return proxyRead(stream, req, &res.Header, s.dialer)
 	}
 
-	if err = serveRead(stream, req, &res.Header, res.replica.index); err != nil {
+	if err = serveRead(stream, req, &res.Header, res.replica.index); stream.Context().Err() != nil {
+		// Client terminated the read. Expected error.
+	} else if err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Read")
 	}
 	return err
@@ -99,24 +101,21 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 		if resp.Status != pb.Status_OK || req.MetadataOnly || file == nil && req.DoNotProxy {
 			return nil
 		}
+		// Note Query may have resolved or updated req.Offset. For the remainder of
+		// this iteration, we update |req.Offset| to reference the next byte to read.
+		req.Offset = resp.Offset
 
 		if file != nil {
 			reader = ioutil.NopCloser(io.NewSectionReader(
-				file, resp.Offset-resp.Fragment.Begin, resp.Fragment.End-resp.Offset))
+				file, req.Offset-resp.Fragment.Begin, resp.Fragment.End-req.Offset))
 		} else {
 			if fs, err := cloudstore.NewFileSystem(nil, string(resp.Fragment.BackingStore)); err != nil {
 				return err
 			} else if file, err := fs.Open(resp.Fragment.ContentPath()); err != nil {
 				return err
-			} else if reader, err = client.NewFragmentReader(file, *resp.Fragment, resp.Offset); err != nil {
+			} else if reader, err = client.NewFragmentReader(file, *resp.Fragment, req.Offset); err != nil {
 				return err
 			}
-		}
-
-		// Don't send metadata other than Offset in chunks 2..N of the Fragment.
-		*resp = pb.ReadResponse{
-			Status: pb.Status_OK,
-			Offset: resp.Offset,
 		}
 
 		// Loop over chunks read from |reader|, sending each to the client.
@@ -127,12 +126,14 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 			if n, readErr = reader.Read(buffer); n == 0 {
 				continue
 			}
-			resp.Content = buffer[:n]
 
-			if err = stream.SendMsg(resp); err != nil {
+			if err = stream.SendMsg(&pb.ReadResponse{
+				Offset:  req.Offset,
+				Content: buffer[:n],
+			}); err != nil {
 				return err
 			}
-			resp.Offset += int64(n)
+			req.Offset += int64(n)
 		}
 
 		if readErr != io.EOF {
@@ -142,7 +143,6 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 		}
 
 		// Loop to query and read the next Fragment.
-		req.Offset = resp.Offset
 	}
 	return nil
 }

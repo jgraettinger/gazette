@@ -27,6 +27,7 @@ demonstrates building and package consumer plugins, and is utilized by the
 included ``word-count`` Helm chart::
 
   docker build . -f build/examples/Dockerfile.word-count --tag word-count
+  docker build . -f build/examples/Dockerfile.stream-sum --tag stream-sum
 
 
 Publish The Base Runtime Image

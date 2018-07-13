@@ -1,11 +1,19 @@
-name: "examples/"
+name: examples/
 replication: 2
 fragment:
   length: 1048576
-  compression_codec: SNAPPY
   stores:
-    - s3://examples/fragments
-  refresh_interval: "1m"
-  retention: "720h"
+  - s3://examples/fragments
+  refresh_interval: 1m0s
+  retention: 720h0m0s
 children:
-  - name: "examples/foobar"
+- name: examples/foobar
+  fragment:
+    compression_codec: SNAPPY
+- name: examples/stream-sum/
+  fragment:
+    compression_codec: GZIP_OFFLOAD_DECOMPRESSION
+  children:
+  - name: examples/stream-sum/chunks/part-000
+  - name: examples/stream-sum/recovery-logs/shard-chunks-000
+  - name: examples/stream-sum/sums

@@ -66,8 +66,12 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		log.WithField("err", err).Warn("http_gateway failed to proxy Read request")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if r.Context().Err() != nil {
+			http.Error(w, err.Error(), http.StatusRequestTimeout) // Request was aborted by client.
+		} else {
+			log.WithField("err", err).Warn("http_gateway: failed to proxy Read request")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -81,7 +85,11 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			log.WithField("err", err).Warn("http_gateway: failed to proxy Read response")
+			if r.Context().Err() != nil {
+				// Response stream was aborted by client.
+			} else {
+				log.WithField("err", err).Warn("http_gateway: failed to proxy Read response")
+			}
 			break
 		}
 

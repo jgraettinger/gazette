@@ -20,14 +20,15 @@ func (s *KeySpaceSuite) TestLoadAndWatch(c *gc.C) {
 	var _, err = client.Delete(ctx, "", clientv3.WithPrefix())
 	c.Assert(err, gc.IsNil)
 
-	for k, v := range map[string]string{
-		"/one":   "1",
-		"/three": "3",
-		"/foo":   "invalid value is logged and skipped",
-	} {
-		var _, err = client.Put(ctx, k, v)
-		c.Assert(err, gc.IsNil)
-	}
+	// Fix some initial keys and values.
+	_, err = client.Put(ctx, "/one", "1")
+	c.Assert(err, gc.IsNil)
+	_, err = client.Put(ctx, "/foo", "invalid value is logged and skipped")
+	c.Assert(err, gc.IsNil)
+	resp, err := client.Put(ctx, "/three", "3")
+	c.Assert(err, gc.IsNil)
+	_, err = client.Put(ctx, "/raced", "999")
+	c.Assert(err, gc.IsNil)
 
 	var ks = NewKeySpace("/", testDecoder)
 
@@ -35,7 +36,8 @@ func (s *KeySpaceSuite) TestLoadAndWatch(c *gc.C) {
 	var expectObserverCallCh = make(chan struct{}, 1)
 	ks.Observers = append(ks.Observers, func() { expectObserverCallCh <- struct{}{} })
 
-	c.Check(ks.Load(ctx, client, 0), gc.IsNil)
+	// Load a Revision which is in the past (and doesn't yet reflect "/raced").
+	c.Check(ks.Load(ctx, client, resp.Header.Revision), gc.IsNil)
 	verifyDecodedKeyValues(c, ks.KeyValues, map[string]int{"/one": 1, "/three": 3})
 	<-expectObserverCallCh
 
@@ -58,7 +60,7 @@ func (s *KeySpaceSuite) TestLoadAndWatch(c *gc.C) {
 	c.Check(ks.Watch(ctx, client), gc.Equals, context.Canceled)
 
 	verifyDecodedKeyValues(c, ks.KeyValues,
-		map[string]int{"/two": 2, "/three": 4, "/foo": 5})
+		map[string]int{"/two": 2, "/three": 4, "/foo": 5, "/raced": 999})
 }
 
 func (s *KeySpaceSuite) TestHeaderPatching(c *gc.C) {
@@ -139,17 +141,12 @@ func (s *KeySpaceSuite) TestWatchResponseApply(c *gc.C) {
 	// and mutated multiple times within the batch apply.
 	resp = []clientv3.WatchResponse{
 		{
-			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 12},
+			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 13},
 			Events: []*clientv3.Event{
 				putEvent("/aaaa", "1111", 12, 12, 1),
 				putEvent("/bbbb", "2222", 12, 12, 1),
 				putEvent("/cccc", "invalid", 12, 12, 1),
 				putEvent("/to-delete", "0000", 12, 12, 1),
-			},
-		},
-		{
-			Header: epb.ResponseHeader{ClusterId: 9999, Revision: 13},
-			Events: []*clientv3.Event{
 				putEvent("/bbbb", "3333", 12, 13, 2),
 				putEvent("/cccc", "4444", 12, 13, 2),
 			},
