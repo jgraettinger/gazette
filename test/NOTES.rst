@@ -37,6 +37,15 @@ Start a Gazette cluster::
 
   helm install charts/gazette --name gazette
 
+Create the example journals::
+
+  gazctl journal apply -s test/journalspace.yaml
+
+Port-forward a Gazette pod endpoint to localhost::
+
+  alias gazette_pod="kubectl get pod -l app=gazette -o jsonpath={.items[0].metadata.name}"
+  kubectl port-forward $(gazette_pod) 8081:8081
+
 Start the ``stream-sum`` example, which also doubles as an end-to-end integration test::
 
   helm install charts/examples/stream-sum --name stream-sum
@@ -44,15 +53,6 @@ Start the ``stream-sum`` example, which also doubles as an end-to-end integratio
 Start the ``word-count`` application::
 
   helm install charts/examples/word-count --name word-count
-
-Port-forward a Gazette pod endpoint to localhost::
-
-  alias gazette_pod="kubectl get pod -l app=gazette -o jsonpath={.items[0].metadata.name}"
-  kubectl port-forward $(gazette_pod) 8081:8081
-
-Create the example journals::
-
-  gazctl journal apply -s test/journalspace.yaml
 
 Begin a long-lived read of output counts::
 

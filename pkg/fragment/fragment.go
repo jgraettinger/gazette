@@ -1,7 +1,11 @@
 package fragment
 
 import (
+	"context"
+	"io"
+	"net/url"
 	"os"
+	"time"
 
 	"github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -12,6 +16,16 @@ type Fragment struct {
 
 	// Local uncompressed file of the Fragment, or nil iff the Fragment is remote.
 	File *os.File
+}
+
+type Store interface {
+	SignURL(protocol.Fragment, time.Duration) (*url.URL, error)
+
+	Open(context.Context, protocol.Fragment) (io.ReadCloser, error)
+
+	Persist(context.Context, Spool) error
+
+	List(ctx context.Context, prefix string, callback func(protocol.Fragment) error) error
 }
 
 /*

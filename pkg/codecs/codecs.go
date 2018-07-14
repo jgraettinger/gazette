@@ -39,7 +39,7 @@ func NewCodecWriter(w io.Writer, codec pb.CompressionCodec) (Compressor, error) 
 	switch codec {
 	case pb.CompressionCodec_NONE:
 		return nopWriteCloser{w}, nil
-	case pb.CompressionCodec_GZIP:
+	case pb.CompressionCodec_GZIP, pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION:
 		return gzip.NewWriter(w), nil
 	case pb.CompressionCodec_SNAPPY:
 		return snappy.NewBufferedWriter(w), nil

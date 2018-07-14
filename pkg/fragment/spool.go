@@ -107,14 +107,13 @@ func (s *Spool) CodecReader() io.ReadCloser {
 		panic("Spool not finalized")
 	}
 
-	if s.compressedFile != nil {
+	if s.CompressionCodec != pb.CompressionCodec_NONE && s.compressedFile != nil {
 		// We let the underlying file dictate EOF, since:
 		//  a) we only wrote complete commits to it, without possibility of rollbacks.
 		//  a) we don't actually know how large it is, without stat-ing the file
 		return ioutil.NopCloser(
 			io.NewSectionReader(s.compressedFile, 0, math.MaxInt64))
 	}
-
 	// Unlike |compressedFile|, note that |File| could extend beyond ContentLength
 	// (eg, because of a partial write which was then rolled-back).
 	var r = io.NewSectionReader(s.File, 0, s.ContentLength())

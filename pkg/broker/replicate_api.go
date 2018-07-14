@@ -5,7 +5,6 @@ import (
 	"io"
 
 	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
 
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
@@ -61,24 +60,22 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 }
 
 // serveReplicate evaluates a client's Replicate RPC against the local Spool.
-func serveReplicate(stream grpc.Stream, req *pb.ReplicateRequest, spool fragment.Spool) (fragment.Spool, error) {
-	var err error
-
-	var resp = new(pb.ReplicateResponse)
+func serveReplicate(stream pb.Broker_ReplicateServer, req *pb.ReplicateRequest, spool fragment.Spool) (fragment.Spool, error) {
 	for {
-		if *resp, err = spool.Apply(req); err != nil {
+		var resp, err = spool.Apply(req)
+		if err != nil {
 			return spool, err
 		}
 
 		if req.Acknowledge {
-			if err = stream.SendMsg(resp); err != nil {
+			if err = stream.SendMsg(&resp); err != nil {
 				return spool, err
 			}
 		} else if resp.Status != pb.Status_OK {
-			return spool, fmt.Errorf("no ack requested but status != OK: %s", resp)
+			return spool, fmt.Errorf("no ack requested but status != OK: %s", &resp)
 		}
 
-		if err = stream.RecvMsg(req); err == io.EOF {
+		if req, err = stream.Recv(); err == io.EOF {
 			return spool, nil
 		} else if err != nil {
 			return spool, err
