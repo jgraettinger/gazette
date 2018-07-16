@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/ioutil"
-	"math"
 	"os"
 
 	log "github.com/sirupsen/logrus"
@@ -23,21 +21,18 @@ import (
 type Spool struct {
 	// Fragment at time of last commit.
 	Fragment
-	// Should the Spool proactively compress content?
-	Primary bool
-
 	// Compressed form of the Fragment, compressed under Fragment.CompressionCodec.
-	// This field is somewhat speculative; only one broker (eg, the primary)
-	// will compress writes as they commit. Under normal operation, this allows
-	// completed spools to be quickly & cheaply persisted to the backing store.
-	// Should a failure occur, other brokers can construct the compressed form
-	// on-demand from the backing Fragment.File.
-	compressedFile *os.File
+	// If |Primary|, the Spool will incrementally compress writes as they commit.
+	// Typically, only one broker replicating a journal will have Primary set
+	// (eg, the primary broker), and that broker will immediately persist the Spool
+	// once finished. Should a failure occur, other brokers can construct the
+	// compressed form as needed from the backing Fragment.File.
+	compressedFile File
 	// Compressor of |compressedFile|.
 	compressor codecs.Compressor
 
 	delta    int64     // Delta offset of next byte to write, relative to Fragment.End.
-	summer   hash.Hash // Running SHA1 of the Fragment.File, through |offset|.
+	summer   hash.Hash // Running SHA1 of the Fragment.File, through |Fragment.End + delta|.
 	sumState []byte    // SHA1 |summer| internal state at the last Fragment commit.
 
 	observer SpoolObserver
@@ -59,7 +54,6 @@ func NewSpool(journal pb.Journal, observer SpoolObserver) Spool {
 			CompressionCodec: pb.CompressionCodec_NONE,
 		}},
 		summer:   sha1.New(),
-		sumState: zeroedSHA1State,
 		observer: observer,
 	}
 }
@@ -99,29 +93,24 @@ func (s *Spool) Next() pb.Fragment {
 }
 
 // CodecReader returns a ReadCloser of Spool content, compressed under the
-// Spool's CompressionCodec. Callers are responsible for calling Close on
-// the returned Reader. CodecReader panics if called before the Spool is
-// completed.
-func (s *Spool) CodecReader() io.ReadCloser {
+// Spool's CompressionCodec. To ensure associated resources are released,
+// callers must consume the returned Reader until EOF or other error is
+// returned. CodecReader panics if called before the Spool is completed.
+func (s *Spool) CodecReader() io.Reader {
 	if s.compressor != nil {
 		panic("Spool not finalized")
 	}
 
 	if s.CompressionCodec != pb.CompressionCodec_NONE && s.compressedFile != nil {
-		// We let the underlying file dictate EOF, since:
-		//  a) we only wrote complete commits to it, without possibility of rollbacks.
-		//  a) we don't actually know how large it is, without stat-ing the file
-		return ioutil.NopCloser(
-			io.NewSectionReader(s.compressedFile, 0, math.MaxInt64))
+		return io.NewSectionReader(s.compressedFile, 0, 100)
 	}
-	// Unlike |compressedFile|, note that |File| could extend beyond ContentLength
-	// (eg, because of a partial write which was then rolled-back).
+	// Note that |File| could extend beyond ContentLength (eg,
+	// because of a partial write which was then rolled-back).
 	var r = io.NewSectionReader(s.File, 0, s.ContentLength())
 
 	if s.CompressionCodec == pb.CompressionCodec_NONE {
-		return ioutil.NopCloser(r)
+		return r
 	}
-
 	// Fallback: we must compress, but |compressedFile| is not valid.
 	// Return a Pipe which has compressed content written into it.
 	var pr, pw = io.Pipe()
@@ -247,7 +236,20 @@ func (s *Spool) applyCommit(r *pb.ReplicateRequest) pb.ReplicateResponse {
 	}
 }
 
-func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
+func (s *Spool) initCompressedFile() (err error) {
+	for {
+		if s.compressedFile == nil {
+			s.compressedFile, err = newSpoolFile()
+		}
+		if s.compressor == nil && err == nil {
+			s.compressedFile.Seek(0, io.SeekStart)
+			s.compressor, err = codecs.NewCodecWriter(s.compressedFile, s.CompressionCodec)
+		}
+
+	}
+}
+
+func (s *Spool) applyContent(r *pb.ReplicateRequest, compress bool) error {
 	if r.ContentDelta != s.delta {
 		return pb.NewValidationError("invalid ContentDelta (%d; expected %d)", r.ContentDelta, s.delta)
 	}
@@ -257,19 +259,26 @@ func (s *Spool) applyContent(r *pb.ReplicateRequest) error {
 		if s.ContentLength() != 0 {
 			panic("Spool.Fragment not empty.")
 		}
-
-		if file, err := newSpoolFile(); err != nil {
-			return err
-		} else {
-			s.Fragment.File = file
+		for {
+			var err error
+			if s.Fragment.File, err = newSpoolFile(); !retryUntil(err, "opening Spool file") {
+				break
+			}
 		}
 	}
 
 	// Iff we're primary and compression is enabled, lazily initialize a compressor.
-	if s.Primary &&
+	if compress &&
 		s.Fragment.CompressionCodec != pb.CompressionCodec_NONE &&
 		s.compressedFile == nil &&
 		s.ContentLength() == 0 {
+
+		for {
+			var err error
+			if s.compressedFile, err = newSpoolFile(); !retryUntil(err, "opening Spool compressedFile") {
+				break
+			}
+		}
 
 		// Log warnings (rather than error) if we fail to initialize a spool file
 		// or compressor, as we can continue to write to the uncompressed spool file.
@@ -306,6 +315,9 @@ func (s *Spool) finalizeCompressor(invalidate bool) {
 	if s.compressor != nil {
 		if err := s.compressor.Close(); err != nil {
 			log.WithFields(log.Fields{"err": err}).Error("failed to Close compressor")
+			invalidate = true
+		} else if s.compressedSize, err = s.compressedFile.Seek(0, io.SeekEnd); err != nil {
+			log.WithFields(log.Fields{"err": err}).Error("failed to Seek compressedFile")
 			invalidate = true
 		}
 		s.compressor = nil
