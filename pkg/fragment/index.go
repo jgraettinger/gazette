@@ -2,13 +2,11 @@ package fragment
 
 import (
 	"context"
-	"os"
 	"sync"
 	"time"
 
 	"golang.org/x/net/trace"
 
-	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
@@ -38,7 +36,7 @@ func NewIndex(ctx context.Context) *Index {
 }
 
 // Query the Index for a Fragment matching the ReadRequest.
-func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadResponse, *os.File, error) {
+func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadResponse, File, error) {
 	defer fi.mu.RUnlock()
 	fi.mu.RLock()
 
@@ -53,6 +51,9 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadRespon
 
 	for {
 		var ind, found = fi.set.LongestOverlappingFragment(resp.Offset)
+
+		var condCh = fi.condCh
+		var err error
 
 		// If the requested offset isn't covered by the index, but we do have a
 		// Fragment covering a *greater* offset, where that Fragment is also older
@@ -77,8 +78,11 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadRespon
 			resp.Fragment = new(pb.Fragment)
 			*resp.Fragment = fi.set[ind].Fragment
 
+			if resp.Fragment.BackingStore != "" && !resp.Fragment.ModTime.IsZero() {
+				resp.FragmentUrl, err = SignGetURL(*resp.Fragment, time.Minute)
+			}
 			addTrace(ctx, "Index.Query(%s) => %s, localFile: %t", req, resp, fi.set[ind].File != nil)
-			return resp, fi.set[ind].File, nil
+			return resp, fi.set[ind].File, err
 		}
 
 		if !req.Block {
@@ -88,9 +92,6 @@ func (fi *Index) Query(ctx context.Context, req *pb.ReadRequest) (*pb.ReadRespon
 			addTrace(ctx, "Index.Query(%s) => %s", req, resp)
 			return resp, nil, nil
 		}
-
-		var condCh = fi.condCh
-		var err error
 
 		addTrace(ctx, " ... stalled in Index.Query(%s)", req)
 
@@ -201,23 +202,13 @@ func (fi *Index) FirstRemoteRefresh() <-chan struct{} { return fi.firstRefreshCh
 
 // WalkAllStores enumerates Fragments from each of |stores| into the returned Set,
 // or returns an encountered error.
-func WalkAllStores(_ context.Context, name pb.Journal, stores []pb.FragmentStore) (Set, error) {
+func WalkAllStores(ctx context.Context, name pb.Journal, stores []pb.FragmentStore) (Set, error) {
 	var set Set
 
 	for _, store := range stores {
-		var fs cloudstore.FileSystem
-		var err error
-
-		// TODO(johnny): This should take a context.
-		if fs, err = cloudstore.NewFileSystem(nil, string(store)); err != nil {
-			return Set{}, err
-		}
-
-		err = fs.Walk(name.String()+"/", WalkFuncAdapter(store, func(frag pb.Fragment) error {
-			set, _ = set.Add(Fragment{Fragment: frag})
-			return nil
-		}))
-		_ = fs.Close() // TODO(johnny): Can we remove Close from the FileSystem API?
+		var err = List(ctx, store, name.String()+"/", func(f pb.Fragment) {
+			set, _ = set.Add(Fragment{Fragment: f})
+		})
 
 		if err != nil {
 			return Set{}, err

@@ -40,13 +40,11 @@ spec:
         - name: RW_DIRECTORIES
           value: /var/tmp
         {{ if .Values.aws }}
-        - name: AWS_ENDPOINT
-          value: {{ .Values.aws.endpoint }}
         - name: AWS_ACCESS_KEY_ID
           value: {{ .Values.aws.accessKeyID }}
         - name: AWS_SECRET_ACCESS_KEY
           value: {{ .Values.aws.secretKey }}
-        - name: AWS_DEFAULT_REGION
+        - name: AWS_REGION
           value: {{ .Values.aws.defaultRegion }}
         {{ end }}
         - name: POD_IP

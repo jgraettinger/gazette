@@ -98,14 +98,12 @@ func (s *PipelineSuite) TestPeerErrorCases(c *gc.C) {
 	// Expect recvErr decorates the first error with peer metadata.
 	c.Check(pln.recvErr(), gc.ErrorMatches, `recv from zone:"A" suffix:"1" : rpc error: .*`)
 
-	pln.spool.Fragment.File.Close() // Force a write error of the local Spool.
-
-	req = &pb.ReplicateRequest{Content: []byte("bar"), ContentDelta: 3}
+	req = &pb.ReplicateRequest{Content: []byte("bar"), ContentDelta: 99999} // Invalid ContentDelta.
 	pln.scatter(req)
 
 	// Expect pipeline retains the first send error for each peer, including the local Spool.
 	c.Check(pln.sendErrs[0], gc.ErrorMatches, `EOF`)
-	c.Check(pln.sendErrs[1], gc.ErrorMatches, `write .*: file already closed`)
+	c.Check(pln.sendErrs[1], gc.ErrorMatches, `invalid ContentDelta \(99999; expected 3\)`)
 	c.Check(pln.sendErrs[2], gc.IsNil) // Send-side of connection is still valid (only recv is broken).
 
 	c.Check(<-rm.brokerC.ReplReqCh, gc.DeepEquals, req)
@@ -388,7 +386,9 @@ func (m *replicationMock) newPipeline(hdr *pb.Header) *pipeline {
 }
 
 func (m *replicationMock) SpoolCommit(f fragment.Fragment) { m.commits = append(m.commits, f) }
-func (m *replicationMock) SpoolComplete(s fragment.Spool)  { m.completes = append(m.completes, s) }
+func (m *replicationMock) SpoolComplete(s fragment.Spool, _ bool) {
+	m.completes = append(m.completes, s)
+}
 
 var _ = gc.Suite(&PipelineSuite{})
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/golang-lru"
+	"github.com/klauspost/compress/gzip"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/LiveRamp/gazette/pkg/journal"
@@ -276,9 +277,20 @@ func (c *Client) openFragment(location *url.URL,
 		response.Body.Close()
 		return nil, fmt.Errorf("fetching fragment: %s", response.Status)
 	}
+
+	var body = response.Body
+
+	if response.Header.Get("Content-Encoding") == "gzip" {
+		// The backing store didn't decompress on our behalf.
+		if body, err = gzip.NewReader(body); err != nil {
+			return nil, err
+		}
+	}
+
 	// Attempt to seek to |result.Offset| within the fragment.
 	delta := result.Offset - result.Fragment.Begin
-	if _, err := io.CopyN(ioutil.Discard, response.Body, delta); err != nil {
+	if _, err := io.CopyN(ioutil.Discard, body, delta); err != nil {
+		body.Close()
 		response.Body.Close()
 		return nil, fmt.Errorf("seeking fragment: %s", err)
 	}
@@ -286,7 +298,7 @@ func (c *Client) openFragment(location *url.URL,
 	var deltaF64 = float64(delta)
 	metrics.GazetteReadBytesTotal.Add(deltaF64)
 	metrics.GazetteDiscardBytesTotal.Add(deltaF64)
-	return response.Body, nil // Success.
+	return body, nil // Success.
 }
 
 // Creates the Journal of the given name.

@@ -13,7 +13,7 @@ import (
 // disk resources, but the file becomes unaddressable and its resources released
 // to the OS after an explicit call to Close, or if the os.File is garbage-
 // collected (such that the runtime finalizer calls Close on our behalf).
-var newSpoolFile = func() (*os.File, error) {
+var newSpoolFile = func() (File, error) {
 	if f, err := ioutil.TempFile("", "spool"); err != nil {
 		return f, err
 	} else {

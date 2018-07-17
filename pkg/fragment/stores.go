@@ -7,18 +7,61 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/gorilla/schema"
+
+	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
-type Store interface {
-	SignURL(protocol.Fragment, time.Duration) (*url.URL, error)
+func SignGetURL(fragment pb.Fragment, d time.Duration) (string, error) {
+	var ep = fragment.BackingStore.URL()
 
-	Open(context.Context, protocol.Fragment) (io.ReadCloser, error)
+	switch ep.Scheme {
+	case "s3":
+		return s3SignGET(ep, fragment, d)
+	case "file":
+		return fsURL(ep, fragment), nil
+	default:
+		panic("unsupported scheme: " + ep.Scheme)
+	}
+}
 
-	Persist(context.Context, Spool) error
+func Open(ctx context.Context, fragment pb.Fragment) (io.ReadCloser, error) {
+	var ep = fragment.BackingStore.URL()
 
-	List(ctx context.Context, prefix string, callback func(protocol.Fragment) error) error
+	switch ep.Scheme {
+	case "s3":
+		return s3Open(ctx, ep, fragment)
+	case "file":
+		return fsOpen(ep, fragment)
+	default:
+		panic("unsupported scheme: " + ep.Scheme)
+	}
+}
+
+func Persist(ctx context.Context, spool Spool) error {
+	var ep = spool.Fragment.BackingStore.URL()
+
+	switch ep.Scheme {
+	case "s3":
+		return s3Persist(ctx, ep, spool)
+	case "file":
+		return fsPersist(ep, spool)
+	default:
+		panic("unsupported scheme: " + ep.Scheme)
+	}
+}
+
+func List(ctx context.Context, store pb.FragmentStore, prefix string, callback func(pb.Fragment)) error {
+	var ep = store.URL()
+
+	switch ep.Scheme {
+	case "s3":
+		return s3List(ctx, store, ep, prefix, callback)
+	case "file":
+		return fsList(store, ep, prefix, callback)
+	default:
+		panic("unsupported scheme: " + ep.Scheme)
+	}
 }
 
 func parseStoreArgs(ep *url.URL, args interface{}) error {
@@ -27,7 +70,7 @@ func parseStoreArgs(ep *url.URL, args interface{}) error {
 
 	if q, err := url.ParseQuery(ep.RawQuery); err != nil {
 		return err
-	} else if err = decoder.Decode(&args, q); err != nil {
+	} else if err = decoder.Decode(args, q); err != nil {
 		return fmt.Errorf("parsing store URL arguments: %s", err)
 	}
 	return nil

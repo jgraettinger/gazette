@@ -56,16 +56,9 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	var reader = client.NewReader(r.Context(), h.client, req)
 
-	var stream pb.Broker_ReadClient
-	var resp = new(pb.ReadResponse)
-
-	if stream, err = h.client.Read(r.Context(), &req); err == nil {
-		if err = stream.RecvMsg(resp); err == nil {
-			err = resp.Validate()
-		}
-	}
-	if err != nil {
+	if _, err = reader.Read(nil); err != nil && reader.Response.Status == pb.Status_OK {
 		if r.Context().Err() != nil {
 			http.Error(w, err.Error(), http.StatusRequestTimeout) // Request was aborted by client.
 		} else {
@@ -74,32 +67,15 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	writeReadResponse(w, r, reader.Response)
 
-	writeReadResponse(w, r, *resp)
-
-	for {
-		if err = stream.RecvMsg(resp); err == nil {
-			err = resp.Validate()
-		} else if err == io.EOF {
-			break
-		}
-
-		if err != nil {
-			if r.Context().Err() != nil {
-				// Response stream was aborted by client.
-			} else {
-				log.WithField("err", err).Warn("http_gateway: failed to proxy Read response")
-			}
-			break
-		}
-
-		if _, err = w.Write(resp.Content); err != nil {
-			log.WithField("err", err).Warn("http_gateway: failed to forward Read response")
-			break
-		}
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+	if reader.Response.Status != pb.Status_OK {
+		return
+	}
+	if _, err = io.Copy(flushWriter{w}, reader); err != nil &&
+		r.Context().Err() == nil &&
+		reader.Response.Status == pb.Status_OK {
+		log.WithField("err", err).Warn("http_gateway: failed to proxy Read response")
 	}
 }
 
@@ -176,13 +152,12 @@ func writeReadResponse(w http.ResponseWriter, r *http.Request, resp pb.ReadRespo
 		if resp.FragmentUrl != "" {
 			w.Header().Add(FragmentLocationHeader, resp.FragmentUrl)
 		}
+		w.Header().Add("Content-Range", fmt.Sprintf("bytes %v-%v/%v", resp.Offset,
+			math.MaxInt64, math.MaxInt64))
 	}
 	if resp.WriteHead != 0 {
 		w.Header().Add(WriteHeadHeader, strconv.FormatInt(resp.WriteHead, 10))
 	}
-
-	w.Header().Add("Content-Range", fmt.Sprintf("bytes %v-%v/%v", resp.Offset,
-		math.MaxInt64, math.MaxInt64))
 
 	switch resp.Status {
 	case pb.Status_OK:
@@ -222,7 +197,9 @@ func writeAppendResponse(w http.ResponseWriter, r *http.Request, resp pb.AppendR
 }
 
 func writeHeader(w http.ResponseWriter, r *http.Request, h *pb.Header) {
-	w.Header().Set(RouteTokenHeader, proto.CompactTextString(&h.Route))
+	if len(h.Route.Brokers) != 0 {
+		w.Header().Set(RouteTokenHeader, proto.CompactTextString(&h.Route))
+	}
 
 	// If there is a primary broker, add a Location header which would direct
 	// further requests of this journal to the primary.
@@ -232,6 +209,17 @@ func writeHeader(w http.ResponseWriter, r *http.Request, h *pb.Header) {
 		loc.Path = path.Join(loc.Path, r.URL.Path)
 		w.Header().Add("Location", loc.String())
 	}
+}
+
+type flushWriter struct{ io.Writer }
+
+func (fw flushWriter) Write(p []byte) (n int, err error) {
+	n, err = fw.Writer.Write(p)
+
+	if flusher, ok := fw.Writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return
 }
 
 const (

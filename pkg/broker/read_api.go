@@ -9,7 +9,6 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/LiveRamp/gazette/pkg/client"
-	"github.com/LiveRamp/gazette/pkg/cloudstore"
 	"github.com/LiveRamp/gazette/pkg/fragment"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
@@ -109,11 +108,9 @@ func serveRead(stream grpc.Stream, req *pb.ReadRequest, hdr *pb.Header, index *f
 			reader = ioutil.NopCloser(io.NewSectionReader(
 				file, req.Offset-resp.Fragment.Begin, resp.Fragment.End-req.Offset))
 		} else {
-			if fs, err := cloudstore.NewFileSystem(nil, string(resp.Fragment.BackingStore)); err != nil {
+			if reader, err = fragment.Open(stream.Context(), *resp.Fragment); err != nil {
 				return err
-			} else if file, err := fs.Open(resp.Fragment.ContentPath()); err != nil {
-				return err
-			} else if reader, err = client.NewFragmentReader(file, *resp.Fragment, req.Offset); err != nil {
+			} else if reader, err = client.NewFragmentReader(reader, *resp.Fragment, req.Offset); err != nil {
 				return err
 			}
 		}

@@ -47,7 +47,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 		Fragment: JournalSpec_Fragment{
 			Length:           1 << 18,
 			CompressionCodec: CompressionCodec_SNAPPY,
-			Stores:           []FragmentStore{"s3://bucket/path", "gs://other-bucket/path"},
+			Stores:           []FragmentStore{"s3://bucket/path/", "gs://other-bucket/path/"},
 			RefreshInterval:  5 * time.Minute,
 			Retention:        365 * 24 * time.Hour,
 		},
@@ -96,7 +96,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 	f.Retention = 0
 
 	f.Stores = append(f.Stores, "invalid")
-	c.Check(f.Validate(), gc.ErrorMatches, `Stores\[2\]: not absolute: invalid`)
+	c.Check(f.Validate(), gc.ErrorMatches, `Stores\[2\]: not absolute \(invalid\)`)
 }
 
 func (s *JournalSuite) TestConsistencyCases(c *gc.C) {

@@ -49,8 +49,8 @@ func (s *RetrySuite) TestReaderRetries(c *gc.C) {
 	c.Check(err, gc.Equals, ErrOffsetNotYetAvailable)
 	c.Check(rr.Offset(), gc.Equals, int64(100+13+9))
 
-	// Next read consumes some content, and is then canceled.
-	rr.Read(nil) // Prime first half of next read.
+	rr.Read(nil) // Pop initial response of next Reader.
+	rr.Read(nil) // Pop first content response.
 	rr.Cancel()
 
 	b, err = ioutil.ReadAll(rr)
@@ -59,9 +59,9 @@ func (s *RetrySuite) TestReaderRetries(c *gc.C) {
 }
 
 func (s *RetrySuite) TestSeeking(c *gc.C) {
-	var frag, url, cleanup = buildFragmentFixture(c)
+	var frag, url, dir, cleanup = buildFragmentFixture(c)
 	defer cleanup()
-	defer installFileClient()()
+	defer InstallFileTransport(dir)()
 
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -77,10 +77,13 @@ func (s *RetrySuite) TestSeeking(c *gc.C) {
 
 	var rr = NewRetryReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal"})
 
-	// Zero-byte read causes Reader to open Fragment.
+	// Read initial response message.
 	var _, err = rr.Read(nil)
 	c.Check(err, gc.IsNil)
 	c.Check(rr.Offset(), gc.Equals, frag.Begin)
+
+	_, err = rr.Read(nil) // Opens fragment URL.
+	c.Check(err, gc.IsNil)
 
 	// Case: seeking forward works, so long as the Fragment covers the seek'd offset.
 	offset, err := rr.Seek(5, io.SeekCurrent)
@@ -101,7 +104,10 @@ func (s *RetrySuite) TestSeeking(c *gc.C) {
 	offset, err = rr.Seek(-6, io.SeekCurrent)
 	c.Check(err, gc.IsNil)
 
-	_, err = rr.Read(b[:])
+	_, err = rr.Read(b[:]) // Reads initial response message.
+	c.Check(err, gc.IsNil)
+
+	_, err = rr.Read(b[:]) // Opens fragment URL.
 	c.Check(err, gc.IsNil)
 	c.Check(string(b[:n]), gc.Equals, "hello")
 }

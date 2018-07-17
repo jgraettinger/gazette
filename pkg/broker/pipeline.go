@@ -34,9 +34,6 @@ func newPipeline(ctx context.Context, hdr pb.Header, spool fragment.Spool, retur
 	if hdr.Route.Primary == -1 {
 		panic("dial requires Route with Primary != -1")
 	}
-	// Enable compression while the Spool is serving as primary within a pipeline.
-	spool.Primary = true
-
 	var R = len(hdr.Route.Brokers)
 
 	var pln = &pipeline{
@@ -125,10 +122,10 @@ func (pln *pipeline) scatter(r *pb.ReplicateRequest) {
 	if i := pln.Route.Primary; pln.sendErrs[i] == nil {
 		var resp pb.ReplicateResponse
 
-		// Map an error, which can occur due to a write failure, into a |sendErr|.
+		// Map an error into a |sendErr|.
 		// Status !OK is returned only on proposal mismatch, which cannot happen
 		// here as all proposals are derived from the Spool itself.
-		if resp, pln.sendErrs[i] = pln.spool.Apply(r); resp.Status != pb.Status_OK {
+		if resp, pln.sendErrs[i] = pln.spool.Apply(r, true); resp.Status != pb.Status_OK {
 			panic(resp.String())
 		}
 	}
@@ -140,7 +137,6 @@ func (pln *pipeline) closeSend() {
 	pln.spool.MustApply(&pb.ReplicateRequest{
 		Proposal: &pln.spool.Fragment.Fragment,
 	})
-	pln.spool.Primary = false
 	pln.returnCh <- pln.spool // Release ownership of Spool.
 
 	for i, s := range pln.streams {

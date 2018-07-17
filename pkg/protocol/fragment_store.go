@@ -5,11 +5,14 @@ import (
 )
 
 // FragmentStore defines a storage backend base path for Journal Fragments.
-// It is a URL, where the scheme defines the storage backend service.
+// It is a URL, where the scheme defines the storage backend service. As
+// FragmentStores "root" remote storage locations of fragments, their path
+// component must end in a trailing slash.
+//
 // Currently supported schemes are:
 //
-//  * gs://bucket-name/a/bucket/sub-path
-//  * s3://bucket-name/a/bucket/sub-path
+//  * gs://bucket-name/a/sub-path/
+//  * s3://bucket-name/a/sub-path/
 
 type FragmentStore string
 
@@ -33,16 +36,24 @@ func (fs FragmentStore) parse() (*url.URL, error) {
 	if err != nil {
 		return nil, &ValidationError{Err: err}
 	} else if !url.IsAbs() {
-		return nil, NewValidationError("not absolute: %s", fs)
+		return nil, NewValidationError("not absolute (%s)", fs)
 	}
 
 	switch url.Scheme {
 	case "s3", "gs":
 		if url.Host == "" {
-			return nil, NewValidationError("missing bucket: %s", fs)
+			return nil, NewValidationError("missing bucket (%s)", fs)
+		}
+	case "file":
+		if url.Host != "" {
+			return nil, NewValidationError("file scheme cannot have host (%s)", fs)
 		}
 	default:
-		return nil, NewValidationError("invalid scheme: %s", url.Scheme)
+		return nil, NewValidationError("invalid scheme (%s)", url.Scheme)
+	}
+
+	if path := url.Path; path[len(path)-1] != '/' {
+		return nil, NewValidationError("path component doesn't end in '/' (%s)", url.Path)
 	}
 	return url, nil
 }

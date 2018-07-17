@@ -62,7 +62,7 @@ func (s *Service) Replicate(stream pb.Broker_ReplicateServer) error {
 // serveReplicate evaluates a client's Replicate RPC against the local Spool.
 func serveReplicate(stream pb.Broker_ReplicateServer, req *pb.ReplicateRequest, spool fragment.Spool) (fragment.Spool, error) {
 	for {
-		var resp, err = spool.Apply(req)
+		var resp, err = spool.Apply(req, false)
 		if err != nil {
 			return spool, err
 		}

@@ -3,7 +3,7 @@ replication: 2
 fragment:
   length: 1048576
   stores:
-  - s3://examples/fragments
+  - "s3://examples/fragments/?endpoint=http%3A//minio%3A9000"
   refresh_interval: 1m0s
   retention: 720h0m0s
 children:

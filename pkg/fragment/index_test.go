@@ -181,23 +181,24 @@ func (s *IndexSuite) TestBlockedContextCancelled(c *gc.C) {
 	c.Check(err, gc.Equals, context.Canceled)
 }
 
-func (s *IndexSuite) TestWalkStores(c *gc.C) {
-	var path1, err = ioutil.TempDir("", "IndexSuite.TestWalkStores")
+func (s *IndexSuite) TestWalkStoresAndURLSigning(c *gc.C) {
+	var tmpdir, err = ioutil.TempDir("", "IndexSuite.TestWalkStores")
 	c.Assert(err, gc.IsNil)
-	path2, err := ioutil.TempDir("", "IndexSuite.TestWalkStores")
-	c.Assert(err, gc.IsNil)
+
+	defer func() { os.RemoveAll(tmpdir) }()
+	defer func(s *string) { FileSystemStoreRoot = s }(FileSystemStoreRoot)
+	FileSystemStoreRoot = &tmpdir
 
 	var paths = []string{
-		path1, "a/journal/0000000000000000-0000000000000111-0000000000000000000000000000000000000111",
-		path1, "a/journal/0000000000000111-0000000000000222-0000000000000000000000000000000000000222.raw",
-		path1, "a/journal/0000000000000222-0000000000000255-0000000000000000000000000000000000000333.sz", // Covered.
-		path2, "a/journal/0000000000000222-0000000000000333-0000000000000000000000000000000000000333.sz",
-		path2, "a/journal/0000000000000444-0000000000000555-0000000000000000000000000000000000000444.gz",
+		"root/one/a/journal/0000000000000000-0000000000000111-0000000000000000000000000000000000000111",
+		"root/one/a/journal/0000000000000111-0000000000000222-0000000000000000000000000000000000000222.raw",
+		"root/one/a/journal/0000000000000222-0000000000000255-0000000000000000000000000000000000000333.sz", // Covered.
+		"root/two/a/journal/0000000000000222-0000000000000333-0000000000000000000000000000000000000444.gz",
+		"root/two/a/journal/0000000000000444-0000000000000555-0000000000000000000000000000000000000555.gz",
 	}
 
-	for i := 0; i != len(paths); i += 2 {
-		var path = filepath.Join(paths[i], filepath.FromSlash(paths[i+1]))
-
+	for _, path := range paths {
+		path = filepath.Join(tmpdir, filepath.FromSlash(path))
 		c.Assert(os.MkdirAll(filepath.Dir(path), 0700), gc.IsNil)
 		c.Assert(ioutil.WriteFile(path, []byte("data"), 0600), gc.IsNil)
 	}
@@ -207,14 +208,14 @@ func (s *IndexSuite) TestWalkStores(c *gc.C) {
 	var set Set
 
 	set, err = WalkAllStores(ctx, "a/journal", []pb.FragmentStore{
-		pb.FragmentStore("file:///path/does/not/exist"),
+		pb.FragmentStore("file:///path/does/not/exist/"),
 	})
 	c.Check(err, gc.NotNil)
 	c.Check(set, gc.DeepEquals, Set{})
 
-	// Gather fixture Fragments from |path1|.
+	// Gather fixture Fragments from "/root/one/" store.
 	set, err = WalkAllStores(ctx, "a/journal", []pb.FragmentStore{
-		pb.FragmentStore("file://" + filepath.ToSlash(path1)),
+		pb.FragmentStore("file:///root/one/"),
 	})
 	c.Check(err, gc.IsNil)
 	ind.ReplaceRemote(set)
@@ -225,9 +226,15 @@ func (s *IndexSuite) TestWalkStores(c *gc.C) {
 	c.Check(ind.set, gc.HasLen, 3)
 	c.Check(ind.EndOffset(), gc.Equals, int64(0x255))
 
+	// Expect root/one provides Fragment 222-255.
+	var resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 0x223})
+	c.Check(resp.Status, gc.Equals, pb.Status_OK)
+	c.Check(resp.FragmentUrl, gc.Equals,
+		"file:///root/one/a/journal/0000000000000222-0000000000000255-0000000000000000000000000000000000000333.sz")
+
 	set, err = WalkAllStores(ctx, "a/journal", []pb.FragmentStore{
-		pb.FragmentStore("file://" + filepath.ToSlash(path1)),
-		pb.FragmentStore("file://" + filepath.ToSlash(path2)),
+		pb.FragmentStore("file:///root/one/"),
+		pb.FragmentStore("file:///root/two/"),
 	})
 	c.Check(err, gc.IsNil)
 	ind.ReplaceRemote(set)
@@ -235,8 +242,11 @@ func (s *IndexSuite) TestWalkStores(c *gc.C) {
 	c.Check(ind.set, gc.HasLen, 4) // Combined Fragments are reflected.
 	c.Check(ind.EndOffset(), gc.Equals, int64(0x555))
 
-	c.Assert(os.RemoveAll(path1), gc.IsNil)
-	c.Assert(os.RemoveAll(path2), gc.IsNil)
+	// Expect root/two now provides Fragment 222-333.
+	resp, _, _ = ind.Query(context.Background(), &pb.ReadRequest{Offset: 0x223})
+	c.Check(resp.Status, gc.Equals, pb.Status_OK)
+	c.Check(resp.FragmentUrl, gc.Equals,
+		"file:///root/two/a/journal/0000000000000222-0000000000000333-0000000000000000000000000000000000000444.gz")
 }
 
 func buildSet(c *gc.C, offsets ...int64) Set {

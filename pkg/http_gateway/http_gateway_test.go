@@ -131,8 +131,8 @@ func (s *HTTPSuite) TestServingRead(c *gc.C) {
 		c.Check(<-broker.ReadReqCh, gc.DeepEquals, &pb.ReadRequest{Journal: "a/journal", Offset: 123})
 
 		broker.ReadRespCh <- &readResponseFixture
-		broker.ReadRespCh <- &pb.ReadResponse{Content: []byte("hello, ")}
-		broker.ReadRespCh <- &pb.ReadResponse{Content: []byte("world!")}
+		broker.ReadRespCh <- &pb.ReadResponse{Content: []byte("hello, "), Offset: 1024}
+		broker.ReadRespCh <- &pb.ReadResponse{Content: []byte("world!"), Offset: 1031}
 		broker.ErrCh <- nil
 	}()
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"io/ioutil"
-	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,9 +20,9 @@ import (
 type ReaderSuite struct{}
 
 func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
-	var frag, url, cleanup = buildFragmentFixture(c)
+	var frag, url, dir, cleanup = buildFragmentFixture(c)
 	defer cleanup()
-	defer installFileClient()()
+	defer InstallFileTransport(dir)()
 
 	var ctx = context.Background()
 
@@ -68,9 +67,9 @@ func (s *ReaderSuite) TestOpenFragmentURLCases(c *gc.C) {
 }
 
 func (s *ReaderSuite) TestReaderCases(c *gc.C) {
-	var frag, url, cleanup = buildFragmentFixture(c)
+	var frag, url, dir, cleanup = buildFragmentFixture(c)
 	defer cleanup()
-	defer installFileClient()()
+	defer InstallFileTransport(dir)()
 
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -166,12 +165,22 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 	b = make([]byte, 6)
 	n, err := r.Read(b[:])
 	c.Check(err, gc.IsNil)
+	c.Check(n, gc.Equals, 0)
+	c.Check(r.Request.Offset, gc.Equals, int64(110))
+
+	n, err = r.Read(b[:])
+	c.Check(err, gc.IsNil)
 	c.Check(string(b[:n]), gc.Equals, "foo ba")
 	c.Check(r.Request.Offset, gc.Equals, int64(116))
 
 	n, err = r.Read(b[:])
 	c.Check(err, gc.IsNil)
 	c.Check(string(b[:n]), gc.Equals, "r ")
+	c.Check(r.Request.Offset, gc.Equals, int64(118))
+
+	n, err = r.Read(b[:])
+	c.Check(err, gc.IsNil)
+	c.Check(n, gc.Equals, 0)
 	c.Check(r.Request.Offset, gc.Equals, int64(118))
 
 	n, err = r.Read(b[:])
@@ -246,9 +255,9 @@ func (s *ReaderSuite) TestBufferedOffsetAdjustment(c *gc.C) {
 }
 
 func (s *ReaderSuite) TestReaderSeekCases(c *gc.C) {
-	var frag, url, cleanup = buildFragmentFixture(c)
+	var frag, url, dir, cleanup = buildFragmentFixture(c)
 	defer cleanup()
-	defer installFileClient()()
+	defer InstallFileTransport(dir)()
 
 	var ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
@@ -261,8 +270,15 @@ func (s *ReaderSuite) TestReaderSeekCases(c *gc.C) {
 
 	var r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal"})
 
-	// Zero-byte read causes Reader to open Fragment.
-	var _, err = r.Read(nil)
+	// First zero-byte read causes Reader to read the response fixture.
+	var n, err = r.Read(nil)
+	c.Check(err, gc.IsNil)
+	c.Check(n, gc.Equals, 0)
+	c.Check(r.Response.FragmentUrl, gc.Matches, "file:///00000.*")
+
+	// Next read drives Reader to open the fragment directly.
+	n, err = r.Read(nil)
+	c.Check(n, gc.Equals, 0)
 	c.Check(err, gc.IsNil)
 	c.Check(r.direct, gc.NotNil)
 	c.Check(r.Request.Offset, gc.Equals, frag.Begin)
@@ -356,20 +372,11 @@ func serveReadFixtures(c *gc.C, broker *teststub.Broker, fixtures ...readFixture
 	}
 }
 
-func installFileClient() (cleanup func()) {
-	var t = &http.Transport{}
-	t.RegisterProtocol("file", http.NewFileTransport(http.Dir("/")))
-
-	var prevClient = HTTPClient
-	HTTPClient = &http.Client{Transport: t}
-
-	return func() { HTTPClient = prevClient }
-}
-
-func buildFragmentFixture(c *gc.C) (frag pb.Fragment, url string, cleanup func()) {
+func buildFragmentFixture(c *gc.C) (frag pb.Fragment, url string, dir string, cleanup func()) {
 	const data = "XXXXXhello, world!!!"
 
-	var dir, err = ioutil.TempDir("", "ReaderSuite")
+	var err error
+	dir, err = ioutil.TempDir("", "ReaderSuite")
 	c.Assert(err, gc.IsNil)
 
 	cleanup = func() {
@@ -382,9 +389,9 @@ func buildFragmentFixture(c *gc.C) (frag pb.Fragment, url string, cleanup func()
 		End:              120,
 		Sum:              pb.SHA1SumOf(data),
 		CompressionCodec: pb.CompressionCodec_GZIP,
-		BackingStore:     pb.FragmentStore("file://" + filepath.ToSlash(dir)),
+		BackingStore:     pb.FragmentStore("file:///"),
 	}
-	url = string(frag.BackingStore) + "/" + frag.ContentName()
+	url = string(frag.BackingStore) + frag.ContentName()
 
 	var path = filepath.Join(dir, frag.ContentName())
 	file, err := os.Create(path)

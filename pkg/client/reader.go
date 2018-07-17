@@ -38,14 +38,6 @@ func NewReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequest) 
 }
 
 func (r *Reader) Read(p []byte) (n int, err error) {
-	// Lazy initialization: begin the Read RPC.
-	if r.stream == nil {
-		if r.stream, err = r.client.Read(r.ctx, &r.Request); err == nil {
-			n, err = r.Read(p) // Recurse to attempt read against opened |r.stream|.
-		}
-		return // Surface read or error.
-	}
-
 	// Read from an open, direct fragment reader.
 	if r.direct != nil {
 		if n, err = r.direct.Read(p); err != nil {
@@ -56,19 +48,29 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	}
 
 	// Is there remaining content in the last ReadResponse?
-	if d := int(r.Request.Offset - r.Response.Offset); d < len(r.Response.Content) {
+	if d := int(r.Request.Offset - r.Response.Offset); d >= 0 && d < len(r.Response.Content) {
 		n = copy(p, r.Response.Content[d:])
 		r.Request.Offset += int64(n)
 		return
 	}
 
-	// Read and Validate the next frame.
-	if err = r.stream.RecvMsg(&r.Response); err == nil {
-		if err = r.Response.Validate(); err != nil {
-			err = pb.ExtendContext(err, "ReadResponse")
-		} else if r.Response.Status == pb.Status_OK && r.Response.Offset < r.Request.Offset {
-			err = pb.NewValidationError("invalid ReadResponse offset (%d; expected >= %d)",
-				r.Response.Offset, r.Request.Offset) // Violation of Read API contract.
+	// Lazy initialization: begin the Read RPC.
+	if r.stream == nil {
+		if r.stream, err = r.client.Read(r.ctx, &r.Request); err == nil {
+			n, err = r.Read(p) // Recurse to attempt read against opened |r.stream|.
+			return             // Surface read or error.
+		}
+	}
+
+	if err == nil {
+		// Read and Validate the next frame.
+		if err = r.stream.RecvMsg(&r.Response); err == nil {
+			if err = r.Response.Validate(); err != nil {
+				err = pb.ExtendContext(err, "ReadResponse")
+			} else if r.Response.Status == pb.Status_OK && r.Response.Offset < r.Request.Offset {
+				err = pb.NewValidationError("invalid ReadResponse offset (%d; expected >= %d)",
+					r.Response.Offset, r.Request.Offset) // Violation of Read API contract.
+			}
 		}
 	}
 
@@ -80,7 +82,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 
 	if err == nil {
 
-		if r.Request.Offset < r.Response.Offset {
+		if r.Request.Offset != -1 && r.Request.Offset < r.Response.Offset {
 			// Offset jumps are uncommon, but possible if fragments were removed.
 			log.WithFields(log.Fields{
 				"journal": r.Request.Journal,
@@ -95,7 +97,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 			u.UpdateRoute(r.Request.Journal, &r.Response.Header.Route)
 		}
 
-		n, err = r.Read(p) // Recurse to attempt read against updated |r.Response|.
+		// Return an empty read, to allow inspection of the updated |r.Response|.
 		return
 
 	} else if err != io.EOF {
@@ -110,7 +112,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	// We read a graceful stream closure (err == io.EOF).
 
 	// If the frame preceding EOF provided a fragment URL, open it directly.
-	if r.Response.Status == pb.Status_OK && r.Response.FragmentUrl != "" {
+	if !r.Request.MetadataOnly && r.Response.Status == pb.Status_OK && r.Response.FragmentUrl != "" {
 		if r.direct, err = OpenFragmentURL(r.ctx, *r.Response.Fragment,
 			r.Request.Offset, r.Response.FragmentUrl); err == nil {
 			n, err = r.Read(p) // Recurse to attempt read against opened |r.direct|.
@@ -184,12 +186,19 @@ func OpenFragmentURL(ctx context.Context, fragment pb.Fragment, offset int64, ur
 		req.Header.Set("Accept-Encoding", "gzip")
 	}
 
-	resp, err := HTTPClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	} else if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
 		return nil, fmt.Errorf("!OK fetching (%s, %q)", resp.Status, url)
+	}
+
+	if fragment.CompressionCodec == pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION &&
+		resp.Header.Get("Content-Encoding") == "gzip" {
+
+		// We must decompress, as the fragment store didn't do it on our behalf.
+		fragment.CompressionCodec = pb.CompressionCodec_GZIP
 	}
 	return NewFragmentReader(resp.Body, fragment, offset)
 }
@@ -247,6 +256,20 @@ func (fr *fragReader) Close() error {
 	return errB
 }
 
+// InstallFileTransport registers a file:// protocol handler rooted at |root|
+// with the http.Client used by OpenFragmentURL. The returned cleanup function
+// removes the handler and restores the prior http.Client.
+func InstallFileTransport(root string) (remove func()) {
+	var transport = new(http.Transport)
+	*transport = *http.DefaultTransport.(*http.Transport) // Clone.
+	transport.RegisterProtocol("file", http.NewFileTransport(http.Dir(root)))
+
+	var prevClient = httpClient
+	httpClient = &http.Client{Transport: transport}
+
+	return func() { httpClient = prevClient }
+}
+
 var (
 	// Map common broker error status into named errors.
 	ErrOffsetNotYetAvailable = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
@@ -255,6 +278,6 @@ var (
 	ErrSeekRequiresNewReader = errors.New("seek offset requires new Reader")
 	ErrExpectedEOF           = errors.New("did not read EOF at expected Fragment.End")
 
-	// HTTPClient is the http.Client used by OpenFragmentURL
-	HTTPClient = http.DefaultClient
+	// httpClient is the http.Client used by OpenFragmentURL
+	httpClient = http.DefaultClient
 )
