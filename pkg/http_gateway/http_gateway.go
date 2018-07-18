@@ -2,6 +2,7 @@ package http_gateway
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -10,12 +11,11 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/LiveRamp/gazette/pkg/client"
 	"github.com/gogo/protobuf/proto"
 	"github.com/gorilla/schema"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/net/trace"
 
+	"github.com/LiveRamp/gazette/pkg/client"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
@@ -49,32 +49,46 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 	var req, err = h.parseReadRequest(r)
 
 	if err != nil {
-		if tr, ok := trace.FromContext(r.Context()); ok {
-			tr.LazyPrintf("parsing request: %v", err)
-			tr.SetError()
-		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var reader = client.NewReader(r.Context(), h.client, req)
 
-	if _, err = reader.Read(nil); err != nil && reader.Response.Status == pb.Status_OK {
-		if r.Context().Err() != nil {
-			http.Error(w, err.Error(), http.StatusRequestTimeout) // Request was aborted by client.
-		} else {
-			log.WithField("err", err).Warn("http_gateway: failed to proxy Read request")
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
+	var reader = client.NewReader(r.Context(), h.client, req)
+	_, err = reader.Read(nil)
+
+	if err == client.ErrOffsetJump {
+		// Swallow this error, as the client is notified via the Content-Range
+		// header and we can continue the read. Any future jump after this one
+		// will necessarily terminate the stream, forcing the client to retry.
+	} else if reader.Response.Status != pb.Status_OK {
+		// Fallthrough to return this status error as an HTTP status code.
+	} else if r.Context().Err() != nil {
+		// Request was aborted by client.
+		http.Error(w, err.Error(), http.StatusRequestTimeout)
+		return
+	} else if err != nil {
+		log.WithField("err", err).Warn("http_gateway: failed to proxy Read request")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
 	writeReadResponse(w, r, reader.Response)
 
 	if reader.Response.Status != pb.Status_OK {
 		return
 	}
-	if _, err = io.Copy(flushWriter{w}, reader); err != nil &&
-		r.Context().Err() == nil &&
-		reader.Response.Status == pb.Status_OK {
+	if _, err = io.Copy(flushWriter{w}, reader); err == nil {
+		err = errBrokerTerminated
+	}
+	w.Header().Set(CloseErrorHeader, err.Error())
+
+	if r.Context().Err() != nil {
+		// Client terminated the request. Don't log.
+	} else if err == client.ErrOffsetJump ||
+		err == client.ErrOffsetNotYetAvailable ||
+		err == errBrokerTerminated {
+		// Common & expected errors. Don't log.
+	} else {
 		log.WithField("err", err).Warn("http_gateway: failed to proxy Read response")
 	}
 }
@@ -161,6 +175,10 @@ func writeReadResponse(w http.ResponseWriter, r *http.Request, resp pb.ReadRespo
 
 	switch resp.Status {
 	case pb.Status_OK:
+		if r.Method == "GET" {
+			// We must pre-declare our intent to send an X-Close-Error trailer.
+			w.Header().Set("Trailer", CloseErrorHeader)
+		}
 		w.WriteHeader(http.StatusPartialContent) // 206.
 	case pb.Status_JOURNAL_NOT_FOUND:
 		http.Error(w, resp.Status.String(), http.StatusNotFound) // 404.
@@ -200,7 +218,6 @@ func writeHeader(w http.ResponseWriter, r *http.Request, h *pb.Header) {
 	if len(h.Route.Brokers) != 0 {
 		w.Header().Set(RouteTokenHeader, proto.CompactTextString(&h.Route))
 	}
-
 	// If there is a primary broker, add a Location header which would direct
 	// further requests of this journal to the primary.
 	if len(h.Route.Brokers) != 0 && h.Route.Primary != -1 {
@@ -227,9 +244,12 @@ const (
 	FragmentLocationHeader     = "X-Fragment-Location"
 	FragmentNameHeader         = "X-Fragment-Name"
 	RouteTokenHeader           = "X-Route-Token"
+	CloseErrorHeader           = "X-Close-Error"
 
 	WriteHeadHeader   = "X-Write-Head"
 	CommitBeginHeader = "X-Commit-Begin"
 	CommitEndHeader   = "X-Commit-End"
 	CommitSumHeader   = "X-Commit-SHA1-Sum"
 )
+
+var errBrokerTerminated = errors.New("broker terminated RPC")

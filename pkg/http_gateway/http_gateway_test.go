@@ -101,6 +101,7 @@ func (s *HTTPSuite) TestWriteReadResponse(c *gc.C) {
 		"X-Fragment-Name":          []string{"00000000000003e8-00000000000005dc-0000000000002694000000000000000000000000.sz"},
 		"X-Route-Token":            []string{"brokers:<zone:\"a\" suffix:\"broker\" > endpoints:\"http://broker/path\" "},
 		"X-Write-Head":             []string{"2048"},
+		"Trailer":                  []string{"X-Close-Error"}, // Declared header to be sent as trailer.
 	})
 }
 
@@ -143,6 +144,7 @@ func (s *HTTPSuite) TestServingRead(c *gc.C) {
 
 	c.Check(w.Code, gc.Equals, http.StatusPartialContent)
 	c.Check(w.Header()["X-Write-Head"], gc.DeepEquals, []string{"2048"})
+	c.Check(w.Header()["X-Close-Error"], gc.DeepEquals, []string{"broker terminated RPC"})
 	c.Check(w.Body.String(), gc.Equals, "hello, world!")
 	c.Check(w.Flushed, gc.Equals, true)
 }

@@ -267,17 +267,15 @@ func (c *Client) makeReadStatsWrapper(stream io.ReadCloser, name journal.Name, o
 // opened, seek'd to the desired |result.Offset|, and returned. Note we don't
 // use a range request here, as the fragment is usually gzip'd (and implicitly
 // decompressed while being read).
-func (c *Client) openFragment(location *url.URL,
-	result journal.ReadResult) (io.ReadCloser, error) {
+func (c *Client) openFragment(location *url.URL, result journal.ReadResult) (io.ReadCloser, error) {
 
-	response, err := c.httpClient.Get(location.String())
+	var response, err = c.httpClient.Get(location.String())
 	if err != nil {
 		return nil, err
 	} else if response.StatusCode != http.StatusOK {
 		response.Body.Close()
 		return nil, fmt.Errorf("fetching fragment: %s", response.Status)
 	}
-
 	var body = response.Body
 
 	if response.Header.Get("Content-Encoding") == "gzip" {
@@ -288,10 +286,10 @@ func (c *Client) openFragment(location *url.URL,
 	}
 
 	// Attempt to seek to |result.Offset| within the fragment.
-	delta := result.Offset - result.Fragment.Begin
-	if _, err := io.CopyN(ioutil.Discard, body, delta); err != nil {
-		body.Close()
-		response.Body.Close()
+	var delta = result.Offset - result.Fragment.Begin
+	if _, err = io.CopyN(ioutil.Discard, body, delta); err != nil {
+		_ = body.Close()
+		_ = response.Body.Close()
 		return nil, fmt.Errorf("seeking fragment: %s", err)
 	}
 

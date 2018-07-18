@@ -148,7 +148,9 @@ func (s *NodeSuite) TestSpecHoisting(c *gc.C) {
 
 func (s *NodeSuite) TestTreeExtraction(c *gc.C) {
 	var root = ExtractTree([]Node{
-		{JournalSpec: pb.JournalSpec{Name: "root/aaa/111"}},
+		{JournalSpec: pb.JournalSpec{Name: "root/aaa/000"}},
+		{JournalSpec: pb.JournalSpec{Name: "root/aaa/111/foo/i"}},
+		{JournalSpec: pb.JournalSpec{Name: "root/aaa/111/foo/j"}},
 		{JournalSpec: pb.JournalSpec{Name: "root/aaa/222"}},
 		{JournalSpec: pb.JournalSpec{Name: "root/bbb/333/a/x"}},
 		{JournalSpec: pb.JournalSpec{Name: "root/bbb/333/a/y"}},
@@ -161,7 +163,14 @@ func (s *NodeSuite) TestTreeExtraction(c *gc.C) {
 		Children: []Node{
 			{JournalSpec: pb.JournalSpec{Name: "root/aaa/"},
 				Children: []Node{
-					{JournalSpec: pb.JournalSpec{Name: "root/aaa/111"}},
+					{JournalSpec: pb.JournalSpec{Name: "root/aaa/000"}},
+					// Expect 111/ and foo/ were *not* mapped into separate nodes,
+					// since there are no terminals under 111/ not also under foo/
+					{JournalSpec: pb.JournalSpec{Name: "root/aaa/111/foo/"},
+						Children: []Node{
+							{JournalSpec: pb.JournalSpec{Name: "root/aaa/111/foo/i"}},
+							{JournalSpec: pb.JournalSpec{Name: "root/aaa/111/foo/j"}},
+						}},
 					{JournalSpec: pb.JournalSpec{Name: "root/aaa/222"}},
 				}},
 			{JournalSpec: pb.JournalSpec{Name: "root/bbb/"},

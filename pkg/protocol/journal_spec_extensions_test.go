@@ -46,7 +46,7 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 
 		Fragment: JournalSpec_Fragment{
 			Length:           1 << 18,
-			CompressionCodec: CompressionCodec_SNAPPY,
+			CompressionCodec: CompressionCodec_GZIP,
 			Stores:           []FragmentStore{"s3://bucket/path/", "gs://other-bucket/path/"},
 			RefreshInterval:  5 * time.Minute,
 			Retention:        365 * 24 * time.Hour,
@@ -83,6 +83,11 @@ func (s *JournalSuite) TestSpecValidationCases(c *gc.C) {
 
 	f.CompressionCodec = 9999
 	c.Check(f.Validate(), gc.ErrorMatches, `CompressionCodec: invalid value \(9999\)`)
+	f.CompressionCodec = CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION
+
+	f.Stores[0] = "file:///a/root/"
+	c.Check(f.Validate(), gc.ErrorMatches,
+		`GZIP_OFFLOAD_DECOMPRESSION is incompatible with file:// stores \(file:///a/root/\)`)
 	f.CompressionCodec = CompressionCodec_SNAPPY
 
 	f.RefreshInterval = time.Millisecond

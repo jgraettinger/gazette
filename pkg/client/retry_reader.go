@@ -60,12 +60,16 @@ func (rr *RetryReader) Offset() int64 {
 //  * Cancel is called, or the RetryReader context is cancelled.
 //  * The broker returns OFFSET_NOT_YET_AVAILABLE (ErrOffsetNotYetAvailable)
 //    for a non-blocking ReadRequest.
+//  * An offset jump occurred (ErrOffsetJump), in which case the client
+//    should inspect the new Offset may continue reading if desired.
 // All other errors are retried.
 func (rr *RetryReader) Read(p []byte) (n int, err error) {
 	for i := 0; true; i++ {
 
 		if n, err = rr.Reader.Read(p); err == nil {
 			return // Success.
+		} else if err == ErrOffsetJump {
+			return // Note |rr.Reader| is not invalidated by this error.
 		}
 
 		// Our Read failed. Since we're a retrying reader, we consume and mask

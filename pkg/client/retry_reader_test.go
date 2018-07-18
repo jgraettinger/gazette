@@ -79,7 +79,7 @@ func (s *RetrySuite) TestSeeking(c *gc.C) {
 
 	// Read initial response message.
 	var _, err = rr.Read(nil)
-	c.Check(err, gc.IsNil)
+	c.Check(err, gc.Equals, ErrOffsetJump)
 	c.Check(rr.Offset(), gc.Equals, frag.Begin)
 
 	_, err = rr.Read(nil) // Opens fragment URL.
@@ -121,7 +121,7 @@ func (s *RetrySuite) TestBufferedSeekAdjustment(c *gc.C) {
 	go serveReadFixtures(c, broker,
 		readFixture{content: "foo\nbar\nbaz\n", offset: 100},
 	)
-	var rr = NewRetryReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal"})
+	var rr = NewRetryReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal", Offset: 100})
 	var br = bufio.NewReader(rr)
 
 	// Peek consumes the entire read fixture.

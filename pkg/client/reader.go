@@ -9,15 +9,17 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	log "github.com/sirupsen/logrus"
-
 	"github.com/LiveRamp/gazette/pkg/codecs"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
 // Reader adapts a Read RPC to the io.Reader interface. It additionally supports
 // directly reading Fragment URLs advertised but not proxied by the broker (eg,
-// because DoNotProxy of the ReadRequest is true).
+// because DoNotProxy of the ReadRequest is true). A Reader is invalidated by its
+// first returned error, with the exception of ErrOffsetJump: this error is
+// returned to notify the client that the next Journal offset to be Read is not
+// the offset that was requested, but the Reader is prepared to continue at the
+// updated offset.
 type Reader struct {
 	Request  pb.ReadRequest  // ReadRequest of the Reader.
 	Response pb.ReadResponse // Most recent ReadResponse from broker.
@@ -38,7 +40,7 @@ func NewReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequest) 
 }
 
 func (r *Reader) Read(p []byte) (n int, err error) {
-	// Read from an open, direct fragment reader.
+	// If we have an open direct reader of a persisted fragment, delegate to it.
 	if r.direct != nil {
 		if n, err = r.direct.Read(p); err != nil {
 			_ = r.direct.Close()
@@ -48,7 +50,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	}
 
 	// Is there remaining content in the last ReadResponse?
-	if d := int(r.Request.Offset - r.Response.Offset); d >= 0 && d < len(r.Response.Content) {
+	if l, d := len(r.Response.Content), int(r.Request.Offset-r.Response.Offset); l != 0 && d < l {
 		n = copy(p, r.Response.Content[d:])
 		r.Request.Offset += int64(n)
 		return
@@ -82,22 +84,18 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 
 	if err == nil {
 
-		if r.Request.Offset != -1 && r.Request.Offset < r.Response.Offset {
-			// Offset jumps are uncommon, but possible if fragments were removed.
-			log.WithFields(log.Fields{
-				"journal": r.Request.Journal,
-				"from":    r.Request.Offset,
-				"to":      r.Response.Offset,
-			}).Warn("offset jump")
-			r.Request.Offset = r.Response.Offset
-		}
-
 		// If a Header was sent, advise of its advertised journal Route.
 		if u, ok := r.client.(RouteUpdater); r.Response.Header != nil && ok {
 			u.UpdateRoute(r.Request.Journal, &r.Response.Header.Route)
 		}
 
-		// Return an empty read, to allow inspection of the updated |r.Response|.
+		if r.Request.Offset < r.Response.Offset {
+			// Offset jumps are uncommon, but possible if fragments were removed,
+			// or if the requested offset was -1.
+			r.Request.Offset = r.Response.Offset
+			err = ErrOffsetJump
+		}
+		// Return empty read, to allow inspection of the updated |r.Response|.
 		return
 
 	} else if err != io.EOF {
@@ -170,13 +168,12 @@ func OpenFragmentURL(ctx context.Context, fragment pb.Fragment, offset int64, ur
 	if err != nil {
 		return nil, err
 	}
-	req = req.WithContext(ctx)
 
 	if fragment.CompressionCodec == pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION {
 		// Require that the server send us un-encoded content, offloading
 		// decompression onto the storage API. Go's standard `gzip` package is slow,
 		// and we also see a parallelism benefit by offloading decompression work
-		// onto cloud storage system.
+		// onto the cloud storage system.
 		req.Header.Set("Accept-Encoding", "identity")
 	} else if fragment.CompressionCodec == pb.CompressionCodec_GZIP {
 		// Explicitly request gzip. Doing so disables the http client's transparent
@@ -186,7 +183,7 @@ func OpenFragmentURL(ctx context.Context, fragment pb.Fragment, offset int64, ur
 		req.Header.Set("Accept-Encoding", "gzip")
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, err
 	} else if resp.StatusCode != http.StatusOK {
@@ -194,11 +191,12 @@ func OpenFragmentURL(ctx context.Context, fragment pb.Fragment, offset int64, ur
 		return nil, fmt.Errorf("!OK fetching (%s, %q)", resp.Status, url)
 	}
 
+	// Technically the store _must_ decompress in response to honor our
+	// Accept-Encoding header, but some implementations (eg, Minio) don't.
 	if fragment.CompressionCodec == pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION &&
 		resp.Header.Get("Content-Encoding") == "gzip" {
 
-		// We must decompress, as the fragment store didn't do it on our behalf.
-		fragment.CompressionCodec = pb.CompressionCodec_GZIP
+		fragment.CompressionCodec = pb.CompressionCodec_GZIP // Decompress client-side.
 	}
 	return NewFragmentReader(resp.Body, fragment, offset)
 }
@@ -274,6 +272,7 @@ var (
 	// Map common broker error status into named errors.
 	ErrOffsetNotYetAvailable = errors.New(pb.Status_OFFSET_NOT_YET_AVAILABLE.String())
 	ErrNotJournalBroker      = errors.New(pb.Status_NOT_JOURNAL_BROKER.String())
+	ErrOffsetJump            = errors.New("offset jump")
 
 	ErrSeekRequiresNewReader = errors.New("seek offset requires new Reader")
 	ErrExpectedEOF           = errors.New("did not read EOF at expected Fragment.End")

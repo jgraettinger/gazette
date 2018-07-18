@@ -79,8 +79,8 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 	go serveReadFixtures(c, broker,
 		// Case 1: fixture returns fragment metadata & URL, then EOF.
 		readFixture{fragment: &frag, fragmentUrl: url},
-		// Case 2: fragment metadata but no URL.
-		readFixture{fragment: &frag},
+		// Case 2: fragment metadata but no URL, at read offset -1.
+		readFixture{fragment: &frag, offset: 110},
 		// Case 3: wrong broker (and it's not instructed to proxy).
 		readFixture{status: pb.Status_NOT_JOURNAL_BROKER},
 		// Case 4: read some content, and then OFFSET_NOT_YET_AVAILABLE.
@@ -107,13 +107,18 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 	c.Check(string(b), gc.Equals, "hello, world!!!")
 	c.Check(err, gc.Equals, nil)
 
-	// Case 2: fragment metadata, no URL.
-	r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal", Offset: 105})
-	b, err = ioutil.ReadAll(r)
+	// Case 2: fragment metadata, no URL and the offset is jumped.
+	r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal", Offset: -1})
+	n, err := r.Read(b)
 
-	c.Check(b, gc.HasLen, 0)
-	c.Check(err, gc.Equals, nil)
+	c.Check(n, gc.Equals, 0)
+	c.Check(err, gc.Equals, ErrOffsetJump)
+	c.Check(r.Request.Offset, gc.Equals, int64(110)) // Updated from Response.
 	c.Check(r.Response.Fragment, gc.DeepEquals, &frag)
+
+	n, err = r.Read(b)
+	c.Check(n, gc.Equals, 0)
+	c.Check(err, gc.Equals, io.EOF)
 
 	// Case 3: NOT_JOURNAL_BROKER => ErrNotJournalBroker.
 	r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal", Offset: 105})
@@ -149,7 +154,7 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 		pb.ReadRequest{Journal: "a/journal", Offset: 105})
 
 	_, err = r.Read(nil)
-	c.Check(err, gc.IsNil)
+	c.Check(err, gc.Equals, ErrOffsetJump)
 
 	// Expect offset was skipped forward to Response.Offset.
 	c.Check(r.Request.Offset, gc.Equals, int64(110))
@@ -163,7 +168,7 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 	// Note the fixture content is split across two ReadResponses.
 	// Consume both messages across four small Reads.
 	b = make([]byte, 6)
-	n, err := r.Read(b[:])
+	n, err = r.Read(b[:])
 	c.Check(err, gc.IsNil)
 	c.Check(n, gc.Equals, 0)
 	c.Check(r.Request.Offset, gc.Equals, int64(110))
@@ -178,7 +183,7 @@ func (s *ReaderSuite) TestReaderCases(c *gc.C) {
 	c.Check(string(b[:n]), gc.Equals, "r ")
 	c.Check(r.Request.Offset, gc.Equals, int64(118))
 
-	n, err = r.Read(b[:])
+	n, err = r.Read(b[:]) // Read next message.
 	c.Check(err, gc.IsNil)
 	c.Check(n, gc.Equals, 0)
 	c.Check(r.Request.Offset, gc.Equals, int64(118))
@@ -241,7 +246,7 @@ func (s *ReaderSuite) TestBufferedOffsetAdjustment(c *gc.C) {
 	var broker = teststub.NewBroker(c, ctx)
 	go readFixture{content: "foobar\nbaz\n", offset: 100}.serve(c, broker)
 
-	var r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal"})
+	var r = NewReader(ctx, broker.MustClient(), pb.ReadRequest{Journal: "a/journal", Offset: 100})
 	var br = bufio.NewReader(r)
 
 	var b, err = br.ReadBytes('\n')
@@ -272,8 +277,9 @@ func (s *ReaderSuite) TestReaderSeekCases(c *gc.C) {
 
 	// First zero-byte read causes Reader to read the response fixture.
 	var n, err = r.Read(nil)
-	c.Check(err, gc.IsNil)
+	c.Check(err, gc.Equals, ErrOffsetJump)
 	c.Check(n, gc.Equals, 0)
+	c.Check(r.Request.Offset, gc.Equals, int64(frag.Begin))
 	c.Check(r.Response.FragmentUrl, gc.Matches, "file:///00000.*")
 
 	// Next read drives Reader to open the fragment directly.

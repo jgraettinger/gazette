@@ -62,6 +62,10 @@ func (m *JournalSpec_Fragment) Validate() error {
 		if err := store.Validate(); err != nil {
 			return ExtendContext(err, "Stores[%d]", i)
 		}
+		if i == 0 && store.URL().Scheme == "file" &&
+			m.CompressionCodec == CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION {
+			return NewValidationError("GZIP_OFFLOAD_DECOMPRESSION is incompatible with file:// stores (%s)", store)
+		}
 	}
 	if m.RefreshInterval < minRefreshInterval || m.RefreshInterval > maxRefreshInterval {
 		return NewValidationError("invalid RefreshInterval (%s; expected %s <= interval <= %s)",

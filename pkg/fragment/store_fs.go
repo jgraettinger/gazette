@@ -27,13 +27,6 @@ func fsOpen(ep *url.URL, fragment pb.Fragment) (io.ReadCloser, error) {
 }
 
 func fsPersist(ep *url.URL, spool Spool) error {
-	// Offloaded decompression isn't possible on file:// mounts.
-	if spool.CompressionCodec == pb.CompressionCodec_GZIP_OFFLOAD_DECOMPRESSION {
-		log.WithField("ep", ep.String()).
-			Warn("file:// store doesn't support GZIP_OFFLOAD_DECOMPRESSION; using GZIP instead")
-
-		spool.CompressionCodec = pb.CompressionCodec_GZIP
-	}
 	var path = filepath.Join(*FileSystemStoreRoot, filepath.FromSlash(ep.Path+spool.ContentPath()))
 
 	// Create the journal's fragment directory, if not already present.
