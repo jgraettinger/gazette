@@ -282,11 +282,13 @@ func pulseJournal(ctx context.Context, journal pb.Journal, ks *keyspace.KeySpace
 	} else if resp, err := etcd.Txn(ctx).If(cmp...).Then(ops...).Commit(); err != nil {
 		log.WithField("err", err).Warn("etcd txn failed")
 	} else {
-		if !resp.Succeeded {
-			log.WithField("journal", journal).Warn("etcd txn did not succeed") // TODO(johnny): Debug.
-		}
-		// Wait for KeySpace to reflect our txn. This prevents closely
-		// successive pulseJournals calls from racing one another.
+
+		// Note that transactions may not succeed under regular operation.
+		// For example, a primary may race a journal pulse under an updated
+		// route against a v3_allocator's compaction of assignment slots,
+		// and lose. We expect to converge quickly via another pulse attempt.
+
+		// Wait for KeySpace to reflect our txn revision.
 		ks.Mu.RLock()
 		ks.WaitForRevision(ctx, resp.Header.Revision)
 		ks.Mu.RUnlock()

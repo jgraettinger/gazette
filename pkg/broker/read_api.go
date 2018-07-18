@@ -39,11 +39,8 @@ func (s *Service) Read(req *pb.ReadRequest, stream pb.Broker_ReadServer) error {
 		return proxyRead(stream, req, &res.Header, s.dialer)
 	}
 
-	if err = serveRead(stream, req, &res.Header, res.replica.index); res.replica.ctx.Err() != nil {
-		// We're no longer a broker for this journal. Expected error (don't log or forward to client).
-		err = nil
-	} else if stream.Context().Err() != nil {
-		// Client terminated the read. Expected error (don't log).
+	if err = serveRead(stream, req, &res.Header, res.replica.index); err == context.Canceled {
+		err = nil // Gracefully terminate RPC.
 	} else if err != nil {
 		log.WithFields(log.Fields{"err": err, "req": req}).Warn("failed to serve Read")
 	}

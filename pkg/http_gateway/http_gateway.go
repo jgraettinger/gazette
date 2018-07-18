@@ -1,6 +1,7 @@
 package http_gateway
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -82,9 +83,8 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(CloseErrorHeader, err.Error())
 
-	if r.Context().Err() != nil {
-		// Client terminated the request. Don't log.
-	} else if err == client.ErrOffsetJump ||
+	if err == context.Canceled ||
+		err == client.ErrOffsetJump ||
 		err == client.ErrOffsetNotYetAvailable ||
 		err == errBrokerTerminated {
 		// Common & expected errors. Don't log.

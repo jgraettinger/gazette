@@ -147,21 +147,29 @@ func main() {
 	var persister = fragment.NewPersister()
 	broker.SetSharedPersister(persister)
 
-	go persister.Serve()
+	var grpcSrv = grpc.NewServer(grpc.KeepaliveParams(cfg.GRPC.KeepAlive))
+	pb.RegisterBrokerServer(grpcSrv, service)
 
 	must(ks.Load(context.Background(), etcd, announcement.Revision), "failed to load KeySpace")
+
+	// Start all service loops.
+	go persister.Serve()
 
 	go func() {
 		must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
 	}()
 	go func() {
-		must(serveHTTPGateway(&cfg, httpL, dialer), "gateway http.Serve failed")
+		if err := serveHTTPGateway(&cfg, httpL, dialer); err != nil && cfg.Spec.JournalLimit != 0 {
+			log.WithField("err", err).Fatal("serveHTTPGateway failed")
+		}
 	}()
 	go func() {
-		must(serveGRPC(&cfg, grpcL, service), "grpc Serve failed")
+		if err := cMux.Serve(); err != nil && cfg.Spec.JournalLimit != 0 {
+			log.WithField("err", err).Fatal("cMux.Serve failed")
+		}
 	}()
 	go func() {
-		must(cMux.Serve(), "cMux.Serve failed")
+		must(grpcSrv.Serve(grpcL), "grpc.Serve failed")
 	}()
 
 	if err = v3_allocator.Allocate(v3_allocator.AllocateArgs{
@@ -173,6 +181,8 @@ func main() {
 	}
 
 	persister.Finish()
+	grpcSrv.GracefulStop()
+
 	log.Info("goodbye")
 }
 
@@ -213,13 +223,6 @@ func serveHTTPGateway(cfg *Config, l net.Listener, dialer client.Dialer) error {
 	must(err, "failed to build RoutingClient")
 
 	return http.Serve(l, http_gateway.NewGateway(routingClient))
-}
-
-func serveGRPC(cfg *Config, l net.Listener, srv pb.BrokerServer) error {
-	var grpcSrv = grpc.NewServer(grpc.KeepaliveParams(cfg.GRPC.KeepAlive))
-	pb.RegisterBrokerServer(grpcSrv, srv)
-
-	return grpcSrv.Serve(l)
 }
 
 func must(err error, msg string, extra ...interface{}) {
