@@ -108,7 +108,6 @@ func main() {
 	mainboilerplate.InitLog(cfg.Log.Level)
 
 	var etcd, session = buildEtcdSession(&cfg)
-	defer session.Close()
 
 	// Bind listeners before we advertise our endpoint.
 	var cMux, grpcL, httpL = buildListeners(&cfg)
@@ -179,6 +178,9 @@ func main() {
 	}); err != nil {
 		log.WithField("err", err).Error("Allocate failed")
 	}
+	// Close our session to remove our member key. If we were leader,
+	// this notifies peers that we are no longer allocating.
+	session.Close()
 
 	persister.Finish()
 	grpcSrv.GracefulStop()
