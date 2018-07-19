@@ -14,6 +14,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// replica is a runtime instance of a journal which is assigned to this broker.
 type replica struct {
 	journal pb.Journal
 	// Context tied to processing lifetime of this replica by this broker.
@@ -26,7 +27,7 @@ type replica struct {
 	spoolCh chan fragment.Spool
 	// pipelineCh synchronizes access to the single pipeline of the replica.
 	pipelineCh chan *pipeline
-	// signalMaintenanceCh allows resolver to notify the replica's
+	// signalMaintenanceCh allows the resolver to notify the replica's
 	// maintenanceLoop of lifecycle events. Notably:
 	//  * resolver signals on KeySpace updates when the replica is primary for
 	//    the journal, and current assignments in Etcd are inconsistent.
@@ -58,6 +59,7 @@ func newReplica(journal pb.Journal) *replica {
 	return r
 }
 
+// acquireSpool performs a blocking acquisition of the replica's single Spool.
 func acquireSpool(ctx context.Context, r *replica, waitForRemoteLoad bool) (spool fragment.Spool, err error) {
 	if waitForRemoteLoad {
 		if err = r.index.WaitForFirstRemoteRefresh(ctx); err != nil {
@@ -89,6 +91,8 @@ func acquireSpool(ctx context.Context, r *replica, waitForRemoteLoad bool) (spoo
 	return
 }
 
+// acquirePipeline performs a blocking acquisition of the replica's single
+// pipeline, building a new pipeline if a ready instance doesn't already exist.
 func acquirePipeline(ctx context.Context, r *replica, hdr pb.Header, dialer client.Dialer) (*pipeline, int64, error) {
 	var pln *pipeline
 
@@ -257,7 +261,7 @@ func pulseJournal(ctx context.Context, journal pb.Journal, ks *keyspace.KeySpace
 			"journal": journal,
 			"rt":      rt.String(),
 			"resp":    app.Response,
-		}).Warn("pulse Route differs") // TODO(johnny): Use Debug (accepted race condition).
+		}).Warn("pulse Route differs")
 		return
 	}
 

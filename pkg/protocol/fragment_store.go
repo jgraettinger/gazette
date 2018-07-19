@@ -11,9 +11,10 @@ import (
 //
 // Currently supported schemes are:
 //
-//  * gs://bucket-name/a/sub-path/
-//  * s3://bucket-name/a/sub-path/
-
+//  * gs://bucket-name/a/sub-path/?property=value
+//  * s3://bucket-name/a/sub-path/?property=value
+//  * file:///a/sub-path/?property=value
+//
 type FragmentStore string
 
 // Validate returns an error if the FragmentStore is not well-formed.

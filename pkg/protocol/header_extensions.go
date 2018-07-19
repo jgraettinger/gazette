@@ -30,6 +30,7 @@ func (m Header_Etcd) Validate() error {
 	return nil
 }
 
+// FromEtcdResponseHeader converts an etcd ResponseHeader to an equivalent Header_Etcd.
 func FromEtcdResponseHeader(h epb.ResponseHeader) Header_Etcd {
 	return Header_Etcd{
 		ClusterId: h.ClusterId,

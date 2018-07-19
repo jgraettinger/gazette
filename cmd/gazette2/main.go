@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -12,19 +13,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LiveRamp/gazette/pkg/client"
-	"github.com/LiveRamp/gazette/pkg/fragment"
-	"github.com/LiveRamp/gazette/pkg/http_gateway"
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/clientv3/concurrency"
 	"github.com/prometheus/client_golang/prometheus"
 	log "github.com/sirupsen/logrus"
 	"github.com/soheilhy/cmux"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/LiveRamp/gazette/pkg/broker"
+	"github.com/LiveRamp/gazette/pkg/client"
+	"github.com/LiveRamp/gazette/pkg/fragment"
+	"github.com/LiveRamp/gazette/pkg/http_gateway"
 	keepalive2 "github.com/LiveRamp/gazette/pkg/keepalive"
 	"github.com/LiveRamp/gazette/pkg/mainboilerplate"
 	"github.com/LiveRamp/gazette/pkg/metrics"
@@ -83,14 +83,14 @@ func (cfg Config) Validate() error {
 		return pb.ExtendContext(err, "Etcd.Endpoint")
 	} else if !path.IsAbs(cfg.Etcd.Root) {
 		return pb.NewValidationError("Etcd.Root not an absolute path: %s", cfg.Etcd.Root)
-	} else if cfg.Etcd.LeaseTTL <= time.Second {
+	} else if cfg.Etcd.LeaseTTL < time.Second {
 		return pb.NewValidationError("invalid Etcd.LeaseTTL (%s; expected >= %s)",
 			cfg.Etcd.LeaseTTL, time.Second)
 	} else if cfg.Caches.DialerConns <= 0 {
-		return pb.NewValidationError("invalid Caches.DialerConns (%d; expected >= 0)",
+		return pb.NewValidationError("invalid Caches.DialerConns (%d; expected > 0)",
 			cfg.Caches.DialerConns)
 	} else if cfg.Caches.HTTPGatewayRoutes <= 0 {
-		return pb.NewValidationError("invalid Caches.HTTPGatewayRoutes (%d; expected >= 0)",
+		return pb.NewValidationError("invalid Caches.HTTPGatewayRoutes (%d; expected > 0)",
 			cfg.Caches.HTTPGatewayRoutes)
 	}
 	return nil
@@ -115,7 +115,7 @@ func main() {
 	var ks = pb.NewKeySpace(cfg.Etcd.Root)
 	var memberKey = v3_allocator.MemberKey(ks, cfg.Spec.Id.Zone, cfg.Spec.Id.Suffix)
 
-	announcement, err := v3_allocator.Announce(context.Background(),
+	var announcement, err = v3_allocator.Announce(context.Background(),
 		etcd, memberKey, cfg.Spec.MarshalString(), session.Lease())
 	must(err, "failed to announce member key", "key", memberKey)
 
@@ -140,6 +140,8 @@ func main() {
 	must(err, "failed to create Dialer")
 	loopback, err := dialer.DialEndpoint(context.Background(), cfg.Spec.Endpoint)
 	must(err, "failed to dial local broker")
+	routingClient, err := client.NewRoutingClient(pb.NewBrokerClient(loopback), cfg.Spec.Id.Zone, dialer, cfg.Caches.HTTPGatewayRoutes)
+	must(err, "failed to build RoutingClient")
 
 	var state = v3_allocator.NewObservedState(ks, memberKey)
 	var service = broker.NewService(state, dialer, pb.NewBrokerClient(loopback), etcd)
@@ -152,14 +154,10 @@ func main() {
 	must(ks.Load(context.Background(), etcd, announcement.Revision), "failed to load KeySpace")
 
 	// Start all service loops.
-	go persister.Serve()
 
 	go func() {
-		must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
-	}()
-	go func() {
-		if err := serveHTTPGateway(&cfg, httpL, dialer); err != nil && cfg.Spec.JournalLimit != 0 {
-			log.WithField("err", err).Fatal("serveHTTPGateway failed")
+		if err := http.Serve(httpL, http_gateway.NewGateway(routingClient)); err != nil && cfg.Spec.JournalLimit != 0 {
+			log.WithField("err", err).Fatal("gateway http.Serve failed")
 		}
 	}()
 	go func() {
@@ -170,6 +168,10 @@ func main() {
 	go func() {
 		must(grpcSrv.Serve(grpcL), "grpc.Serve failed")
 	}()
+	go func() {
+		must(ks.Watch(context.Background(), etcd), "KeySpace Watch failed")
+	}()
+	go persister.Serve()
 
 	if err = v3_allocator.Allocate(v3_allocator.AllocateArgs{
 		Context: context.Background(),
@@ -214,17 +216,6 @@ func buildEtcdSession(cfg *Config) (etcd *clientv3.Client, session *concurrency.
 	session, err = concurrency.NewSession(etcd, concurrency.WithTTL(int(cfg.Etcd.LeaseTTL.Seconds())))
 	must(err, "failed to establish etcd lease session")
 	return
-}
-
-func serveHTTPGateway(cfg *Config, l net.Listener, dialer client.Dialer) error {
-	var loopback, err = dialer.DialEndpoint(context.Background(), cfg.Spec.Endpoint)
-	must(err, "failed to dial local broker")
-
-	routingClient, err := client.NewRoutingClient(pb.NewBrokerClient(loopback),
-		cfg.Spec.Id.Zone, dialer, cfg.Caches.HTTPGatewayRoutes)
-	must(err, "failed to build RoutingClient")
-
-	return http.Serve(l, http_gateway.NewGateway(routingClient))
 }
 
 func must(err error, msg string, extra ...interface{}) {

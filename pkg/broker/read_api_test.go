@@ -12,7 +12,7 @@ import (
 
 type ReadSuite struct{}
 
-// TODO(johnny): Test case covering remote fragment reads (not yet implemented).
+// TODO(johnny): Test case covering remote fragment reads (not yet implemented; issue #67).
 
 func (s *ReadSuite) TestStreaming(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())

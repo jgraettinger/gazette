@@ -30,6 +30,7 @@ type Reader struct {
 	direct io.ReadCloser        // Directly opened Fragment URL.
 }
 
+// NewReader returns a Reader initialized with the given BrokerClient and ReadRequest.
 func NewReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequest) *Reader {
 	var r = &Reader{
 		Request: req,

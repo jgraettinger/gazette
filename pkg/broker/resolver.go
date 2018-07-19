@@ -9,6 +9,7 @@ import (
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
+// resolver maps journals to responsible broker instances and, potentially, a local replica.
 type resolver struct {
 	state        *v3_allocator.State
 	replicas     map[pb.Journal]*replica
@@ -63,6 +64,7 @@ func (r *resolver) resolve(args resolveArgs) (res resolution, err error) {
 	defer ks.Mu.RUnlock()
 	ks.Mu.RLock()
 
+	// TODO(johnny): Issue #65. Ideally resolution would not require the local member key.
 	if r.state.LocalMemberInd == -1 {
 		err = fmt.Errorf("local allocator member key not found in Etcd (%s)", r.state.LocalKey)
 		return

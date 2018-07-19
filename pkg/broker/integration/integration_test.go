@@ -18,6 +18,8 @@ import (
 	gc "github.com/go-check/check"
 )
 
+// TODO(johnny): Add additional integration testing scenarios (Issue #69).
+
 type IntegrationSuite struct{}
 
 func (s *IntegrationSuite) TestBasicReadAndWrite(c *gc.C) {

@@ -32,7 +32,12 @@ data:
       # Number of chunks for each stream.
       chunksPerStream: {{ .Values.chunker.chunksPerStream }}
 
-    # Service addresses to use.
+    metrics:
+      # Non-service port over which metrics, pprof, and other debugging is served.
+      port: "8090"
+      path: /metrics
+    log:
+      level: info
     etcd:
       endpoint: "{{ .Values.etcd.endpoint }}"
     gazette:

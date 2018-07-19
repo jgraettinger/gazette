@@ -4,7 +4,7 @@ import (
 	"net/url"
 )
 
-// Endpoint defines an accessible service addressed. It is a URL, where the
+// Endpoint defines an accessible service address. It is a URL, where the
 // scheme defines the network transport and semantics of the host, path,
 // and query components. At present, supported schemes are:
 //

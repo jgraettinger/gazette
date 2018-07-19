@@ -61,13 +61,63 @@ children:
       children:
         - name: examples/stream-sum/chunks/part-000
         - name: examples/stream-sum/chunks/part-001
+        - name: examples/stream-sum/chunks/part-002
+        - name: examples/stream-sum/chunks/part-003
+        - name: examples/stream-sum/chunks/part-004
+        - name: examples/stream-sum/chunks/part-005
+        - name: examples/stream-sum/chunks/part-006
+        - name: examples/stream-sum/chunks/part-007
     - name: examples/stream-sum/recovery-logs/
       labels:
         - name: recoverylog
       children:
         - name: examples/stream-sum/recovery-logs/shard-chunks-000
         - name: examples/stream-sum/recovery-logs/shard-chunks-001
+        - name: examples/stream-sum/recovery-logs/shard-chunks-002
+        - name: examples/stream-sum/recovery-logs/shard-chunks-003
+        - name: examples/stream-sum/recovery-logs/shard-chunks-004
+        - name: examples/stream-sum/recovery-logs/shard-chunks-005
+        - name: examples/stream-sum/recovery-logs/shard-chunks-006
+        - name: examples/stream-sum/recovery-logs/shard-chunks-007
     - name: examples/stream-sum/sums
       labels:
         - name: topic
           value: "examples/stream-sum/sums"
+  - name: examples/word-count/
+    fragment:
+      compression_codec: GZIP_OFFLOAD_DECOMPRESSION
+    children:
+    - name: examples/word-count/counts
+      labels:
+        - name: topic
+          value: "examples/word-count/counts"
+    - name: examples/word-count/deltas/
+      labels:
+        - name: topic
+          value: "examples/word-count/deltas"
+      children:
+        - name: examples/word-count/deltas/part-000
+        - name: examples/word-count/deltas/part-001
+        - name: examples/word-count/deltas/part-002
+        - name: examples/word-count/deltas/part-003
+        - name: examples/word-count/deltas/part-004
+        - name: examples/word-count/deltas/part-005
+        - name: examples/word-count/deltas/part-006
+        - name: examples/word-count/deltas/part-007
+    - name: examples/word-count/recovery-logs/
+      labels:
+        - name: recoverylog
+      children:
+        - name: examples/word-count/recovery-logs/shard-deltas-000
+        - name: examples/word-count/recovery-logs/shard-deltas-001
+        - name: examples/word-count/recovery-logs/shard-deltas-002
+        - name: examples/word-count/recovery-logs/shard-deltas-003
+        - name: examples/word-count/recovery-logs/shard-deltas-004
+        - name: examples/word-count/recovery-logs/shard-deltas-005
+        - name: examples/word-count/recovery-logs/shard-deltas-006
+        - name: examples/word-count/recovery-logs/shard-deltas-007
+        - name: examples/word-count/recovery-logs/shard-sentences-sentences
+    - name: examples/word-count/sentences
+      labels:
+        - name: topic
+          value: "examples/word-count/sentences"

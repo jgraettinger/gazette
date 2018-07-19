@@ -13,6 +13,7 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
+// Dialer dials brokers, caching ready connections of those previously dialed.
 type Dialer struct {
 	cache *lru.Cache
 }

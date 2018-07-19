@@ -13,6 +13,8 @@ import (
 
 type ReplicaSuite struct{}
 
+// TODO(johnny): Additional unit-test coverage needed here (issue #68).
+
 func (s *ReplicaSuite) TestSpoolAcquisition(c *gc.C) {
 	var ctx, cancel = context.WithCancel(context.Background())
 	var r = newReplica("foobar")

@@ -56,9 +56,10 @@ Start the ``word-count`` application::
 
 Begin a long-lived read of output counts::
 
-  curl -L -v "http://localhost:8081/examples/word-count/counts?block=true&offset=-1"
+  curl -v "http://localhost:8081/examples/word-count/counts?block=true&offset=-1"
 
 Load a bunch of data into the input sentences journal::
 
+  curl -v -X PUT http://localhost:8081/examples/word-count/sentences --data-binary $'The quick brown fox jumps over the lazy dog.\n'
   curl -v -X PUT http://localhost:8081/examples/word-count/sentences --data-binary @a_tale_of_two_citites.txt
 

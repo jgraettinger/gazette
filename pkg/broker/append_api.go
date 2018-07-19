@@ -169,6 +169,8 @@ type appender struct {
 	reqSummer   hash.Hash
 }
 
+// beginAppending updates the current proposal, if needed, then initializes
+// and returns an appender.
 func beginAppending(pln *pipeline, spec pb.JournalSpec_Fragment) appender {
 	// Potentially roll the Fragment forward prior to serving the append.
 	// We expect this to always succeed and don't ask for an acknowledgement.
@@ -195,6 +197,8 @@ func beginAppending(pln *pipeline, spec pb.JournalSpec_Fragment) appender {
 	}
 }
 
+// onRecv is called with each received content message or error
+// from the Append RPC client.
 func (a *appender) onRecv(req *pb.AppendRequest, err error) bool {
 	// Ensure |req| is a valid content chunk.
 	if err == nil {
@@ -260,6 +264,8 @@ func (a appender) String() string {
 		a.reqCommit, a.reqErr, a.reqFragment.String())
 }
 
+// updateProposal applies JournalSpec configuration to a replicated pipeline,
+// by proposing that the pipeline roll to a new, empty configured Fragment.
 func updateProposal(cur pb.Fragment, spec pb.JournalSpec_Fragment) (pb.Fragment, bool) {
 	// If the proposed Fragment is non-empty, but not yet at the target length,
 	// don't propose changes to it.

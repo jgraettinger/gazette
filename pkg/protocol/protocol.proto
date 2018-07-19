@@ -13,19 +13,26 @@ option (gogoproto.unmarshaler_all) = true;
 // Status is a response status code, used universally across Gazette RPC APIs.
 enum Status {
   OK = 0;
-  JOURNAL_EXISTS = 1;
-  JOURNAL_NOT_FOUND = 2;
-
-  NO_JOURNAL_PRIMARY_BROKER = 3;
-  NOT_JOURNAL_PRIMARY_BROKER = 4;
-
-  INSUFFICIENT_JOURNAL_BROKERS = 5;
-  NOT_JOURNAL_BROKER = 6;
-
-  OFFSET_NOT_YET_AVAILABLE = 7;
-
-  WRONG_ROUTE = 9;
-  FRAGMENT_MISMATCH = 10;
+  // The named journal does not exist.
+  JOURNAL_NOT_FOUND = 1;
+  // There is no current primary broker for the journal. This is a temporary
+  // condition which should quickly resolve, assuming sufficient broker capacity.
+  NO_JOURNAL_PRIMARY_BROKER = 2;
+  // The present broker is not the assigned primary broker for the journal.
+  NOT_JOURNAL_PRIMARY_BROKER = 3;
+  // The present broker is not an assigned broker for the journal.
+  NOT_JOURNAL_BROKER = 5;
+  // There are an insufficient number of assigned brokers for the journal
+  // to meet its required replication.
+  INSUFFICIENT_JOURNAL_BROKERS = 4;
+  // The requested offset is not yet available. This indicates either that the
+  // offset has not yet been written, or that the broker is not yet aware of a
+  // written fragment covering the offset. Returned only by non-blocking reads.
+  OFFSET_NOT_YET_AVAILABLE = 6;
+  // The peer disagrees with the Route accompanying a ReplicateRequest.
+  WRONG_ROUTE = 7;
+  // The peer disagrees with the Fragment proposal accompanying a ReplicateRequest.
+  FRAGMENT_MISMATCH = 8;
 }
 
 // CompressionCode defines codecs known to Gazette.
@@ -278,10 +285,6 @@ message AppendResponse {
   Fragment commit = 3;
 }
 
-// Three types of ReplicateRequest:
-//  * Initial request - Journal, Route, Proposal, and Acknowledge all set.
-//  * Streamed commit - Proposal and (optionally) Acknowledge are set.
-//  * Streamed content - Content and ContentDelta are set.
 message ReplicateRequest {
   // Header defines the primary broker, Route, and Etcd Revision under which
   // this Replicate stream is being established. Each replication peer

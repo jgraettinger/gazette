@@ -20,7 +20,7 @@ type Appender struct {
 	stream pb.Broker_AppendClient // Server stream.
 }
 
-// NewAppender builds and returns a new Appender.
+// NewAppender returns an Appender initialized with the BrokerClient and AppendRequest.
 func NewAppender(ctx context.Context, client pb.BrokerClient, req pb.AppendRequest) *Appender {
 	var a = &Appender{
 		Request: req,

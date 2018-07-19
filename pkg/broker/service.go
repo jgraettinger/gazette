@@ -11,6 +11,7 @@ import (
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
+// Service is an implementation of protocol.BrokerServer.
 type Service struct {
 	resolver *resolver
 	dialer   client.Dialer

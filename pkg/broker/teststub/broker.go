@@ -20,6 +20,7 @@ type Server struct {
 	srv      *grpc.Server
 }
 
+// NewServer returns a local GRPC server wrapping the provided BrokerServer.
 func NewServer(c *gc.C, ctx context.Context, srv pb.BrokerServer) *Server {
 	var l, err = net.Listen("tcp", "127.0.0.1:0")
 	c.Assert(err, gc.IsNil)
@@ -73,6 +74,7 @@ type Broker struct {
 	ErrCh chan error
 }
 
+// NewBroker returns a Broker instance served by a local GRPC server.
 func NewBroker(c *gc.C, ctx context.Context) *Broker {
 	var p = &Broker{
 		ReplReqCh:    make(chan *pb.ReplicateRequest),

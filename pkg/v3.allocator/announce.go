@@ -9,6 +9,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// Announcement manages a unique key which is "announced" to peers through Etcd,
+// with an associated lease and a value which may be updated over time. It's
+// useful for managing keys which simultaneously represent semantics of existence,
+// configuration, and processing live-ness (such as allocator member keys).
 type Announcement struct {
 	Key      string
 	Revision int64
@@ -16,7 +20,12 @@ type Announcement struct {
 	etcd *clientv3.Client
 }
 
-func Announce(ctx context.Context, etcd *clientv3.Client, key, value string, lease clientv3.LeaseID) (*Announcement, error) {
+// Announce a key and value to etcd under the LeaseID, asserting the key doesn't
+// already exist. If the key does exists, Announce will retry until it disappears
+// (eg, due to a former lease timeout) or the Context is cancelled.
+func Announce(ctx context.Context, etcd *clientv3.Client, key, value string,
+	lease clientv3.LeaseID) (*Announcement, error) {
+
 	for {
 		var resp, err = etcd.Txn(ctx).
 			If(clientv3.Compare(clientv3.Version(key), "=", 0)).
@@ -47,6 +56,7 @@ func Announce(ctx context.Context, etcd *clientv3.Client, key, value string, lea
 	}
 }
 
+// Update the value of a current Announcement.
 func (a *Announcement) Update(ctx context.Context, value string) error {
 	var resp, err = a.etcd.Txn(ctx).
 		If(clientv3.Compare(clientv3.ModRevision(a.Key), "=", a.Revision)).

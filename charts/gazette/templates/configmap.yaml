@@ -37,10 +37,13 @@ data:
       # Smaller values require more Etcd lease update overhead, but ensures the
       # cluster reacts quickly to failed brokers.
       leaseTTL: "5m"
+
     grpc:
-      # gRPC KeepAlive
       keepalive:
         time: "5m"
+
     caches:
+      # Number of previously dialed peer grpc connections to cache.
       dialerConns: 100
+      # Number of journal routes the http gateway should cache.
       httpGatewayRoutes: 100

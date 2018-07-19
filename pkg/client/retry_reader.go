@@ -30,6 +30,7 @@ type RetryReader struct {
 	client pb.BrokerClient
 }
 
+// NewRetryReader returns a RetryReader initialized with the BrokerClient and ReadRequest.
 func NewRetryReader(ctx context.Context, client pb.BrokerClient, req pb.ReadRequest) *RetryReader {
 	// If our BrokerClient is capable of directly routing to responsible brokers,
 	// we don't want brokers to proxy to peers or remote Fragments on our behalf.

@@ -9,6 +9,8 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
+// TODO(johnny): Add additional E2E testing scenarios (Issue #66).
+
 type E2ESuite struct{}
 
 func (s *E2ESuite) TestReplicatedAppendAndRead(c *gc.C) {

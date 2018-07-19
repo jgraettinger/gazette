@@ -20,11 +20,14 @@ import (
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 )
 
+// Gateway presents an HTTP gateway to Gazette brokers, by mapping GET, HEAD,
+// and PUT requests into equivalent Read RPCs and Append RPCs.
 type Gateway struct {
 	decoder *schema.Decoder
 	client  pb.BrokerClient
 }
 
+// NewGateway returns a Gateway using the BrokerClient.
 func NewGateway(client pb.BrokerClient) *Gateway {
 	var decoder = schema.NewDecoder()
 	decoder.IgnoreUnknownKeys(false)
@@ -83,7 +86,8 @@ func (h *Gateway) serveRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set(CloseErrorHeader, err.Error())
 
-	if err == context.Canceled ||
+	if r.Context().Err() != nil ||
+		err == context.Canceled ||
 		err == client.ErrOffsetJump ||
 		err == client.ErrOffsetNotYetAvailable ||
 		err == errBrokerTerminated {

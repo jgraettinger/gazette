@@ -66,8 +66,6 @@ func Allocate(args AllocateArgs) error {
 	ks.Mu.RLock()
 
 	for {
-		//state.debugLog() // TODO(johnny): Remove when the Allocator is further along in integration testing.
-
 		if state.LocalMemberInd == -1 {
 			return fmt.Errorf("member key not found in Etcd")
 		} else if state.shouldExit() {

@@ -24,7 +24,12 @@ data:
       # Local directory for ephemeral serving files.
       workdir: /var/tmp
 
-    # Service addresses to use.
+    metrics:
+      # Non-service port over which metrics, pprof, and other debugging is served.
+      port: "8090"
+      path: /metrics
+    log:
+      level: info
     etcd:
       endpoint: "{{ .Values.etcd.endpoint }}"
     gazette:
