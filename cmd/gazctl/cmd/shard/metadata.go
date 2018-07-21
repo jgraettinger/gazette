@@ -1,17 +1,19 @@
 // +build !windows
 
-package cmd
+package shard
 
 import (
 	"fmt"
 
-	"github.com/LiveRamp/gazette/pkg/consumer"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	rocks "github.com/tecbot/gorocksdb"
+
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
+	"github.com/LiveRamp/gazette/pkg/consumer"
 )
 
-var shardMetadata = &cobra.Command{
+var metadataCmd = &cobra.Command{
 	Use:   "metadata [local-db-path]",
 	Short: "Print metadata about a recovered consumer shard.",
 	Long: `Metadata prints metadata about a recovered shard database, such as estimated
@@ -24,7 +26,7 @@ keys, live vs total data, consumer offsets, and level statistics.`,
 		var dbPath = args[0]
 
 		var opts = rocks.NewDefaultOptions()
-		if plugin := consumerPlugin(); plugin != nil {
+		if plugin := internal.ConsumerPlugin(); plugin != nil {
 			if initer, _ := plugin.(consumer.OptionsIniter); initer != nil {
 				initer.InitOptions(opts)
 			}
@@ -54,5 +56,5 @@ keys, live vs total data, consumer offsets, and level statistics.`,
 }
 
 func init() {
-	shardCmd.AddCommand(shardMetadata)
+	Cmd.AddCommand(metadataCmd)
 }

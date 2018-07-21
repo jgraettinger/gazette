@@ -6,13 +6,13 @@ import (
 	"os"
 	"strings"
 
-	etcd "github.com/coreos/etcd/client"
-	"github.com/coreos/etcd/clientv3"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/LiveRamp/gazette/pkg/cloudstore"
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/journal"
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/shard"
 )
 
 var configFile string
@@ -24,7 +24,7 @@ func Execute() {
 		fmt.Println(err)
 		os.Exit(-1)
 	}
-	for _, h := range shutdownHooks {
+	for _, h := range internal.ShutdownHooks {
 		h()
 	}
 }
@@ -36,6 +36,9 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.AddCommand(journal.Cmd)
+	rootCmd.AddCommand(shard.Cmd)
+
 	log.SetOutput(os.Stderr)
 
 	cobra.OnInitialize(initConfig)
@@ -43,7 +46,6 @@ func init() {
 
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "f", "",
 		"config file (default is $HOME/.gazctl.yaml)")
-
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -65,73 +67,3 @@ func initConfig() {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 }
-
-func etcdClient() etcd.Client {
-	if lazyEtcdClient == nil {
-		var ep = viper.GetString("etcd.endpoint")
-		if ep == "" {
-			log.Fatal("etcd.endpoint not provided")
-		}
-
-		var err error
-		lazyEtcdClient, err = etcd.New(etcd.Config{Endpoints: []string{ep}})
-		if err != nil {
-			log.WithField("err", err).Fatal("building etcd client")
-		}
-	}
-	return lazyEtcdClient
-}
-
-func etcd3Client() *clientv3.Client {
-	if lazyEtcd3Client == nil {
-		var ep = viper.GetString("etcd.endpoint")
-		if ep == "" {
-			log.Fatal("etcd.endpoint not provided")
-		}
-
-		var err error
-		lazyEtcd3Client, err = clientv3.NewFromURL(ep)
-		if err != nil {
-			log.WithField("err", err).Fatal("building etcd3 client")
-		}
-	}
-	return lazyEtcd3Client
-}
-
-func cloudFS() cloudstore.FileSystem {
-	if lazyCFS == nil {
-		var cfs, err = cloudstore.NewFileSystem(nil, viper.GetString("cloud.fs.url"))
-		if err != nil {
-			log.WithField("err", err).Fatal("cannot initialize cloud filesystem")
-		}
-		lazyCFS = cfs
-	}
-	return lazyCFS
-}
-
-func userConfirms(message string) {
-	if defaultYes {
-		return
-	}
-	fmt.Println(message)
-	fmt.Print("Confirm (y/N): ")
-
-	var response string
-	fmt.Scanln(&response)
-
-	for _, opt := range []string{"y", "yes"} {
-		if strings.ToLower(response) == opt {
-			return
-		}
-	}
-	log.Fatal("aborted by user")
-}
-
-var (
-	lazyCFS         cloudstore.FileSystem
-	lazyEtcdClient  etcd.Client
-	lazyEtcd3Client *clientv3.Client
-
-	defaultYes    bool
-	shutdownHooks []func()
-)

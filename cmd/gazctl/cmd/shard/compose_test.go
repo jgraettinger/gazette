@@ -1,4 +1,6 @@
-package cmd
+// +build !windows
+
+package shard
 
 import (
 	"bufio"
@@ -17,9 +19,9 @@ import (
 // Use a small buffer to exercise bufio.Reader underflow & fill.
 const bufferSize = 16
 
-type ShardComposeSuite struct{}
+type ComposeSuite struct{}
 
-func (s *ShardComposeSuite) TestHexCases(c *gc.C) {
+func (s *ComposeSuite) TestHexCases(c *gc.C) {
 	var cases = []iterFuncTestCase{
 		{ // Valid input. We handle keys/value lengths that exceed the bufio.Reader's internal capacity.
 			fn: hexIter("" +
@@ -86,7 +88,7 @@ func (s *ShardComposeSuite) TestHexCases(c *gc.C) {
 	}
 }
 
-func (s *ShardComposeSuite) TestHeapCases(c *gc.C) {
+func (s *ComposeSuite) TestHeapCases(c *gc.C) {
 	var cases = []iterFuncTestCase{
 		{ // Simple, valid example.
 			fn: newHeapIterFunc(hexIter("" +
@@ -142,7 +144,7 @@ func (s *ShardComposeSuite) TestHeapCases(c *gc.C) {
 	}
 }
 
-func (s *ShardComposeSuite) TestDBIterCases(c *gc.C) {
+func (s *ComposeSuite) TestDBIterCases(c *gc.C) {
 	var shard, err = consumertest.NewShard("shard-compose-suite")
 	c.Assert(err, gc.IsNil)
 
@@ -177,7 +179,7 @@ func (s *ShardComposeSuite) TestDBIterCases(c *gc.C) {
 	}
 }
 
-func (s *ShardComposeSuite) TestFilterCases(c *gc.C) {
+func (s *ComposeSuite) TestFilterCases(c *gc.C) {
 	// |filter| modifies keys with 0xee suffix, and removes keys with 0xff suffix.
 	var filter = testFilter{
 		fn: func(key, value []byte) (remove bool, newValue []byte) {
@@ -222,7 +224,7 @@ func (s *ShardComposeSuite) TestFilterCases(c *gc.C) {
 	}
 }
 
-func (s *ShardComposeSuite) TestOffsetUpdateCases(c *gc.C) {
+func (s *ComposeSuite) TestOffsetUpdateCases(c *gc.C) {
 	var fixture = consumer.AppendOffsetKeyEncoding(nil, "foo/bar")
 	c.Check(fixture, gc.DeepEquals,
 		[]byte{0x0, 0x12, 'm', 'a', 'r', 'k', 0x0, 0x1, 0x12, 'f', 'o', 'o', '/', 'b', 'a', 'r', 0x0, 0x1})
@@ -294,6 +296,6 @@ func (tc iterFuncTestCase) test(c *gc.C) {
 	}
 }
 
-var _ = gc.Suite(&ShardComposeSuite{})
+var _ = gc.Suite(&ComposeSuite{})
 
 func Test(t *testing.T) { gc.TestingT(t) }

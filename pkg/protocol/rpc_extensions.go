@@ -127,11 +127,11 @@ func (m *ReplicateRequest) Validate() error {
 			return ExtendContext(err, "Journal")
 		} else if m.Header == nil {
 			return NewValidationError("expected Header with Journal")
-		} else if err := m.Header.Validate(); err != nil {
+		} else if err = m.Header.Validate(); err != nil {
 			return ExtendContext(err, "Header")
 		} else if m.Proposal == nil {
 			return NewValidationError("expected Proposal with Journal")
-		} else if err := m.Proposal.Validate(); err != nil {
+		} else if err = m.Proposal.Validate(); err != nil {
 			return ExtendContext(err, "Proposal")
 		} else if m.Proposal.Journal != m.Journal {
 			return NewValidationError("Journal and Proposal.Journal mismatch (%s vs %s)", m.Journal, m.Proposal.Journal)

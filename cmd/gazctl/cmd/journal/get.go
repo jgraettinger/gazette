@@ -1,4 +1,4 @@
-package cmd
+package journal
 
 import (
 	"context"
@@ -8,17 +8,18 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
+	. "github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	pb "github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/protocol/journalspace"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-var journalCmd = &cobra.Command{
+var Cmd = &cobra.Command{
 	Use:   "journal",
 	Short: "Commands for working with gazette journals",
 }
 
-var journalGetCmd = &cobra.Command{
+var getCmd = &cobra.Command{
 	Use:   "get [journal-name-prefix]",
 	Short: "Get specifications of one or more journals as a YAML journal tree",
 	Long: `Get fetches current specifications for one or journals, using the
@@ -34,7 +35,7 @@ specification and written to stdout.`,
 		// KeySpace to filter desired journals.
 		var ks = pb.NewKeySpace(clusterRoot)
 
-		if err := ks.Load(context.Background(), etcd3Client(), 0); err != nil {
+		if err := ks.Load(context.Background(), Etcd3Client(), 0); err != nil {
 			log.WithField("err", err).Fatal("failed to load KeySpace")
 		}
 
@@ -61,10 +62,9 @@ specification and written to stdout.`,
 }
 
 func init() {
-	rootCmd.AddCommand(journalCmd)
-	journalCmd.AddCommand(journalGetCmd)
+	Cmd.AddCommand(getCmd)
 
-	journalCmd.Flags().StringVarP(&clusterRoot, "clusterRoot", "r",
+	Cmd.Flags().StringVarP(&clusterRoot, "clusterRoot", "r",
 		"/gazette/cluster", "Etcd prefix of gazette cluster")
 }
 

@@ -1,8 +1,3 @@
-// Package keyspace implements an efficient mechanism to mirror a decoded Etcd
-// key space into a local KeySpace, which may be kept updated via a long-lived
-// Watch operation. KeySpace scales efficiently to 10's and even 100's of
-// thousands of keys, while providing fast range and point queries powered by
-// its packed, sorted ordering.
 package keyspace
 
 import (

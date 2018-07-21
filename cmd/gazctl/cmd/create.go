@@ -8,6 +8,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/journal"
 )
 
@@ -27,10 +28,10 @@ This creates journals examples/a-journal/one & examples/a-journal/two.`,
 		for i := range args {
 			var name = journal.Name(args[i])
 
-			userConfirms(fmt.Sprintf(
+			internal.UserConfirms(fmt.Sprintf(
 				"WARNING: Really create %s? This cannot be undone.", name.String()))
 
-			if err := gazetteClient().Create(name); err != nil {
+			if err := internal.GazetteClient().Create(name); err != nil {
 				log.WithField("err", err).Fatal("failed to create journal")
 			} else {
 				log.WithField("name", name).Info("created journal")
@@ -42,5 +43,5 @@ This creates journals examples/a-journal/one & examples/a-journal/two.`,
 func init() {
 	rootCmd.AddCommand(createCmd)
 
-	createCmd.Flags().BoolVarP(&defaultYes, "yes", "y", false, "Create without asking for confirmation.")
+	createCmd.Flags().BoolVarP(&internal.DefaultYes, "yes", "y", false, "Create without asking for confirmation.")
 }

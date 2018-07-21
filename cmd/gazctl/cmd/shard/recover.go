@@ -1,6 +1,6 @@
 // +build !windows
 
-package cmd
+package shard
 
 import (
 	"context"
@@ -11,16 +11,12 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/gazette"
 	"github.com/LiveRamp/gazette/pkg/recoverylog"
 )
 
-var shardCmd = &cobra.Command{
-	Use:   "shard",
-	Short: "Commands for working with a gazette consumer shard",
-}
-
-var shardRecoverCmd = &cobra.Command{
+var recoverCmd = &cobra.Command{
 	Use:   "recover [hints-locator] [local-output-path]",
 	Short: "Recover contents of the indicated log hints.",
 	Long: `Recover replays the recoverylog indicated by the argument hints
@@ -35,7 +31,7 @@ key specifier ("etcd:///path/to/hints").
 			cmd.Usage()
 			log.Fatal("invalid arguments")
 		}
-		var hints, tgtPath = loadHints(args[0]), args[1]
+		var hints, tgtPath = internal.LoadHints(args[0]), args[1]
 
 		player, err := recoverylog.NewPlayer(hints, tgtPath)
 		if err != nil {
@@ -48,7 +44,7 @@ key specifier ("etcd:///path/to/hints").
 				struct {
 					*gazette.Client
 					*gazette.WriteService
-				}{gazetteClient(), writeService()},
+				}{internal.GazetteClient(), internal.WriteService()},
 			); err != nil {
 				log.WithField("err", err).Fatal("shard playback failed")
 			}
@@ -75,7 +71,5 @@ key specifier ("etcd:///path/to/hints").
 }
 
 func init() {
-	rootCmd.AddCommand(shardCmd)
-
-	shardCmd.AddCommand(shardRecoverCmd)
+	Cmd.AddCommand(recoverCmd)
 }

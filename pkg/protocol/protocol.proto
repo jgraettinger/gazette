@@ -357,6 +357,7 @@ message Header {
   Etcd etcd = 3 [(gogoproto.nullable) = false];
 }
 
+// Broker is the Gazette broker service API.
 service Broker {
   rpc Read(ReadRequest) returns (stream ReadResponse);
   rpc Append(stream AppendRequest) returns (AppendResponse);

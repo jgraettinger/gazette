@@ -11,7 +11,9 @@ import (
 	"github.com/LiveRamp/gazette/pkg/keyspace"
 )
 
-// State is an extracted representation of the allocator KeySpace.
+// State is an extracted representation of the allocator KeySpace. Clients may
+// want to inspect State as part of a KeySpace observer to identify changes to
+// local assignments or the overall allocation topology.
 type State struct {
 	KS       *keyspace.KeySpace
 	LocalKey string // Unique key of this allocator instance.
@@ -36,9 +38,9 @@ type State struct {
 }
 
 // NewObservedState returns a *State instance which extracts and updates itself
-// from the provided KeySpace, and pivoted around the Member instance
-// identified by |localKey|. State should be treated as read-only, and a read
-// lock of the parent KeySpace must be obtained before each use.
+// from the provided KeySpace, pivoted around the Member instance identified by
+// |localKey|. State should be treated as read-only, and a read lock of the
+// parent KeySpace must be obtained before each use.
 func NewObservedState(ks *keyspace.KeySpace, localKey string) *State {
 	var s = &State{
 		KS:             ks,

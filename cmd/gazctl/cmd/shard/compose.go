@@ -1,6 +1,6 @@
 // +build !windows
 
-package cmd
+package shard
 
 import (
 	"bufio"
@@ -17,12 +17,13 @@ import (
 	"github.com/spf13/cobra"
 	rocks "github.com/tecbot/gorocksdb"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/consumer"
 	"github.com/LiveRamp/gazette/pkg/journal"
 	"github.com/LiveRamp/gazette/pkg/recoverylog"
 )
 
-var shardComposeCmd = &cobra.Command{
+var composeCmd = &cobra.Command{
 	Use:   "compose [input-path-one] [input-path-two] ... [output-path]",
 	Short: "Combine zero or more sorted input sources into a new RocksDB.",
 	Long: `Compose enumerates provided input sources (each either a path to a
@@ -48,7 +49,7 @@ the specified offset checkpoint, with precedence over all other sources.
 		var srcPaths, tgtPath = args[:len(args)-1], args[len(args)-1]
 
 		var opts = rocks.NewDefaultOptions()
-		if plugin := consumerPlugin(); plugin != nil {
+		if plugin := internal.ConsumerPlugin(); plugin != nil {
 			if initer, _ := plugin.(consumer.OptionsIniter); initer != nil {
 				initer.InitOptions(opts)
 			}
@@ -90,7 +91,7 @@ the specified offset checkpoint, with precedence over all other sources.
 		var iterFunc = newHeapIterFunc(iterFuncs...)
 
 		// Optionally wrap with a filtering iterator.
-		if plugin := consumerPlugin(); plugin != nil {
+		if plugin := internal.ConsumerPlugin(); plugin != nil {
 			if filterer, ok := plugin.(consumer.Filterer); ok {
 				iterFunc = newFilterIterFunc(filterer, iterFunc)
 			}
@@ -109,7 +110,7 @@ the specified offset checkpoint, with precedence over all other sources.
 				log.WithField("err", err).Fatal("NewRandomAuthorID failed")
 			}
 
-			var recorder = recoverylog.NewRecorder(fsm, author, len(tgtPath), writeService())
+			var recorder = recoverylog.NewRecorder(fsm, author, len(tgtPath), internal.WriteService())
 			opts.SetEnv(rocks.NewObservedEnv(recorder))
 		}
 
@@ -403,12 +404,12 @@ var (
 const writeBatchSize = 200
 
 func init() {
-	shardCmd.AddCommand(shardComposeCmd)
+	Cmd.AddCommand(composeCmd)
 
-	shardComposeCmd.Flags().StringVarP(&composeRecoveryLog, "recovery-log", "r", "",
+	composeCmd.Flags().StringVarP(&composeRecoveryLog, "recovery-log", "r", "",
 		"Recovery log in which to record the composed shard. By default, no recording is done.")
-	shardComposeCmd.Flags().StringVarP(&consumerJournal, "consumer-journal", "j", "",
+	composeCmd.Flags().StringVarP(&consumerJournal, "consumer-journal", "j", "",
 		"Journal for which to update the check-pointed consumption offset. By default, the offset is not modified.")
-	shardComposeCmd.Flags().Int64VarP(&consumerOffset, "consumer-offset", "o", 0,
+	composeCmd.Flags().Int64VarP(&consumerOffset, "consumer-offset", "o", 0,
 		"Byte offset for which to update the check-pointed consumption offset. --consumer-journal must be set if this is.")
 }

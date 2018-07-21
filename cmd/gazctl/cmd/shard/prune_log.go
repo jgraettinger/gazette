@@ -1,6 +1,6 @@
 // +build !windows
 
-package cmd
+package shard
 
 import (
 	"fmt"
@@ -9,10 +9,11 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/journal"
 )
 
-var shardPruneLogCmd = &cobra.Command{
+var pruneLogCmd = &cobra.Command{
 	Use:   "prune-log [etcd-hints-path]",
 	Short: "Prune log removes fragments of a hinted recovery log which are no longer needed",
 	Long: `
@@ -37,7 +38,7 @@ written by consumers after recovering & becoming primary for a shard.
 			log.Info("Running in dry-run mode. Pass -dry-run=false to disable")
 		}
 
-		var hints = loadHints(args[0])
+		var hints = internal.LoadHints(args[0])
 
 		var _, segments, err = hints.LiveLogSegments()
 		if err != nil {
@@ -56,7 +57,7 @@ written by consumers after recovering & becoming primary for a shard.
 		var wg sync.WaitGroup
 
 		if !dryRun {
-			userConfirms(fmt.Sprintf("WARNING: Really prune fragments of %s? This cannot be undone.", hints.Log))
+			internal.UserConfirms(fmt.Sprintf("WARNING: Really prune fragments of %s? This cannot be undone.", hints.Log))
 
 			for i := 0; i != concurrentDeletes; i++ {
 				wg.Add(1)
@@ -65,7 +66,7 @@ written by consumers after recovering & becoming primary for a shard.
 					defer wg.Done()
 
 					for f := range deleteCh {
-						if err := cloudFS().Remove(f.ContentPath()); err != nil {
+						if err := internal.CloudFS().Remove(f.ContentPath()); err != nil {
 							log.WithFields(log.Fields{"err": err, "path": f.ContentPath()}).Warn("failed to delete fragment")
 						}
 					}
@@ -75,7 +76,7 @@ written by consumers after recovering & becoming primary for a shard.
 
 		var nTotal, nPruned, bytesTotal, bytesPruned int64
 
-		if err = cloudFS().Walk(hints.Log.String(), journal.NewWalkFuncAdapter(func(f journal.Fragment) error {
+		if err = internal.CloudFS().Walk(hints.Log.String(), journal.NewWalkFuncAdapter(func(f journal.Fragment) error {
 			nTotal += 1
 			bytesTotal += f.Size()
 
@@ -119,10 +120,10 @@ const concurrentDeletes = 10
 var dryRun bool
 
 func init() {
-	shardCmd.AddCommand(shardPruneLogCmd)
+	Cmd.AddCommand(pruneLogCmd)
 
-	shardPruneLogCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true,
+	pruneLogCmd.Flags().BoolVarP(&dryRun, "dry-run", "d", true,
 		"Perform a dry-run (don't actually delete fragments)")
-	shardPruneLogCmd.Flags().BoolVarP(&defaultYes, "yes", "y", false,
+	pruneLogCmd.Flags().BoolVarP(&internal.DefaultYes, "yes", "y", false,
 		"Append without asking for confirmation.")
 }

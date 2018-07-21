@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/journal"
 )
 
@@ -35,9 +36,9 @@ This appends the contents of localFileOne & Two to example/journal/name.`,
 			if err != nil {
 				log.WithFields(log.Fields{"err": err, "path": p}).Fatal("opening file")
 			}
-			userConfirms(fmt.Sprintf("WARNING: Really append %s to %s? This cannot be undone.", p, name))
+			internal.UserConfirms(fmt.Sprintf("WARNING: Really append %s to %s? This cannot be undone.", p, name))
 
-			if result := gazetteClient().Put(journal.AppendArgs{
+			if result := internal.GazetteClient().Put(journal.AppendArgs{
 				Journal: name,
 				Content: file,
 			}); result.Error != nil {
@@ -54,5 +55,5 @@ This appends the contents of localFileOne & Two to example/journal/name.`,
 func init() {
 	rootCmd.AddCommand(appendCmd)
 
-	appendCmd.Flags().BoolVarP(&defaultYes, "yes", "y", false, "Append without asking for confirmation.")
+	appendCmd.Flags().BoolVarP(&internal.DefaultYes, "yes", "y", false, "Append without asking for confirmation.")
 }

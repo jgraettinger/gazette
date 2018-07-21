@@ -12,6 +12,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/journal"
 )
 
@@ -44,7 +45,7 @@ new content as it is appended.`,
 			ctx, _ = context.WithTimeout(ctx, readTimeout)
 		}
 
-		var reader = journal.NewRetryReaderContext(ctx, mark, gazetteClient())
+		var reader = journal.NewRetryReaderContext(ctx, mark, internal.GazetteClient())
 		reader.Blocking = (readTimeout != 0)
 
 		var br = bufio.NewReader(reader)

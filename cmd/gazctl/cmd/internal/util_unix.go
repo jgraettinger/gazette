@@ -1,6 +1,6 @@
 // +build !windows
 
-package cmd
+package internal
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 	"github.com/LiveRamp/gazette/pkg/recoverylog"
 )
 
-func consumerPlugin() consumer.Consumer {
+func ConsumerPlugin() consumer.Consumer {
 	if lazyConsumerPlugin == nil {
 		var path = viper.GetString("consumer.plugin")
 		if path == "" {
@@ -41,7 +41,7 @@ func consumerPlugin() consumer.Consumer {
 	return lazyConsumerPlugin
 }
 
-func gazetteClient() *gazette.Client {
+func GazetteClient() *gazette.Client {
 	if lazyGazetteClient == nil {
 		var ep = viper.GetString("gazette.endpoint")
 		if ep == "" {
@@ -57,18 +57,18 @@ func gazetteClient() *gazette.Client {
 	return lazyGazetteClient
 }
 
-func writeService() *gazette.WriteService {
+func WriteService() *gazette.WriteService {
 	if lazyWriteService == nil {
-		lazyWriteService = gazette.NewWriteService(gazetteClient())
+		lazyWriteService = gazette.NewWriteService(GazetteClient())
 		lazyWriteService.Start()
-		shutdownHooks = append(shutdownHooks, lazyWriteService.Stop)
+		ShutdownHooks = append(ShutdownHooks, lazyWriteService.Stop)
 	}
 	return lazyWriteService
 }
 
 // loadHints loads FSMHints given a locator, which can take the form of a simple path
 // to a file on disk, or an "etcd:///path/to/key".
-func loadHints(locator string) recoverylog.FSMHints {
+func LoadHints(locator string) recoverylog.FSMHints {
 	var u, err = url.Parse(locator)
 	switch {
 	case err != nil:
@@ -84,7 +84,7 @@ func loadHints(locator string) recoverylog.FSMHints {
 	var content []byte
 
 	if u.Scheme == "etcd" {
-		var r, err = etcd.NewKeysAPI(etcdClient()).Get(context.Background(), u.Path, nil)
+		var r, err = etcd.NewKeysAPI(EtcdClient()).Get(context.Background(), u.Path, nil)
 		if err != nil {
 			log.WithField("err", err).Fatal("failed to read hints from Etcd")
 		}

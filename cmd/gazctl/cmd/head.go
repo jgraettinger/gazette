@@ -9,6 +9,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/journal"
 )
 
@@ -33,7 +34,7 @@ Example: gazctl head examples/a-journal/one examples/a-journal/two`,
 			}
 
 			var result journal.ReadResult
-			if result, _ = gazetteClient().Head(args); result.Error != nil {
+			if result, _ = internal.GazetteClient().Head(args); result.Error != nil {
 				log.WithFields(log.Fields{"err": result.Error, "name": args.Journal}).Fatal("failed to HEAD journal")
 			}
 

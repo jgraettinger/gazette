@@ -1,4 +1,4 @@
-package cmd
+package journal
 
 import (
 	"context"
@@ -10,12 +10,13 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
 
+	. "github.com/LiveRamp/gazette/cmd/gazctl/cmd/internal"
 	"github.com/LiveRamp/gazette/pkg/protocol"
 	"github.com/LiveRamp/gazette/pkg/protocol/journalspace"
 	"github.com/LiveRamp/gazette/pkg/v3.allocator"
 )
 
-var journalApplyCmd = &cobra.Command{
+var applyCmd = &cobra.Command{
 	Use:   "apply",
 	Short: "Apply a YAML journal tree configuration to Etcd",
 	Long: `Apply reads a YAML journal tree specification from stdin (or file,
@@ -81,7 +82,7 @@ performing another "gazctl journal get".`,
 		}
 
 		if !applyDryRun {
-			resp, err := etcd3Client().Txn(context.Background()).
+			resp, err := Etcd3Client().Txn(context.Background()).
 				If(ifs...).Then(thens...).Commit()
 			if err != nil {
 				log.WithFields(log.Fields{"err": err}).Fatal("failed to apply transaction")
@@ -95,12 +96,12 @@ performing another "gazctl journal get".`,
 }
 
 func init() {
-	journalCmd.AddCommand(journalApplyCmd)
+	Cmd.AddCommand(applyCmd)
 
-	journalApplyCmd.Flags().StringVarP(&applyFile, "spec", "s",
+	applyCmd.Flags().StringVarP(&applyFile, "spec", "s",
 		"", "Spec file to apply (instead of stdin).")
 
-	journalApplyCmd.Flags().BoolVarP(&applyDryRun, "dry-run", "d",
+	applyCmd.Flags().BoolVarP(&applyDryRun, "dry-run", "d",
 		false, "Spec file to apply (instead of stdin).")
 }
 

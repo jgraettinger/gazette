@@ -1,6 +1,6 @@
 // +build !windows
 
-package cmd
+package shard
 
 import (
 	"os"
@@ -35,5 +35,5 @@ var shardRoutes = &cobra.Command{
 }
 
 func init() {
-	shardCmd.AddCommand(shardRoutes)
+	Cmd.AddCommand(shardRoutes)
 }
