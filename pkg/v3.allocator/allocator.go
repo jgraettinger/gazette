@@ -83,6 +83,13 @@ func Allocate(args AllocateArgs) error {
 				for item := range state.Items {
 					desired = extractItemFlow(state, fn, item, desired)
 				}
+
+				if len(desired) < state.ItemSlots {
+					// We cannot assign each item to the desired number of replicas. Most likely,
+					// there are too few members or they are poorly distributed across zones.
+					log.WithField("unattainable_replicas", state.ItemSlots-len(desired)).
+						Warn("cannot reach desired replication for all items")
+				}
 			}
 
 			// Use batched transactions to amortize the network cost of Etcd updates,
